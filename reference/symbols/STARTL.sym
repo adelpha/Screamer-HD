@@ -958,3 +958,135 @@
 00014d28 f ghost_car_load               ; (ghost, car index): time-attack ghost car object
 00025ab0 f sprite_draw                 
 0004d0d1 f __sprintf_putc               ; sprintf output callback
+
+# ---------------------------------------------------------------------------
+# Watcom runtime internals
+# ---------------------------------------------------------------------------
+000e99f6 f __dos4g_detect               ; int 2Fh, "RATIONAL DOS/4G"
+000e9ac0 f __dos4g_cleanup?            
+000e9b1a f __chk_infinity?             
+000e9b42 f __dbl_split?                
+000e9c1e f __digits_to_dbl?            
+000e9c69 f __dbl_normalize?            
+000e9cba f ldexp?                      
+000e9cfb f __scale_pow10?              
+000e9de2 f __dbl_compare?              
+000e9dec f __dbl_compare_core?         
+000e9ed3 f isatty                       ; int 21h 4400h, device bit
+000e9ef1 f __GetIOMode                 
+000e9f46 f __SetIOMode                 
+000e9f60 f __flushall                  
+000e9f8f f __dos_exit_hook?            
+000e9fac f setmode?                    
+000ea287 f __leapyear                  
+000ea2c2 f __dst_day_of_year?          
+000ea3a7 f __dst_before?               
+000ea3cf f __isindst                   
+000ea682 f __time_less?                
+000ea6b2 f __find_last_char?           
+000ea6e9 f __getcwd_drive?             
+000ea7fc f __dos_read?                 
+000ea832 f getenv                      
+000ea88c f __setbits                    ; 256-bit charset bitmap (strpbrk, scanf sets)
+000ea8ca f strncpy                     
+000ea9be f __dos_error?                
+000eaa8d f __fmt_exponent              
+000eab34 f __fmt_fraction              
+000eab97 f __shift_digits              
+000eac02 f __cvt                        ; ecvt/fcvt core
+000eae26 f __dos_commit?               
+000eae52 f __cvt_helper_a?             
+000eae8c f __dbl_to_mantissa?          
+000eaef7 f __mantissa_to_digits?       
+000eaf61 f __cvt_helper_b?             
+000eb01e f __matherr_print              ; "<func> in <msg>"
+000eb066 f __math_error_handler        
+000eb096 f tzset                        ; TZ variable, EST/EDT defaults
+000eb0a9 f __parse_int                 
+000eb0cf f __parse_time                
+000eb1e5 f __parse_dst_rule            
+000eb366 f __dos_result                
+000eb37a f __fmt_inf_nan               
+000eb3fe f __double_to_int?            
+000eb43a f __cvt_engine?               
+000eb625 f __get_std_stream             ; __iob + n
+000eb718 f __chp_store                 
+000eb731 f frexp?                      
+000eb7a0 f matherr                      ; default handler, returns 0
+
+# ---------------------------------------------------------------------------
+# x87 emulator internals (used only without an FPU)
+# ---------------------------------------------------------------------------
+000e8300 f emu387_add?                 
+000e832a f emu387_sub?                 
+000e835a f emu387_add_core?            
+000e84c6 f emu387_compare?             
+000e855f f emu387_mul?                 
+000e8589 f emu387_mul_core?            
+000e8734 f emu387_div?                 
+000e875e f emu387_div_core?            
+000e88af f emu387_to_int_a?            
+000e88b4 f emu387_to_int?              
+000e891e f emu387_from_int32           
+000e892f f emu387_from_uint32          
+000e8964 f emu387_from_double          
+000e89e4 f emu387_to_double?           
+000e8a63 f emu387_round?               
+000e8b2a f emu387_from_float           
+000e8bef f emu387_apply_rounding?      
+000e8d22 f emu387_raise_exception?     
+000e8d7c f emu387_fxch?                
+000e8e32 f emu387_fprem?               
+000e8f95 f emu387_ftst?                
+000e8ffb f emu387_fscale?              
+000e9076 f emu387_check_exception?     
+000e917d f emu387_fsqrt?               
+000e91c0 f emu387_fsqrt_core?          
+000e9458 f emu387_transcendental?      
+000e9666 f emu387_transcendental_entry?
+000e969c f emu387_fpatan?              
+000e995c f emu387_load?                
+000e99ae f emu387_store?               
+
+# ---------------------------------------------------------------------------
+# Library markers, HMI driver loading, IPX helpers
+# ---------------------------------------------------------------------------
+000e6e3a f emu387_ea_e6e3a              ; effective-address helper for the emulator ModRM decoder
+000e6e40 f emu387_ea_e6e40              ; effective-address helper for the emulator ModRM decoder
+000e6e46 f emu387_ea_e6e46              ; effective-address helper for the emulator ModRM decoder
+000e6e4c f emu387_ea_e6e4c              ; effective-address helper for the emulator ModRM decoder
+000e6e52 f emu387_ea_e6e52              ; effective-address helper for the emulator ModRM decoder
+000e6e5a f emu387_ea_e6e5a              ; effective-address helper for the emulator ModRM decoder
+000e6e60 f emu387_ea_e6e60              ; effective-address helper for the emulator ModRM decoder
+000e6e66 f emu387_ea_e6e66              ; effective-address helper for the emulator ModRM decoder
+000e6e6c f emu387_ea_e6e6c              ; effective-address helper for the emulator ModRM decoder
+000e6e74 f emu387_ea_e6e74              ; effective-address helper for the emulator ModRM decoder
+000e6e7c f emu387_ea_e6e7c              ; effective-address helper for the emulator ModRM decoder
+000e6e84 f emu387_ea_e6e84              ; effective-address helper for the emulator ModRM decoder
+000e6e8c f emu387_ea_e6e8c              ; effective-address helper for the emulator ModRM decoder
+000e6e96 f emu387_ea_e6e96              ; effective-address helper for the emulator ModRM decoder
+000e6ea0 f emu387_ea_e6ea0              ; effective-address helper for the emulator ModRM decoder
+000e6ea8 f emu387_ea_e6ea8              ; effective-address helper for the emulator ModRM decoder
+000e6eb0 f emu387_ea_e6eb0              ; effective-address helper for the emulator ModRM decoder
+000e6eb9 f emu387_ea_e6eb9              ; effective-address helper for the emulator ModRM decoder
+000e6ec2 f emu387_ea_e6ec2              ; effective-address helper for the emulator ModRM decoder
+000e6ecb f emu387_ea_e6ecb              ; effective-address helper for the emulator ModRM decoder
+000e6ed4 f emu387_ea_e6ed4              ; effective-address helper for the emulator ModRM decoder
+000e6edf f emu387_ea_e6edf              ; effective-address helper for the emulator ModRM decoder
+000e6eea f emu387_ea_e6eea              ; effective-address helper for the emulator ModRM decoder
+000e6ef3 f emu387_ea_e6ef3              ; effective-address helper for the emulator ModRM decoder
+000e6efc f emu387_decode_modrm         
+000defe5 f hmi_load_digi_driver         ; reads hmidrv.386 and picks the driver for the configured card
+000df2e0 f hmi_load_digi_driver_file?  
+000df639 f hmi_detect_load              ; hmidet.386 (hardware detection)
+000e2219 f hmi_load_midi_driver         ; hmimdrv.386
+000e1672 f hmi_digi_find_driver_header? ; "HMIDIGIP" signature
+000c6d18 f net_sort_nodes?             
+000c6e50 f net_get_local_address        ; copies the 16-byte IPX address
+000c6e7c f net_add_node?               
+000c6f2c f net_remove_node             
+000c6f98 f net_find_node               
+000c6ff4 f net_get_free_ecb?           
+000c70ec f net_receive_packet           ; returns 0 when nothing is waiting
+000c71c8 f net_send_packet?            
+000c7440 f net_post_listen?             ; re-arms a receive ECB
