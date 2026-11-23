@@ -103,6 +103,25 @@ py -3.14 tools\data\datfile.py cat SCREAMER\DATA\GEN.DAT CARS.DTR
 * Library functions use their Watcom C / HMI SOS API names; game code uses snake_case
   grouped by subsystem prefix (`obj_`, `MemMgr_`, `archive_`, `cd_`, `sfx_`, `race_`, ...).
 
+## Game code coverage
+
+All functions in the game's own code (`0x10000`-`0x2FE10`, `0x4BCA0`-`0x4D0E4`) now have a
+name; the remaining unnamed functions are in the libraries (HMI SOS internals, x87 emulator,
+runtime helpers). Some findings worth knowing for the port:
+
+* **Replays re-simulate the race.** `replay_write_frame` stores only the frame time and the
+  driving inputs (0x14 bytes per frame); `replay_read_frame` feeds them back. The port must
+  keep the simulation bit-for-bit deterministic (same float maths and frame times) for old
+  replays to play back.
+* **Time-attack ghosts** store positions instead (`ghost_record_frame`, 0x28 bytes per frame).
+* Frame-rate independence comes from `g_frame_pow_table`: pow(k, frame_time) factors used by
+  the `*_lerp_toward` helpers and the damping of speeds and yaw rate.
+* Car update order (`race_update_vs_cpu`): `car_integrate_motion`, CPU cars
+  `opponent_update_position`, `car_update_driving`, `opponent_update_driving`,
+  `car_update_dynamics`, `opponent_update_state`, `car_update_track_contact`,
+  `opponent_update_track_contact`, collisions, `opponent_update_contacts`, `camera_update`,
+  `car_sync_render_object`, `opponent_sync_render_object`.
+
 ## Renderer
 
 The 3D renderer is hand-written assembly (`0x81000`-`0x8C000` for the pipeline,
@@ -146,7 +165,7 @@ and the video buffers in conventional memory, which is what `attract_mode_setup`
 
 ## What is known so far
 
-See `reference/symbols/STARTL.sym` for every name; 566 of the 1,118 functions are
+See `reference/symbols/STARTL.sym` for every name; 746 of the 1,118 functions are
 named. Address ranges in `code1`:
 
 | Range | Contents |

@@ -189,7 +189,7 @@ typedef struct PlayerCar { /* 0x1084 bytes */
     unsigned int f_108;
     unsigned char pad_10c[0x4];
     int f_110;
-    float f_114;
+    float brake; /* 0..1 */
     int f_118;
     int f_11c;
     int f_120;
@@ -201,8 +201,8 @@ typedef struct PlayerCar { /* 0x1084 bytes */
     int f_138;
     int f_13c;
     int f_140;
-    float f_144;
-    int state_148;
+    float throttle; /* 0..1 */
+    int crash_state; /* 0x148: 0 driving, 2 just crashed, 1 crashed, 5 ... */
     int f_14c;
     int f_150;
     int f_154;
@@ -312,7 +312,7 @@ typedef struct PlayerCar { /* 0x1084 bytes */
     unsigned char pad_53c[0x4];
     int f_540;
     int f_544;
-    float f_548;
+    float yaw_rate; /* rad/s, decays each frame */
     float f_54c;
     float f_550;
     unsigned char pad_554[0x4];
@@ -323,11 +323,11 @@ typedef struct PlayerCar { /* 0x1084 bytes */
     unsigned char pad_568[0x4];
     int f_56c;
     unsigned char pad_570[0x18];
-    float f_588;
+    float prev_speed; /* speed last frame */
     int f_58c;
     int f_590;
     unsigned char pad_594[0x4];
-    int f_598;
+    int track_marker; /* nearest track marker index */
     int f_59c;
     unsigned char pad_5a0[0xc8];
     int f_668;
@@ -337,7 +337,7 @@ typedef struct PlayerCar { /* 0x1084 bytes */
     int f_678;
     float f_67c;
     int f_680;
-    int f_684;
+    int lap; /* laps completed */
     int f_688;
     unsigned char pad_68c[0xd0];
     int f_75c;
@@ -345,15 +345,15 @@ typedef struct PlayerCar { /* 0x1084 bytes */
     int f_780;
     int f_784;
     unsigned char pad_788[0x4];
-    int f_78c;
-    float f_790;
-    float f_794;
+    int lap_time; /* s */
+    float time_left; /* checkpoint timer; +bonus_time per checkpoint, +1 per obstacle */
+    float race_time; /* s */
     unsigned char pad_798[0x10];
     float f_7a8;
     int f_7ac;
     int f_7b0;
-    unsigned int f_7b4;
-    int f_7b8;
+    unsigned int render_flags; /* CarData.animation | 0x4000 no brake | 0x2000 slow */
+    int obstacles_hit; /* count */
     int f_7bc;
     int f_7c0;
     unsigned char pad_7c4[0x8];
@@ -419,7 +419,7 @@ typedef struct CpuCar { /* 0x590 bytes */
     float f_244;
     int f_248;
     int f_24c;
-    int f_250;
+    int spline_t; /* position within the current spline segment */
     int f_254;
     int f_258;
     int f_25c;
@@ -454,7 +454,7 @@ typedef struct CpuCar { /* 0x590 bytes */
     int f_2dc;
     int f_2e0;
     OpponentDef def; /* 0x2e4 from the track's OPPONENTS section */
-    int f_2f8;
+    int crash_state; /* 0 driving, 2 just crashed, 1 crashed */
     int f_2fc;
     int f_300;
     int f_304;
@@ -475,9 +475,9 @@ typedef struct CpuCar { /* 0x590 bytes */
     float f_404;
     float f_408;
     int f_40c;
-    int f_410;
+    int race_position; /*  */
     int active;
-    float f_418;
+    float speed; /*  */
     int f_41c;
     unsigned char pad_420[0x4];
     int f_424;

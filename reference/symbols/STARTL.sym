@@ -605,21 +605,21 @@
 00022dd8 f replay_playback_update?
 00023400 f hud_draw                  ; lap/race time "%02d:%02d:%02d"
 00024820 f sfx_queue_update?         ; plays queued samples (speech) one after another
-00016f24 f car_update_controls?     sig=void car_update_controls(PlayerCar *car)
-00015a70 f car_physics_step_a?      sig=void car_physics_step_a(PlayerCar *car)
-00015b9c f car_physics_step_b?      sig=void car_physics_step_b(PlayerCar *car)
-00015aa8 f car_physics_step_c?      sig=void car_physics_step_c(PlayerCar *car)
+00016f24 f car_integrate_motion     sig=void car_integrate_motion(PlayerCar *car) ; moves the car from speed, yaw and yaw rate; sets render flags
+00015a70 f car_update_driving       sig=void car_update_driving(PlayerCar *car) ; race timers, engine/gearbox, throttle, brake, steering
+00015b9c f car_update_dynamics      sig=void car_update_dynamics(PlayerCar *car) ; wheel loads, skid, crash/spin states, debris
+00015aa8 f car_update_track_contact sig=void car_update_track_contact(PlayerCar *car) ; track progress, checkpoints, wall probes, wheel ground heights, body pose
 00015af8 f car_collide_vs_cpu       sig=void car_collide_vs_cpu(PlayerCar *car)
 00015b34 f car_collide_vs_network   sig=void car_collide_vs_network(PlayerCar *car)
 00015b70 f car_collide_obstacles    sig=void car_collide_obstacles(PlayerCar *car)
 00015c0c f car_sync_render_object   sig=void car_sync_render_object(PlayerCar *car) ; copies position/angles to the car's 3D objects
 00019aa0 f camera_update
-0001c750 f opponent_ai_step_a?      sig=void opponent_ai_step_a(CpuCar *car)
-0001c78c f opponent_ai_step_b?      sig=void opponent_ai_step_b(CpuCar *car)
-0001c7c0 f opponent_ai_avoid?       sig=void opponent_ai_avoid(CpuCar *car) ; uses opponent_find_nearby
-0001c800 f opponent_ai_step_c?      sig=void opponent_ai_step_c(CpuCar *car)
+0001c750 f opponent_update_driving  sig=void opponent_update_driving(CpuCar *car) ; speed target and advance along the racing line
+0001c78c f opponent_update_track_contact sig=void opponent_update_track_contact(CpuCar *car) ; track progress, bumpers, ground
+0001c7c0 f opponent_update_contacts sig=void opponent_update_contacts(CpuCar *car) ; collisions with other CPU cars and the player
+0001c800 f opponent_update_state    sig=void opponent_update_state(CpuCar *car) ; smoothing, crash state, engine sound
 0001c83c f opponent_sync_render_object sig=void opponent_sync_render_object(CpuCar *car)
-0001cd34 f opponent_update_position? sig=void opponent_update_position(CpuCar *car)
+0001cd34 f opponent_update_position sig=void opponent_update_position(CpuCar *car) ; world position and angles from the spline position plus offsets
 0001ead0 f net_players_init?
 0001f0f8 f net_player_update_wheels?
 
@@ -754,3 +754,207 @@
 000da4d8 f raster_patch_pitch_d7 ; patches the view height into the rasteriser code next to it
 000db9b0 f raster_patch_pitch_db ; patches the view height into the rasteriser code next to it
 000dc8d0 f raster_patch_pitch_dc ; patches the view height into the rasteriser code next to it
+
+# ---------------------------------------------------------------------------
+# Car physics, camera, CPU car AI, splines, network sync
+# ---------------------------------------------------------------------------
+00015bec f car_store_prev_speed         sig=void car_store_prev_speed(PlayerCar *car) ; prev_speed (0x588) = speed
+00016094 f car_update_throttle          sig=void car_update_throttle(PlayerCar *car) ; throttle (0x144) from the accelerator axis
+00016140 f car_update_brake             sig=void car_update_brake(PlayerCar *car) ; brake (0x114) from the brake axis, slows speed
+0001628c f car_update_steering          sig=void car_update_steering(PlayerCar *car) ; steering sensitivity falls with speed; inverted by the MIRRO cheat
+00016698 f car_update_body_from_wheels  sig=void car_update_body_from_wheels(PlayerCar *car) ; body height and roll from the four wheel heights
+000168a4 f car_update_wheel_loads?      sig=void car_update_wheel_loads(PlayerCar *car) ; per-wheel forces from acceleration and cornering
+00016b88 f car_apply_wall_push          sig=void car_apply_wall_push(PlayerCar *car) ; moves the car out of walls using the four corner probes
+00016c90 f car_update_track_heading?    sig=void car_update_track_heading(PlayerCar *car) ; compares yaw with the track direction at the car
+000173f8 f car_find_cpu_contacts        sig=void car_find_cpu_contacts(PlayerCar *car) ; bumper contact tests against nearby CPU cars
+000175cc f car_find_net_contacts        sig=void car_find_net_contacts(PlayerCar *car)
+00017818 f car_resolve_cpu_collision    sig=void car_resolve_cpu_collision(PlayerCar *car, CpuCar *other) ; crash sound, push both cars apart
+00017b44 f car_resolve_net_collision    sig=void car_resolve_net_collision(PlayerCar *car, int push)
+00017c5c f car_update_bumpers           sig=void car_update_bumpers(PlayerCar *car) ; front/rear bumper points in world space
+00017d04 f car_update_skid              sig=void car_update_skid(PlayerCar *car) ; lateral force against grip
+0001813c f car_apply_view_setting?      sig=void car_apply_view_setting(PlayerCar *car)
+0001820c f car_update_track_progress    sig=void car_update_track_progress(PlayerCar *car) ; nearest track marker index (0x598)
+00018518 f car_update_crash_state       sig=void car_update_crash_state(PlayerCar *car) ; state 0x148: 2 = just crashed (sounds), 1 = crashed, 5 = ...
+000188a8 f car_update_spin?             sig=void car_update_spin(PlayerCar *car)
+00018a04 f car_update_race_timers       sig=void car_update_race_timers(PlayerCar *car) ; lap time (0x78c) and race time (0x794)
+00018b50 f car_add_obstacle_time        sig=void car_add_obstacle_time(PlayerCar *car) ; +1 s per obstacle hit
+00018b98 f car_check_markers            sig=void car_check_markers(PlayerCar *car) ; mode 0x40 markers
+00018cbc f car_update_shadow_position   sig=void car_update_shadow_position(PlayerCar *car)
+00018da0 f car_update_engine_gearbox    sig=void car_update_engine_gearbox(PlayerCar *car) ; revs and gear from CarData maxrpm / n_shifts / sh_rap
+00019468 f car_set_state                sig=void car_set_state(PlayerCar *car)
+00019490 f car_on_checkpoint            sig=void car_on_checkpoint(PlayerCar *car)
+000195fc f car_add_checkpoint_time      sig=void car_add_checkpoint_time(PlayerCar *car) ; bonus_time (or carnage in modes 0x20/0x40) from TRACK_DATA
+00019668 f car_complete_lap             sig=void car_complete_lap(PlayerCar *car) ; lap count (0x684), best lap (0x798), track record
+00019818 f car_update_debris?           sig=void car_update_debris(PlayerCar *car)
+00019970 f car_sync_debris_objects?     sig=void car_sync_debris_objects(PlayerCar *car)
+0001a2ac f camera_mode_chase            sig=void camera_mode_chase(PlayerCar *car, int *cam) ; view 0
+0001a3a8 f camera_mode_car              sig=void camera_mode_car(PlayerCar *car, int *cam, int mode) ; views 1, 6, 9 (in-car / bumper variants)
+0001a620 f camera_mode_trackside        sig=void camera_mode_trackside(PlayerCar *car, int *cam) ; view 3: nearest fixed camera from <track>CAM.SPL
+00019ad8 f camera_handle_view_keys      ; F1-F7 select the view
+00019e68 f camera_update_view           ; dispatch on the view mode
+00019ef0 f camera_interpolate          
+0001a134 f camera_write_render_camera   ; angles and position into g_camera
+0001aeb4 f camera_mode_tv               ; view 8: follows the race leader
+0001a920 f camera_tv_track_opponent     sig=void camera_tv_track_opponent(CpuCar *car)
+0001bfc4 f collision_test_object_faces?
+0001c09c f collision_test_object_faces_b?
+0001c12c f collision_test_quad?        
+0001c37a f collision_test_triangle?    
+0001cb9c f opponent_check_ground?       sig=void opponent_check_ground(CpuCar *car)
+0001ccc8 f opponent_save_prev_position  sig=void opponent_save_prev_position(CpuCar *car)
+0001ce28 f opponent_update_bumpers      sig=void opponent_update_bumpers(CpuCar *car)
+0001ced0 f opponent_update_target_speed sig=void opponent_update_target_speed(CpuCar *car) ; max_spd/accel/skill, faster when behind the player
+0001cffc f opponent_find_cpu_contacts   sig=void opponent_find_cpu_contacts(CpuCar *car)
+0001d1f0 f opponent_resolve_collision   sig=void opponent_resolve_collision(CpuCar *car, CpuCar *other)
+0001d2fc f opponent_advance_on_spline   sig=void opponent_advance_on_spline(CpuCar *car) ; moves along the racing line (t at 0x250)
+0001d54c f opponent_next_spline_segment? sig=void opponent_next_spline_segment(CpuCar *car)
+0001d6ac f opponent_apply_lateral_offset? sig=void opponent_apply_lateral_offset(CpuCar *car)
+0001d824 f opponent_update_crash_state  sig=void opponent_update_crash_state(CpuCar *car) ; state 0x2f8: 2 = just crashed
+0001db28 f opponent_update_steer_anim?  sig=void opponent_update_steer_anim(CpuCar *car)
+0001db84 f opponent_update_track_progress sig=void opponent_update_track_progress(CpuCar *car)
+0001df24 f opponent_smooth_angles       sig=void opponent_smooth_angles(CpuCar *car)
+0001dffc f opponent_update_engine_sound sig=void opponent_update_engine_sound(CpuCar *car)
+0001e2fc f opponent_update_near_viewer? sig=void opponent_update_near_viewer(CpuCar *car)
+0001e404 f opponent_collide_player      sig=void opponent_collide_player(CpuCar *car)
+0001e660 f spline_eval_2d               ; quadratic B-spline
+0001e6f0 f spline_eval_3d              
+0001e7a4 f spline_eval_2d_ahead?       
+0001e904 f spline_eval_3d_ahead?       
+0001ec38 f net_drain_packets?          
+0001ec6c f net_send_player_state       
+0001ecf4 f net_pack_player_state        sig=void net_pack_player_state(PlayerCar *car)
+0001eec8 f net_receive_player_states   
+0001ef58 f net_player_sync_render_object
+00011a30 f car_update_wheel_ground   sig=void car_update_wheel_ground(PlayerCar *car) ; ground height under each of the four wheels
+00011c00 f collision_query_cells     ; tests the 3x3 map cells around g_probe_x/z
+00011ccc f collision_query_cell_objects
+00011e74 f car_update_corner_probes  sig=void car_update_corner_probes(PlayerCar *car) ; four corner probes against walls
+00011f98 f car_resolve_corner_probes sig=void car_resolve_corner_probes(PlayerCar *car)
+000120c0 f track_find_nearest_point  ; nearest track/spline point to g_probe_x/z; sets its heading
+00108034 d g_probe_x
+0010803c d g_probe_z
+0011987c d g_input_accel             ; accelerator axis from controls_update (signed)
+00119880 d g_input_brake
+00119884 d g_input_steer
+0011988c d g_input_gear
+0010cf04 d g_frame_pow_table         ; row of pow(k, frame_time) factors for the current frame time
+
+# ---------------------------------------------------------------------------
+# Race events, replays and ghosts, HUD, commentary, math helpers
+# ---------------------------------------------------------------------------
+00020b0c f animation_advance_on_spline 
+000212c0 f camera_set_listener          ; position/yaw used for distance checks (opponents, animations, 3D sound)
+00021328 f pause_menu                   ; P key: shaded overlay and menu
+000219d0 f pause_menu_draw_scene?      
+00021b80 f sfx_update_positional?      
+00021d8c f fade_blocking                ; fades volumes/palette until done
+00021f21 f angle_step_toward            ; wraps at 2pi
+00021ff8 f angle_lerp_toward            ; frame-rate independent via g_frame_pow_table
+000220fc f value_lerp_toward           
+000221dc f rotate_vector_yz?           
+00022258 f rotate_xz_float             
+000222c0 f vec_length_nonzero           ; sqrt, 1.0 when zero
+00022358 f spline_segment_init?        
+000224bc f point_in_front_box?         
+00022644 f angle_within                 ; |a - b| (wrapped) within tolerance
+0002269c f angle_from_vector            ; acos based
+00022724 f vec_normalize?              
+00022c10 f replay_alloc_buffer          ; REPLAY: 0x14 bytes per frame (frame time + inputs)
+00022c68 f attack_alloc_buffer          ; ATTACK: 0x28 bytes per frame (ghost car positions)
+00022d24 f replay_free_buffer          
+00022d44 f attack_free_buffer          
+00022d68 f replay_start_recording      
+00022d98 f replay_start_playback       
+00022e74 f replay_read_frame            ; restores frame time and the driving inputs: replays re-simulate the race
+00022f34 f replay_write_frame          
+00023018 f ghost_update?               
+000231d0 f ghost_record_frame           sig=void ghost_record_frame(PlayerCar *car) ; stores the car position/angles for the time-attack ghost
+00023308 f ghost_sync_render_object    
+0002367c f hud_draw_cockpit             ; RLE cockpit overlay over the 3D view
+0002390c f hud_draw_needle              ; gauge needle from an angle
+00023a68 f hud_draw_for_view            ; HUD layout per view (M key cycles it)
+00023dac f hud_draw_message_box?       
+00023e70 f race_result_none            
+00023e78 f race_result_vs_cpu_a?       
+00023eb4 f race_result_vs_cpu_b?       
+00023ef0 f race_result_time_attack      ; beat the ghost?
+00023f68 f race_result_checkpoints      ; all markers and no obstacles hit = perfect
+00023fbc f race_result_carnage          ; all obstacles hit
+00024008 f race_fail_stub_a            
+00024010 f race_fail_stub_b            
+00024018 f race_fail_stub_c            
+00024020 f race_set_lost               
+00024030 f race_end_stub_a             
+00024038 f race_end_stub_b             
+00024040 f race_end_draw_message       
+00024064 f race_end_draw_mode1         
+000240ec f race_end_draw_mode2         
+00024174 f race_end_draw_attack        
+000241ac f race_end_draw_checkpoints   
+00024204 f race_end_draw_carnage       
+0002425c f speech_check_events?         sig=void speech_check_events(PlayerCar *car) ; commentary triggers while racing
+000246bc f speech_init?                
+00024740 f speech_current?             
+0002474c f speech_play_event?          
+000248b8 f speech_queue_clear?         
+0002491c f speech_queue_age?           
+000249c8 f speech_play_queued?         
+00024a24 f speech_pick_sample?         
+00024ae8 f speech_cycle_variant?       
+00024b9f f timer_bits_match?           
+00024bec f sfx_cooldown_a?             
+00024c68 f sfx_cooldown_b?             
+00024cd0 f sfx_play_once                ; plays once until reset
+00024d1c f sfx_once_reset              
+000255c0 f font_set_tables             
+00025740 f sprites_set_table           
+00025a4c f engine_load_shade_table      ; 16 KB colour/shade table at 0xcda64
+
+# ---------------------------------------------------------------------------
+# Frontend menus, championship, low-level handlers
+# ---------------------------------------------------------------------------
+000288dc f frontend_text_input          ; typed keys into the name buffer
+00028a7c f frontend_return_to_title    
+000292c8 f champ_advance?              
+000293e8 f frontend_init_state         
+00029484 f frontend_update_page         ; dispatch on the current page
+00029530 f frontend_animate_background?
+00029738 f frontend_fade_update        
+000297d4 f menu_toggle_option?         
+00029838 f menu_build_page_items        ; up to 80 items of 100 bytes
+00029acc f champ_store_race_result     
+0002a9a4 f menu_load_page_objects       ; AAUTO00, ALETTER, AMAP1 3D objects
+0002af30 f menu_item_draw_text?        
+0002b1f4 f menu_hide_page_items        
+0002b2d0 f menu_items_busy?            
+0002b33c f menu_item_init              
+0002b380 f menu_item_update            
+0002b54c f menu_item_update_slide?     
+0002b8b8 f menu_item_update_zoom?      
+0002bd84 f frontend_show_page_background
+0002ca10 f menu_animate_cars?          
+0002cb88 f net_lobby_update?           
+0002cd74 f menu_letters_update?        
+0002ce58 f champ_draw_standings?       
+0002d348 f menu_draw_dialog?           
+0002d654 f frontend_options_screen?    
+0002ddf0 f net_reset_space              ; NET_SPACE buffer
+0002df38 f menu_draw_title_scroll?     
+0002e08c f menu_draw_car_select         ; "%d KMH"
+0002e384 f menu_draw_track_select?     
+0002e4f8 f menu_draw_name_entry?       
+0002e5e4 f menu_replay_files            ; REPLAY%d%d.RPL save/load
+00010000 f debug_break                  ; INT3 at the start of the code object
+00010101 f keyboard_isr_store_key       ; tail of the INT 9 handler: stores the key state, EOI
+0001020d f timer_tick_callback          ; increments g_timer_ticks and g_frame_counter (far return)
+00010547 f draw_line_plot?             
+000107fd d g_frame_counter           ; free-running tick counter
+
+# ---------------------------------------------------------------------------
+# Car loading, misc
+# ---------------------------------------------------------------------------
+000142e8 f opponent_car_load            sig=int opponent_car_load(CpuCar *car, int index, int load_objects) ; car, shadow and wheel objects (fauto/rauto/MV_mauto, flx/fai)
+0001496c f net_car_load                 sig=int net_car_load(NetCar *car)
+00014d28 f ghost_car_load               ; (ghost, car index): time-attack ghost car object
+00025ab0 f sprite_draw                 
+0004d0d1 f __sprintf_putc               ; sprintf output callback
