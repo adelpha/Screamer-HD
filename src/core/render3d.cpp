@@ -148,6 +148,8 @@ void Renderer::draw_polygon(const std::vector<ClipVert>& in, const Material* mat
 
     const bool textured = textures_ && mat && lib && mat->width > 0 && mat->height > 0 && mat->type != 0;
     const uint8_t flat = mat ? mat->color : 15;
+    // Material types 3-7 (mat3_draw) skip texels of colour 0: see-through fences, trees, signs.
+    const bool transparent = textured && mat->type >= 3 && mat->type <= 7;
     // Fan triangulation, edge-function rasteriser with perspective-correct interpolation.
     for (size_t t = 1; t + 1 < s.size(); ++t) {
         const Scr& a = s[0];
@@ -171,13 +173,14 @@ void Renderer::draw_polygon(const std::vector<ClipVert>& in, const Material* mat
                 const float iz = w0 * a.iz + w1 * b.iz + w2 * c.iz;
                 float& dz = depth_[size_t(y) * fb.width() + x];
                 if (iz <= dz) continue;
-                dz = iz;
                 uint8_t col = flat;
                 if (textured) {
                     const float u = (w0 * a.uz + w1 * b.uz + w2 * c.uz) / iz;
                     const float v = (w0 * a.vz + w1 * b.vz + w2 * c.vz) / iz;
                     col = lib->texel(*mat, int(std::floor(u)), int(std::floor(v)));
+                    if (transparent && col == 0) continue;
                 }
+                dz = iz;
                 fb.at(x, y) = col;
             }
         }
