@@ -113,6 +113,11 @@ runtime helpers). Some findings worth knowing for the port:
   driving inputs (0x14 bytes per frame); `replay_read_frame` feeds them back. The port must
   keep the simulation bit-for-bit deterministic (same float maths and frame times) for old
   replays to play back.
+* **Timing:** `sound_init` registers `timer_tick_callback` with the HMI timer at 100 Hz.
+  `frame_timing_update` waits for at least 2 ticks (so at most 50 fps), takes
+  `ticks * 0.01 s` as the raw frame time, smooths it as `(9 * old + raw) / 10` and clamps it to
+  0.02-0.2 s. The simulation therefore uses a variable step quantised to 10 ms, which the
+  replay records per frame.
 * **Time-attack ghosts** store positions instead (`ghost_record_frame`, 0x28 bytes per frame).
 * Frame-rate independence comes from `g_frame_pow_table`: pow(k, frame_time) factors used by
   the `*_lerp_toward` helpers and the damping of speeds and yaw rate.
@@ -131,7 +136,7 @@ so `ScreamerInit.java` turns orphan code into functions and only marks fixups as
 code when they form tables (a lone fixup there is usually an instruction operand).
 
 * Fixed point: matrices and `g_sincos_table` are 1.15/2.14; angles run 0..0x7FF (2048 per turn).
-* Per frame (`render_scene`, `render_scene_alt`): camera matrices (`camera_build_matrices`),
+* Per frame (`render_race_scene`, and `render_menu_scene` for the menus): camera matrices (`camera_build_matrices`),
   background band, collect and depth-sort the visible map cells (`vis_*`), then for every cell
   and object `object_begin` -> `object_transform_vertices` -> `object_build_polygons` ->
   `draw_polygon_list`.
@@ -190,7 +195,7 @@ Key facts for the port:
   keyboard handler (`keyboard_install`), the 3D engine (`engine_init`) and VGA.
 * **Main loop**: `attract_mode_run` (the intro demo race), then `frontend_run` (menus);
   the menus start races with `frontend_start_race` -> `race_run` -> `race_loop` -> `race_frame`, which dispatches on
-  `g_game_mode` to `race_update_*`, renders with `render_set_camera` + `render_scene_alt`,
+  `g_game_mode` to `race_update_*`, renders with `render_set_camera` + `render_race_scene`,
   draws the HUD and presents with `present_frame` (64,000-byte copy to `A000:0`).
 * **Timing**: `frame_timing_update` waits until the timer interrupt has counted at least two
   ticks and derives a smoothed frame time (`g_frame_time`, clamped to 0.02-0.2 s).
