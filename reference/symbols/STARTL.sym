@@ -734,7 +734,7 @@
 000d51e0 f mat0_draw_alt             ; bbox reject, then unclipped or screen-clipped fill
 000d7308 f mat0_build_polygon        ; also used by types 3-7 and 14-15
 000d76a0 f mat0_build_polygon_alt
-000dc1b4 f mat3_draw                 ; types 3-7: textured (writes clipped u/v)
+000dc1b4 f mat3_draw                 ; types 3-7: textured, texel 0 is transparent (writes clipped u/v)
 000dc078 f mat3_draw_alt
 000d8844 f mat8_draw                 ; types 8-9: no texture reads (flat colour?)
 000d8744 f mat8_draw_alt
