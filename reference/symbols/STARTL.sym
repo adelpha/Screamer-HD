@@ -521,7 +521,7 @@
 000150f0 f track_load_markers
 0001514c f fatal_cleanup             ; restores text mode, keyboard, timer before exit
 000156a4 f race_unload
-0001571c f build_pow_table
+0001571c f build_pow_table           ; 50 rows x 100: pow(0.5 + 0.005 k, 50 / (row + 1)); row used = trunc(1 / frame_time)
 000157b4 f cd_check_disc             ; volume label must be SCREAMER
 00015870 f show_insert_cd_screen
 

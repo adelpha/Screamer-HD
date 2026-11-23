@@ -30,7 +30,8 @@ no manual steps.
 | Option | Effect |
 |---|---|
 | `--headless` | SDL `offscreen` video driver, software renderer, dummy audio. No window appears. |
-| `--frames N` | Run exactly N simulation frames (70 Hz), then exit. Headless runs step once per loop, so output depends only on N, never on timing. |
+| `--frames N` | Run exactly N simulation frames, then exit. A frame is 2 ticks of the original's 100 Hz clock (`src/core/sim_clock.h`); headless runs advance exactly 2 ticks per loop, so output depends only on N, never on timing. |
+| `--scene NAME` | `title` (the title screen from the game files; the default when they are found) or `testpattern`. The tests use `testpattern` so they run without game data. |
 | `--dump-fb FILE` | After the last frame, save the native 320x200 framebuffer (palette applied). Directly comparable with DOSBox raw captures. |
 | `--screenshot FILE` | After the last frame, save the presented output (scaled, letterboxed) at `--size`. |
 | `--capture-every N` / `--capture-dir` | Dump the framebuffer every N frames. |
@@ -77,6 +78,10 @@ config (user's own DOSBox config is ignored), mounts `SCREAMER/` as C: and the C
   mode 13h screen) or `-Cpu` for registers. Works with the DOS4GW protected-mode game.
 * **Headless**: `-Headless` sets SDL's offscreen video driver, so no DOSBox window appears
   (cannot be combined with `-Shots`; read memory through `-Webserver` instead).
+* **Screen capture without a window**: `tools/dosbox/capture-vga.ps1 -Name x -Delay 9 -Autotype '-w 4 esc'`
+  runs DOSBox headless, reads VGA memory and the game's own `g_palette`, and writes
+  `artifacts/dosbox/x/vga.bmp`. The palette is the full-brightness one, so capture screens
+  that have finished fading in.
 * **Debugger**: `-Debugger` uses `dosbox_with_debugger.exe` (Alt+Pause breaks in).
 * `-Cycles 'fixed 60000'` gives more repeatable timing than `max`. Audio is off unless `-Sound`.
 
