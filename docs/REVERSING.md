@@ -70,6 +70,8 @@ the types (for example `g_player_car` is a `PlayerCar` and the car functions tak
 * Fields named after their meaning are confirmed (from the code, the data files or the running game).
 * `f_<offset>` fields have a known type, from how the code accesses them, but no known meaning yet.
   `pad_<offset>` are bytes that no analysed function touches.
+* `tools/ghidra/check_types.py` checks every struct against the size in its comment; run it
+  after editing the header.
 * `tools/ghidra/field_usage.py` lists every access through a function's first parameter in the
   decompiler dump, or drafts a struct (`--struct Name --size N`) to start a new record from.
 
