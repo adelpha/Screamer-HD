@@ -172,7 +172,7 @@ and the video buffers in conventional memory, which is what `attract_mode_setup`
 
 ## What is known so far
 
-See `reference/symbols/STARTL.sym` for every name; 867 of the 1,118 functions are
+See `reference/symbols/STARTL.sym` for every name; 928 of the 1,118 functions are
 named. Address ranges in `code1`:
 
 | Range | Contents |
