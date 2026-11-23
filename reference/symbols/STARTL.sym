@@ -99,12 +99,12 @@
 # ---------------------------------------------------------------------------
 # Watcom C runtime: stdio
 # ---------------------------------------------------------------------------
-00102fb4 d __iob                     ; FILE table (stdin, stdout, stderr, ...)
+00102fb4 d __iob                    type=WatcomFILE[20]                     ; FILE table (stdin, stdout, stderr, ...)
 00102fce d stdout_FILE
 001274c4 d __OpenStreams
 0002fe5b f printf                   cc=__cdecl sig=int printf(char *fmt, ...)
 0004d0e4 f sprintf                  cc=__cdecl sig=int sprintf(char *buf, char *fmt, ...)
-0004bd24 f fprintf                  cc=__cdecl sig=int fprintf(void *fp, char *fmt, ...) ; game-side wrapper around vfprintf
+0004bd24 f fprintf                  cc=__cdecl sig=int fprintf(WatcomFILE *fp, char *fmt, ...) ; game-side wrapper around vfprintf
 000d3fdf f vfprintf
 000d6600 f __prtf                    ; printf format engine
 000d6881 f __prtf_get_spec
@@ -118,7 +118,7 @@
 000e6778 f __prtf_trim_float
 000c1d74 f sscanf                   cc=__cdecl sig=int sscanf(char *s, char *fmt, ...)
 000c1d4d f vsscanf
-000c6368 f fscanf                   cc=__cdecl sig=int fscanf(void *fp, char *fmt, ...)
+000c6368 f fscanf                   cc=__cdecl sig=int fscanf(WatcomFILE *fp, char *fmt, ...)
 000c6341 f vfscanf
 000dc8f0 f __scnf                    ; scanf format engine
 000dcb11 f __scnf_get_spec
@@ -134,17 +134,17 @@
 000c5b9e f __open_flags              ; parses fopen mode string
 000c5c52 f __doopen
 000c5d1a f _fsopen
-000c5d35 f fopen                    sig=void * fopen(char *name, char *mode)
-000c5dcb f fread                    sig=unsigned int fread(void *buf, unsigned int size, unsigned int n, void *fp)
-000c60d7 f fwrite                   sig=unsigned int fwrite(void *buf, unsigned int size, unsigned int n, void *fp)
-000c5f95 f fclose                   sig=int fclose(void *fp)
+000c5d35 f fopen                    sig=WatcomFILE * fopen(char *name, char *mode)
+000c5dcb f fread                    sig=unsigned int fread(void *buf, unsigned int size, unsigned int n, WatcomFILE *fp)
+000c60d7 f fwrite                   sig=unsigned int fwrite(void *buf, unsigned int size, unsigned int n, WatcomFILE *fp)
+000c5f95 f fclose                   sig=int fclose(WatcomFILE *fp)
 000c5fc4 f __shutdown_stream
 000c604e f __doclose
 000c5fe5 f __MkTmpFile
 000c62be f puts                     sig=int puts(char *s)
 000d454d f __update_buffer
-000d458f f fseek                    sig=int fseek(void *fp, long offset, int whence)
-000d46a5 f fgets                    sig=char * fgets(char *buf, int n, void *fp)
+000d458f f fseek                    sig=int fseek(WatcomFILE *fp, long offset, int whence)
+000d46a5 f fgets                    sig=char * fgets(char *buf, int n, WatcomFILE *fp)
 000dd989 f __allocfp
 000dda31 f __freefp
 000dda88 f __chktty
@@ -204,7 +204,7 @@
 # Program
 # ---------------------------------------------------------------------------
 00010020 f main                      ; creates the memory manager, checks for 6.4 MB, runs the game loop
-001062a8 d g_mem                     ; MemoryManager* (0x4c bytes, 150 slots)
+001062a8 d g_mem                    type=MemMgr*                     ; the memory manager (150 slots)
 00107ed8 d g_game_dir                ; base directory used in all "%s\..." paths
 00107ed4 d g_quit_requested          ; main loop exits when == 1
 00010978 f engine_print_error       ; prints the 3D engine error for a code (stdout)
@@ -219,23 +219,23 @@
 0001075f f screen_flip_horizontal    ; mirrors the 320x200 video buffer left-right
 000107a1 f screen_flip_vertical      ; swaps the top and bottom halves row by row
 00010ba4 f obj_set_file_names
-00010810 f obj_system_init           ; 120 object slots, 3D_ memory pool (180 entries)
+00010810 f obj_system_init          sig=void obj_system_init(ObjSlot *objects, void **visual_list) ; 120 object slots, 3D_ memory pool (180 entries)
 000108c8 f obj_system_shutdown
 00010bfc f obj_load_3dx              ; loads <name>.3DX into 3D_HEADER/3D_BLKOBJ
 00010ed4 f obj_duplicate
-00011060 f obj_load                  ; find or load an object by name
-000110d0 f obj_find_by_name
+00011060 f obj_load                 sig=int obj_load(ObjSlot *objects, char *name, int *slot) ; find or load an object by name
+000110d0 f obj_find_by_name         sig=int obj_find_by_name(ObjSlot *objects, char *name, int *slot)
 00011148 f obj_free_duplicate
 000111b4 f obj_free
 00011230 f obj_release
-00011304 f obj_free_all
+00011304 f obj_free_all             sig=void obj_free_all(ObjSlot *objects)
 000113c8 f obj_find_part
 00011410 f obj_find_part_in
 000114b4 f obj_alloc_slot
-00011568 f obj_show_all
-000115f8 f obj_hide_all
-00011660 f obj_visual_add            ; puts an object in the visual list
-00011714 f obj_visual_remove
+00011568 f obj_show_all             sig=int obj_show_all(ObjSlot *objects, void **visual_list)
+000115f8 f obj_hide_all             sig=int obj_hide_all(ObjSlot *objects, void **visual_list)
+00011660 f obj_visual_add           sig=int obj_visual_add(ObjSlot *objects, void **visual_list, int *slot) ; puts an object in the visual list
+00011714 f obj_visual_remove        sig=int obj_visual_remove(ObjSlot *objects, void **visual_list, int *slot)
 000117a0 f obj_visual_toggle
 000117fc f obj_visual_update
 00011850 f obj_make_sprite
@@ -257,26 +257,26 @@
 000131a4 f race_load_track           ; per-track data: OSTACLES, TRACK_DATA, OPPONENTS, ANIMATIONS, CARS_DATA, .smg
 0001353c f race_load_extras?
 0001357c f race_reset_opponent_flags
-000136c8 f player_car_load           ; COCKPIT, car .3dx, shadow, wheels
-00012378 f car_find_nearby_opponents
-00012424 f car_find_nearby_net_players
-000124c0 f car_check_obstacle_hits?
-000126e4 f opponent_find_nearby
+000136c8 f player_car_load          sig=int player_car_load(PlayerCar *car, int load_objects) ; COCKPIT, car .3dx, shadow, wheels
+00012378 f car_find_nearby_opponents sig=void car_find_nearby_opponents(PlayerCar *car)
+00012424 f car_find_nearby_net_players sig=void car_find_nearby_net_players(PlayerCar *car)
+000124c0 f car_check_obstacle_hits? sig=void car_check_obstacle_hits(PlayerCar *car)
+000126e4 f opponent_find_nearby     sig=void opponent_find_nearby(CpuCar *car)
 
 # --- memory manager (C++ class, 0x4c bytes, slots of 0x1c) ---
-0002eab0 f MemMgr_ctor               ; (this, nslots)
-0002eb2f f MemMgr_dtor
-0002eb65 f MemMgr_fatal             sig=void MemMgr_fatal(void *mm) ; prints last error ("Cannot allocate memory for: %s ...")
-0002ec88 f MemMgr_alloc             sig=void * MemMgr_alloc(void *mm, char *name, int size) ; (this, name, size): DOS memory below 600 KB if possible, else DPMI
-0002ed7a f MemMgr_alloc_dpmi        sig=void * MemMgr_alloc_dpmi(void *mm, char *name, int size) ; (this, name, size): always DPMI 0501h
-0002ee1a f MemMgr_register
+0002eab0 f MemMgr_ctor              sig=MemMgr * MemMgr_ctor(MemMgr *mm, int nslots) ; (this, nslots)
+0002eb2f f MemMgr_dtor              sig=MemMgr * MemMgr_dtor(MemMgr *mm, int flags)
+0002eb65 f MemMgr_fatal             sig=void MemMgr_fatal(MemMgr *mm) ; prints last error ("Cannot allocate memory for: %s ...")
+0002ec88 f MemMgr_alloc             sig=void * MemMgr_alloc(MemMgr *mm, char *name, int size) ; (this, name, size): DOS memory below 600 KB if possible, else DPMI
+0002ed7a f MemMgr_alloc_dpmi        sig=void * MemMgr_alloc_dpmi(MemMgr *mm, char *name, int size) ; (this, name, size): always DPMI 0501h
+0002ee1a f MemMgr_register          sig=void * MemMgr_register(MemMgr *mm, MemSlot *slot, void *ptr, char *name, int size)
 0002eeb4 f dpmi_dos_alloc            ; DPMI 0100h
 0002ef2a f dpmi_alloc                ; DPMI 0501h
 0002efbd f dpmi_free                 ; DPMI 0502h
-0002f017 f MemMgr_free              sig=int MemMgr_free(void *mm, void *ptr) ; by pointer
-0002f0de f MemMgr_free_by_name      sig=int MemMgr_free_by_name(void *mm, char *name)
+0002f017 f MemMgr_free              sig=int MemMgr_free(MemMgr *mm, void *ptr) ; by pointer
+0002f0de f MemMgr_free_by_name      sig=int MemMgr_free_by_name(MemMgr *mm, char *name)
 0002f1c3 f dpmi_dos_free             ; DPMI 0101h
-0002f228 f MemMgr_release_slot
+0002f228 f MemMgr_release_slot      sig=int MemMgr_release_slot(MemMgr *mm, int index)
 0002f2ab f MemMgr_free_all
 0002f311 f MemMgr_total_allocated
 0002f366 f largest_malloc_block
@@ -284,7 +284,7 @@
 0002f4c1 f largest_free_block
 0002f510 f total_malloc_free
 0002f5e6 f total_dos_free
-0002f682 f MemMgr_get_free_memory
+0002f682 f MemMgr_get_free_memory   sig=int MemMgr_get_free_memory(MemMgr *mm)
 0002f6bc f MemMgr_query_dpmi_info    ; DPMI 0500h
 0002f742 f MemMgr_get_physical_free
 
@@ -327,16 +327,16 @@
 0002660c f cd_dos_free               ; DPMI 0101h
 
 # --- data archive files (*.DAT, "ALFILE"), optional LZW compression ---
-0004bd48 f archive_fatal_error      sig=void archive_fatal_error(void *af) ; prints the archive error and exits
-0004be4d f archive_open             sig=int archive_open(void *af, char *dat_path, char *entry, char *mode) ; (af, dat_path, entry_name, mode)
-0004bee8 f archive_find_entry        ; directory at end of file, names XOR 0x3A
-0004c14d f archive_close            sig=void archive_close(void *af)
-0004c1a6 f archive_load_alloc        ; (af, dat, name, &ptr, memmgr): allocates ALFILE and reads entry
-0004c245 f archive_load_to           ; reads entry into a caller buffer
-0004c2a5 f archive_read             sig=int archive_read(void *af, void *buf, int size)
-0004c387 f archive_seek
-0004c455 f archive_read_line
-0004c5a0 f archive_entry_size       sig=int archive_entry_size(void *af)
+0004bd48 f archive_fatal_error      sig=void archive_fatal_error(ArchiveFile *af) ; prints the archive error and exits
+0004be4d f archive_open             sig=int archive_open(ArchiveFile *af, char *dat_path, char *entry, char *mode) ; (af, dat_path, entry_name, mode)
+0004bee8 f archive_find_entry       sig=int archive_find_entry(ArchiveFile *af, char *entry) ; directory at end of file, names XOR 0x3A
+0004c14d f archive_close            sig=void archive_close(ArchiveFile *af)
+0004c1a6 f archive_load_alloc       sig=int archive_load_alloc(ArchiveFile *af, char *dat_path, char *entry, void **out, MemMgr *mm) ; (af, dat, name, &ptr, memmgr): allocates ALFILE and reads entry
+0004c245 f archive_load_to          sig=int archive_load_to(ArchiveFile *af, char *dat_path, char *entry, void *dest) ; reads entry into a caller buffer
+0004c2a5 f archive_read             sig=int archive_read(ArchiveFile *af, void *buf, int size)
+0004c387 f archive_seek             sig=int archive_seek(ArchiveFile *af, int offset, int whence)
+0004c455 f archive_read_line        sig=int archive_read_line(ArchiveFile *af, char *buf, int stop_at_space)
+0004c5a0 f archive_entry_size       sig=int archive_entry_size(ArchiveFile *af)
 0004d120 f lzw_init                  ; 9..12-bit LZW
 0004d1bc f lzw_read
 0004d284 f lzw_decode?
@@ -368,7 +368,7 @@
 000d4724 f engine_init_selectors      ; DPMI: GDT, selector for video memory
 00102fa0 d g_map_grid
 0012153c d g_obj_list
-00121570 d g_engine_mem
+00121570 d g_engine_mem             type=MemMgr*
 00121500 d g_video_buffer
 00121524 d g_back_buffer
 
@@ -514,7 +514,7 @@
 0001b170 f spline_free
 0001b188 f markers_load              ; <track>.mrk
 0001b22c f cockpit_load              ; <car><res>.pkc
-0001545c f data_load_section        sig=int data_load_section(char *dir, char *file, char *section, void *dest, int stride, int max) ; (dir, file, section, dest, stride, max) from data\<file>.dat/.dtr; returns count
+0001545c f data_load_section        sig=int data_load_section(char *dat, char *dtr, char *section, void *dest, int stride, int record_bytes) ; parses a typed text section (s/d/x/f fields) of data\<dat>.dat <dtr>.dtr; returns the record count
 00015178 f track_load_obstacles?
 00015374 f track_load_animations?
 00014fb4 f track_load_spline_and_markers
@@ -605,40 +605,54 @@
 00022dd8 f replay_playback_update?
 00023400 f hud_draw                  ; lap/race time "%02d:%02d:%02d"
 00024820 f sfx_queue_update?         ; plays queued samples (speech) one after another
-00016f24 f car_update_controls?
-00015a70 f car_physics_step_a?
-00015b9c f car_physics_step_b?
-00015aa8 f car_physics_step_c?
-00015af8 f car_collide_vs_cpu
-00015b34 f car_collide_vs_network
-00015b70 f car_collide_obstacles
-00015c0c f car_sync_render_object    ; copies position/angles to the car's 3D objects
+00016f24 f car_update_controls?     sig=void car_update_controls(PlayerCar *car)
+00015a70 f car_physics_step_a?      sig=void car_physics_step_a(PlayerCar *car)
+00015b9c f car_physics_step_b?      sig=void car_physics_step_b(PlayerCar *car)
+00015aa8 f car_physics_step_c?      sig=void car_physics_step_c(PlayerCar *car)
+00015af8 f car_collide_vs_cpu       sig=void car_collide_vs_cpu(PlayerCar *car)
+00015b34 f car_collide_vs_network   sig=void car_collide_vs_network(PlayerCar *car)
+00015b70 f car_collide_obstacles    sig=void car_collide_obstacles(PlayerCar *car)
+00015c0c f car_sync_render_object   sig=void car_sync_render_object(PlayerCar *car) ; copies position/angles to the car's 3D objects
 00019aa0 f camera_update
-0001c750 f opponent_ai_step_a?
-0001c78c f opponent_ai_step_b?
-0001c7c0 f opponent_ai_avoid?        ; uses opponent_find_nearby
-0001c800 f opponent_ai_step_c?
-0001c83c f opponent_sync_render_object
-0001cd34 f opponent_update_position?
+0001c750 f opponent_ai_step_a?      sig=void opponent_ai_step_a(CpuCar *car)
+0001c78c f opponent_ai_step_b?      sig=void opponent_ai_step_b(CpuCar *car)
+0001c7c0 f opponent_ai_avoid?       sig=void opponent_ai_avoid(CpuCar *car) ; uses opponent_find_nearby
+0001c800 f opponent_ai_step_c?      sig=void opponent_ai_step_c(CpuCar *car)
+0001c83c f opponent_sync_render_object sig=void opponent_sync_render_object(CpuCar *car)
+0001cd34 f opponent_update_position? sig=void opponent_update_position(CpuCar *car)
 0001ead0 f net_players_init?
 0001f0f8 f net_player_update_wheels?
 
-0010f918 d g_player_car              ; car state, 0x590 bytes
-00110ab4 d g_opponents               ; CPU cars, 0x590 bytes each
+0010f918 d g_player_car             type=PlayerCar              ; the human player's car (0x1084 bytes)
+00110ab4 d g_opponents              type=CpuCar[9]               ; CPU cars, 0x590 bytes each
 0010f8e8 d g_num_opponents
-00113cd4 d g_net_players             ; network cars, 0x2a8 bytes each
+00113cd4 d g_net_players            type=NetCar[8]             ; network cars, 0x2a8 bytes each
 0011d250 d g_num_net_players
 00115214 d g_num_net_cars
 0011d25c d g_game_mode
 00118e18 d g_race_flags
 00118e14 d g_race_exit               ; 1 = finished, -1 = aborted
 0011d290 d g_track_name
-0010d258 d g_cars_data               ; CARS_DATA, 0x40 bytes per car
+0010d258 d g_cars_data              type=CarData[18]               ; CARS_DATA, 0x40 bytes per car
 0011099c d g_camera
 00110a1c d g_camera_state
 0010634c d g_visual_list
-0010652c d g_objects                 ; 120 object slots of 0x1c bytes
+0010652c d g_objects                type=ObjSlot[120]                 ; 120 object slots of 0x1c bytes
 00106348 d g_car_index               ; loop counter shared by many functions
-0011d270 d g_display_flags           ; 0x10 mirror horizontally, 0x20 mirror vertically
+0011d270 d g_race_options            ; bits 0-1 obstacle detail level, 0x08 ?, 0x10 mirror cheat (MIRRO), 0x20 upside-down cheat (UPDOW)
 0011facc d g_menu_background         ; OPT_PCX buffer
 00102de8 d g_options                 ; pointer to the options block
+
+# ---------------------------------------------------------------------------
+# Tables loaded from .DTR sections (types in STARTL.types.h)
+# ---------------------------------------------------------------------------
+0010cf40 d g_track_data              type=TrackData ; TRACK_DATA
+0010effc d g_obstacle_defs           type=ObstacleDef[10] ; OSTACLES
+0010f178 d g_num_animations
+0010f17c d g_animations              type=AnimationDef[10] ; ANIMATIONS
+0010d6d8 d g_num_cars                ; CARS_DATA count
+00115220 d g_sound_fx_defs           type=SoundFxDef[100] ; SFXSBASE + track SOUND_FX
+00118d84 d g_num_base_sound_fx
+00118d80 d g_num_sound_fx
+0010d6f4 d g_num_obstacles
+0010d6fc d g_obstacles               type=ObstacleInstance[100]

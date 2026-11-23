@@ -31,3 +31,6 @@ __pycache__/
 *.pyc
 .DS_Store
 Thumbs.db
+
+# --- Local Claude Code settings ---
+.claude/settings.local.json

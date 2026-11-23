@@ -46,8 +46,8 @@ is written next to it as `<exe>.fixups.json`.
   registers is preserved) as a compiler-spec extension, and
 * marks each 32-bit fixup that is not inside an instruction as a pointer.
 
-Every run then applies `reference/symbols/<Exe>.sym` with `ApplySymbols.java` (names,
-calling conventions, prototypes, comments, data types) and, with `-Dump`, writes these to
+Every run then applies `reference/symbols/<Exe>.types.h` and `reference/symbols/<Exe>.sym`
+with `ApplySymbols.java` (types, names, calling conventions, prototypes, comments) and, with `-Dump`, writes these to
 `artifacts/ghidra/<Exe>/dump/`:
 
 | File | Contents |
@@ -60,6 +60,32 @@ calling conventions, prototypes, comments, data types) and, with `-Dump`, writes
 
 The Ghidra project itself (`artifacts/ghidra/<Exe>/proj`) can be opened in the Ghidra GUI.
 Names given in the GUI are not kept: add them to the `.sym` file, which is the source of truth.
+
+## Data types
+
+`reference/symbols/STARTL.types.h` holds the recovered records as C structs. `ApplySymbols.java`
+parses it with Ghidra's C parser before applying the symbol map, so `type=` and `sig=` can use
+the types (for example `g_player_car` is a `PlayerCar` and the car functions take a `PlayerCar *`).
+
+* Fields named after their meaning are confirmed (from the code, the data files or the running game).
+* `f_<offset>` fields have a known type, from how the code accesses them, but no known meaning yet.
+  `pad_<offset>` are bytes that no analysed function touches.
+* `tools/ghidra/field_usage.py` lists every access through a function's first parameter in the
+  decompiler dump, or drafts a struct (`--struct Name --size N`) to start a new record from.
+
+Much of the game's configuration comes from text `.DTR` files inside the `.DAT` archives, read by
+`data_load_section`. Each section starts with a header comment that names the fields, and each
+value is prefixed with its type (`s` = `char[12]`, `d` = int, `x` = hex int, `f` = float), so
+the record structs (`CarData`, `OpponentDef`, `TrackData`, `ObstacleDef`, `AnimationDef`,
+`SoundFxDef`) use the developers' own field names. `tools/data/datfile.py` lists and extracts
+archive entries, including the LZW-compressed ones:
+
+```powershell
+py -3.14 tools\data\datfile.py list SCREAMER\DATA\GEN.DAT
+py -3.14 tools\data\datfile.py cat SCREAMER\DATA\GEN.DAT CARS.DTR
+```
+
+(Extracted data stays out of git, like the game itself.)
 
 ## Symbol map format
 
@@ -136,4 +162,4 @@ Key facts for the port:
   MIDI music (`.HMP` songs with `melodic.bnk`/`drum.bnk` OPL banks); CD audio tracks via
   MSCDEX device requests.
 * **Graphics**: mode 13h, 320x200, back buffer in conventional memory, palette fades via
-  `palette_fade`; optional horizontal/vertical mirroring (`g_display_flags`).
+  `palette_fade`; optional horizontal/vertical mirroring (the MIRRO/UPDOW cheats, bits of `g_race_options`).

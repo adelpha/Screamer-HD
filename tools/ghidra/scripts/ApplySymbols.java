@@ -10,7 +10,9 @@
 // type is any Ghidra data type name such as int, char[64], dword, pointer.
 // A name ending in '?' is a guess: the '?' is dropped and the comment says "(unconfirmed)".
 //
-// Args: <symbol file> [more symbol files...]
+// Args: [types.h ...] <symbol file> [more symbol files...]
+// .h arguments are parsed with Ghidra's C parser first; their structs, typedefs and enums can then
+// be used in type= and sig=.
 //@category Screamer
 
 import java.io.File;
@@ -42,7 +44,12 @@ public class ApplySymbols extends GhidraScript {
             printerr("usage: ApplySymbols.java <file.sym> ...");
             return;
         }
+        // C headers first, so symbols and signatures can use their types.
         for (String a : args) {
+            if (a.endsWith(".h")) applyHeader(new File(a));
+        }
+        for (String a : args) {
+            if (a.endsWith(".h")) continue;
             File f = new File(a);
             List<String> lines = Files.readAllLines(f.toPath());
             int n = 0;
@@ -114,6 +121,17 @@ public class ApplySymbols extends GhidraScript {
             }
             default -> throw new IllegalArgumentException("unknown kind " + kind);
         }
+    }
+
+    /** Parses a C header into the program's data type manager (types replace older versions). */
+    void applyHeader(File h) throws Exception {
+        DataTypeManager dtm = currentProgram.getDataTypeManager();
+        ghidra.app.util.cparser.C.CParser p = new ghidra.app.util.cparser.C.CParser(dtm, true, null);
+        try (java.io.InputStream in = new java.io.FileInputStream(h)) {
+            p.parse(in);
+        }
+        int n = p.getComposites().size() + p.getTypes().size() + p.getEnums().size();
+        println("ApplySymbols: parsed " + h.getName() + " (" + n + " types)");
     }
 
     void applySignature(Function fn, String sig, String cc) throws Exception {
