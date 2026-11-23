@@ -17,6 +17,10 @@ disassembly dumps, or Ghidra projects to git. Hashes, notes and our own code are
   then Read `artifacts\dosbox\x\shot_*.png`. Add `-Webserver` and use `tools\dosbox\read-memory.ps1`
   for memory/CPU state.
 - Ghidra headless: `.\tools\ghidra-headless.ps1 <projdir> <name> ...` (keep projects under artifacts\). Python: `py -3.14`.
+- Reverse engineering: `.\tools\ghidra\apply-symbols.ps1 [-Fresh] -Dump` imports STARTL.EXE (via tools/le/le2elf.py),
+  applies `reference/symbols/STARTL.sym` (the source of truth for names) and dumps decomp/disasm to
+  artifacts\ghidra\STARTL\dump. `.\tools\ghidra\runtime-probe.ps1` reads globals from the running original.
+  Details: docs/REVERSING.md.
 - Compare images: `build\debug\bin\imgcmp.exe expected.png actual.png --diff d.png`.
 
 Full details: docs/HARNESS.md.

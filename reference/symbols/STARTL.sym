@@ -1,0 +1,644 @@
+# Symbol map for STARTL.EXE (Screamer, low-res build), sha256 in reference/manifest.
+# Addresses are flat addresses after tools/le/le2elf.py maps the LE objects at their
+# preferred bases: code1 0x10000, data2 0xF0000, data3 0x100000.
+#
+# Format: see tools/ghidra/scripts/ApplySymbols.java.
+#   <addr> f <name> [cc=<conv>] [sig=<prototype>] [; comment]
+#   <addr> d|l <name> [type=<datatype>] [; comment]
+# Default calling convention is __watcall (Watcom register: EAX, EDX, EBX, ECX, stack).
+# Varargs functions use __cdecl (all arguments on the stack, caller pops).
+#
+# Naming: libc/runtime functions use their Watcom C library names; HMI SOS library
+# functions use an hmi_ prefix (official API names where the use is certain); game code
+# uses descriptive snake_case. A trailing "?" in a comment marks a guess.
+
+# ---------------------------------------------------------------------------
+# Watcom C runtime: startup / exit
+# ---------------------------------------------------------------------------
+0002feb8 f _cstart_                  ; DOS/4GW entry point (cstrt386): sets up PSP/env, zeroes BSS, runs __InitRtns, __CMain
+0002ff30 f _cstart_body              ; part of _cstart_ split off by analysis
+00030149 f __fatal_runtime_error     ; prints message to stdout via int 21h and exits
+000d4064 f __CMain                   ; sets stack limits, calls main(argc, argv), then exit()
+000d40b4 f __InitRtns                ; runs the XI initialiser table (priority ordered)
+000d40ff f __FiniRtns                ; runs the YI finaliser table
+0002fe7e f exit                     sig=void exit(int status)
+0002fe96 f _exit
+000e6468 f stackavail
+000e6471 f __init_387_emulator?      ; sets 0x8000 flag
+000ea061 f __STKOVERFLOW             ; "Stack Overflow!"
+000e65f2 f __fp_not_loaded           ; "Floating-point support not loaded"
+000e06cf f __fatal_error             ; debugger hook (int 3) else __fatal_runtime_error
+0004d7b4 f __CHP                     ; truncate ST0 toward zero (float -> int)
+0004d7e6 f __cos87
+0004d7f0 f __sin87
+0004d7fa f __fprem_reduce            ; FPREM argument reduction for fsin/fcos
+0004d826 f cos
+0004d832 f sin
+0004d83e f __tan87
+0004d843 f tan
+000c1f9a f __atan87
+000c1f9f f __atan2_87
+000c1fa4 f atan
+000c1df6 f __pow87
+000c1f32 f pow
+000c5b6e f __acos87?
+000c5b92 f acos?
+000c6a0e f sqrt
+000c6a40 f __check_negative_domain   ; raises domain error for ST0 < 0
+000de194 f __math_error              ; matherr dispatch
+000dd67a f __exp87
+000dd684 f exp?
+000e6bdc f __emu387                  ; x87 emulator dispatcher (switch on opcode)
+
+# ---------------------------------------------------------------------------
+# Watcom C runtime: memory
+# ---------------------------------------------------------------------------
+000d1c65 f malloc                   sig=void * malloc(unsigned int size)
+000d1d48 f free                     sig=void free(void *p)
+0002feac f operator_delete          sig=void operator_delete(void *p) ; free() inlined
+0002fe10 f operator_new             sig=void * operator_new(unsigned int size) ; malloc with _new_handler retry
+000e06ec f __MemAllocator
+000e0794 f __MemFree
+000e089f f __unlink_heap_block
+000e08de f __shrink_heap
+000e0a3f f __link_heap_block
+000e0ab3 f __last_free_size
+000e0b01 f __expand_dpmi_heap
+000e0bd4 f __adjust_amount
+000e0c83 f __expand_heap
+000e0dc7 f __heap_grow_size
+000d1da6 f memcpy                   sig=void * memcpy(void *dst, void *src, unsigned int n)
+000e033c f memcpy_ebx                ; memcpy with source in EBX (inline variant)
+000d1c00 f memset                   sig=void * memset(void *dst, int c, unsigned int n)
+000e0570 f __memset_bytes
+000e05a7 f __memset_dwords
+
+# ---------------------------------------------------------------------------
+# Watcom C runtime: strings / ctype / conversion
+# ---------------------------------------------------------------------------
+000d452e f strcpy                   sig=char * strcpy(char *dst, char *src)
+000e0309 f strcpy_ebx                ; strcpy with source in EBX
+000d468b f strchr                   sig=char * strchr(char *s, int c)
+000d4708 f strlen                   sig=unsigned int strlen(char *s)
+000e04c0 f strcmp                   sig=int strcmp(char *a, char *b)
+000e0364 f strpbrk
+000c1f42 f strnicmp                 sig=int strnicmp(char *a, char *b, unsigned int n)
+000dd6f2 f tolower                  sig=int tolower(int c)
+000e668d f toupper                  sig=int toupper(int c)
+000d6fe2 f strupr
+000c1d95 f atoi                     sig=int atoi(char *s)
+000c1dec f strtod?                   ; __strtod(s, 0)
+000dd43a f __strtod
+000dd3f0 f __hexdigit_value
+000e658d f utoa
+000e65d7 f itoa
+000e6629 f ultoa
+000e6672 f ltoa
+000c5fd9 f __hex_char
+
+# ---------------------------------------------------------------------------
+# Watcom C runtime: stdio
+# ---------------------------------------------------------------------------
+00102fb4 d __iob                     ; FILE table (stdin, stdout, stderr, ...)
+00102fce d stdout_FILE
+001274c4 d __OpenStreams
+0002fe5b f printf                   cc=__cdecl sig=int printf(char *fmt, ...)
+0004d0e4 f sprintf                  cc=__cdecl sig=int sprintf(char *buf, char *fmt, ...)
+0004bd24 f fprintf                  cc=__cdecl sig=int fprintf(void *fp, char *fmt, ...) ; game-side wrapper around vfprintf
+000d3fdf f vfprintf
+000d6600 f __prtf                    ; printf format engine
+000d6881 f __prtf_get_spec
+000d69b4 f __prtf_flags
+000d6a0f f __prtf_strnlen
+000d6a33 f __prtf_wcsnlen
+000d6a56 f __prtf_hex_ptr
+000d6ab7 f __prtf_fmt_int
+000d6b99 f __cvt_float
+000e669b f __prtf_fmt_float
+000e6778 f __prtf_trim_float
+000c1d74 f sscanf                   cc=__cdecl sig=int sscanf(char *s, char *fmt, ...)
+000c1d4d f vsscanf
+000c6368 f fscanf                   cc=__cdecl sig=int fscanf(void *fp, char *fmt, ...)
+000c6341 f vfscanf
+000dc8f0 f __scnf                    ; scanf format engine
+000dcb11 f __scnf_get_spec
+000dcbea f __scnf_skip_ws
+000dcc1f f __scnf_store_count
+000dcca5 f __scnf_char
+000dcd93 f __scnf_store_ptr
+000dcdf1 f __scnf_build_set
+000dce34 f __scnf_scanset
+000dcf1a f __scnf_float
+000dd1f8 f __scnf_int
+000dd417 f __scnf_getc
+000c5b9e f __open_flags              ; parses fopen mode string
+000c5c52 f __doopen
+000c5d1a f _fsopen
+000c5d35 f fopen                    sig=void * fopen(char *name, char *mode)
+000c5dcb f fread                    sig=unsigned int fread(void *buf, unsigned int size, unsigned int n, void *fp)
+000c60d7 f fwrite                   sig=unsigned int fwrite(void *buf, unsigned int size, unsigned int n, void *fp)
+000c5f95 f fclose                   sig=int fclose(void *fp)
+000c5fc4 f __shutdown_stream
+000c604e f __doclose
+000c5fe5 f __MkTmpFile
+000c62be f puts                     sig=int puts(char *s)
+000d454d f __update_buffer
+000d458f f fseek                    sig=int fseek(void *fp, long offset, int whence)
+000d46a5 f fgets                    sig=char * fgets(char *buf, int n, void *fp)
+000dd989 f __allocfp
+000dda31 f __freefp
+000dda88 f __chktty
+000ddab9 f __ioalloc
+000ddb4f f fgetc
+000ddbd8 f __filbuf
+000ddc07 f __fill_buffer
+000ddcb8 f __flush
+000ddd77 f ftell
+000ddfeb f fputc
+000de08f f fputs
+
+# ---------------------------------------------------------------------------
+# Watcom C runtime: DOS / low-level I/O
+# ---------------------------------------------------------------------------
+000dd75f f open                      cc=__cdecl
+000dd73b f sopen?
+000dd924 f __set_binary?
+000ddb30 f read
+000dde1a f write
+000ddda7 f lseek
+000e6557 f tell
+000ddde8 f close
+000e0613 f unlink
+000d1c18 f remove
+000d1c1d f __dos_call_check
+000e063e f __set_errno_dos
+000dd705 f __set_errno
+000dd711 f __set_EINVAL?
+000dd728 f __set_doserrno
+000e9ec7 f __get_errno_ptr
+000e9ecd f __get_doserrno_ptr
+000d1a84 f stat
+000d1b93 f __stat_mode
+000e03ab f _dos_findfirst
+000e0435 f _dos_findclose?
+000e0454 f __dos_time_to_time_t
+000ddcb2 f __get_psp?                ; returns saved selector
+000de215 f __get_ds                  ; returns DS (used to build DPMI real-mode call structs)
+0004bce3 f segread                  sig=void segread(void *sregs)
+0004bd0b f int386x                  sig=int int386x(int intno, void *in_regs, void *out_regs, void *sregs) ; returns out->eax
+000d4150 f __int386x_core
+000d48b0 f int386                   sig=int int386(int intno, void *in_regs, void *out_regs)
+000d41bc f __save_regs?
+
+# ---------------------------------------------------------------------------
+# Watcom C runtime: time
+# ---------------------------------------------------------------------------
+000de21a f time?
+000de247 f __brktime
+000de35c f localtime?
+000ea070 f __getdostime?
+000ea133 f mktime?
+000eaa80 f abs
+
+# ---------------------------------------------------------------------------
+# Program
+# ---------------------------------------------------------------------------
+00010020 f main                      ; creates the memory manager, checks for 6.4 MB, runs the game loop
+001062a8 d g_mem                     ; MemoryManager* (0x4c bytes, 150 slots)
+00107ed8 d g_game_dir                ; base directory used in all "%s\..." paths
+00107ed4 d g_quit_requested          ; main loop exits when == 1
+00010978 f engine_print_error       ; prints the 3D engine error for a code (stdout)
+000108e4 f set_video_mode           sig=void set_video_mode(int mode) ; int 10h AH=0
+000101f6 f pit_set_rate              ; programs PIT channel 0
+00010257 f joy_read_buttons          ; game port 0x201 buttons
+00010263 f joy_read_axis?
+0001028c f joy_wait_port?
+000102b0 f rle_copy                  ; skip/copy run-length sprite blit
+000102e4 f draw_clipped_line?
+0001057c f draw_map_objects?
+0001075f f screen_flip_horizontal    ; mirrors the 320x200 video buffer left-right
+000107a1 f screen_flip_vertical      ; swaps the top and bottom halves row by row
+00010ba4 f obj_set_file_names
+00010810 f obj_system_init           ; 120 object slots, 3D_ memory pool (180 entries)
+000108c8 f obj_system_shutdown
+00010bfc f obj_load_3dx              ; loads <name>.3DX into 3D_HEADER/3D_BLKOBJ
+00010ed4 f obj_duplicate
+00011060 f obj_load                  ; find or load an object by name
+000110d0 f obj_find_by_name
+00011148 f obj_free_duplicate
+000111b4 f obj_free
+00011230 f obj_release
+00011304 f obj_free_all
+000113c8 f obj_find_part
+00011410 f obj_find_part_in
+000114b4 f obj_alloc_slot
+00011568 f obj_show_all
+000115f8 f obj_hide_all
+00011660 f obj_visual_add            ; puts an object in the visual list
+00011714 f obj_visual_remove
+000117a0 f obj_visual_toggle
+000117fc f obj_visual_update
+00011850 f obj_make_sprite
+000118a4 f obj_set_animated
+000118e8 f obj_animate_step
+00011974 f obj_set_frame
+000119cc f obj_list_alloc            ; GOBJ_LIST
+00011a08 f obj_list_free
+
+000127a0 f game_init                 ; config, data files, sound, CD, video, 3D engine
+000128a8 f game_shutdown
+000128dc f race_load                 ; loads a race according to the game mode
+00012c08 f race_load_normal?
+00012d08 f race_load_replay?
+00012e14 f race_load_time_attack     ; ATTACK_RES
+00012f4c f race_load_attract?        ; "attr" text
+0001309c f race_reset_a?
+0001311c f race_reset_b?
+000131a4 f race_load_track           ; per-track data: OSTACLES, TRACK_DATA, OPPONENTS, ANIMATIONS, CARS_DATA, .smg
+0001353c f race_load_extras?
+0001357c f race_reset_opponent_flags
+000136c8 f player_car_load           ; COCKPIT, car .3dx, shadow, wheels
+00012378 f car_find_nearby_opponents
+00012424 f car_find_nearby_net_players
+000124c0 f car_check_obstacle_hits?
+000126e4 f opponent_find_nearby
+
+# --- memory manager (C++ class, 0x4c bytes, slots of 0x1c) ---
+0002eab0 f MemMgr_ctor               ; (this, nslots)
+0002eb2f f MemMgr_dtor
+0002eb65 f MemMgr_fatal             sig=void MemMgr_fatal(void *mm) ; prints last error ("Cannot allocate memory for: %s ...")
+0002ec88 f MemMgr_alloc             sig=void * MemMgr_alloc(void *mm, char *name, int size) ; (this, name, size): DOS memory below 600 KB if possible, else DPMI
+0002ed7a f MemMgr_alloc_dpmi        sig=void * MemMgr_alloc_dpmi(void *mm, char *name, int size) ; (this, name, size): always DPMI 0501h
+0002ee1a f MemMgr_register
+0002eeb4 f dpmi_dos_alloc            ; DPMI 0100h
+0002ef2a f dpmi_alloc                ; DPMI 0501h
+0002efbd f dpmi_free                 ; DPMI 0502h
+0002f017 f MemMgr_free              sig=int MemMgr_free(void *mm, void *ptr) ; by pointer
+0002f0de f MemMgr_free_by_name      sig=int MemMgr_free_by_name(void *mm, char *name)
+0002f1c3 f dpmi_dos_free             ; DPMI 0101h
+0002f228 f MemMgr_release_slot
+0002f2ab f MemMgr_free_all
+0002f311 f MemMgr_total_allocated
+0002f366 f largest_malloc_block
+0002f424 f largest_dos_block
+0002f4c1 f largest_free_block
+0002f510 f total_malloc_free
+0002f5e6 f total_dos_free
+0002f682 f MemMgr_get_free_memory
+0002f6bc f MemMgr_query_dpmi_info    ; DPMI 0500h
+0002f742 f MemMgr_get_physical_free
+
+# --- MIDI music (C++ class at 0x1062ac) ---
+00010010 f midi_music_static_init    ; constructs g_midi_music
+0002f770 f MidiMusic_ctor
+0002f7a0 f MidiMusic_init            ; (this, driver_id, port, dir, memmgr): sosMIDIInitSystem/InitDriver, loads melodic.bnk + drum.bnk
+0002fa50 f MidiMusic_shutdown
+0002faac f MidiMusic_load_song       ; <name>.HMP from MUSIC.DAT
+0002fc28 f MidiMusic_unload_song
+0002fc7c f MidiMusic_play
+0002fcb4 f MidiMusic_stop
+0002fcd4 f MidiMusic_update          ; restarts a looping song when it ends
+0002fd44 f MidiMusic_set_volume
+0002fd84 f MidiMusic_print_error
+001062ac d g_midi_music
+
+# --- CD audio via MSCDEX (int 2Fh 1510h device requests) ---
+00025d50 f cd_init                   ; MSCDEX present check, returns drive count
+00025eb4 f cd_shutdown
+00025ec4 f cd_request
+00025ee4 f cd_send_device_request    ; DPMI 0300h simulate int 2Fh AX=1510h
+00025f30 f cd_poll_media
+00025fb4 f cd_reset_request?
+00026040 f cd_media_changed          ; IOCTL input 09h
+00026080 f cd_audio_status           ; IOCTL input 0Fh
+000260c0 f cd_audio_disk_info        ; IOCTL input 0Ah (first/last track)
+00026148 f cd_audio_track_info       ; IOCTL input 0Bh
+00026184 f cd_q_channel_info         ; IOCTL input 0Ch
+0002620c f cd_msf_to_frames
+00026248 f cd_lock_door              ; IOCTL output 01h
+0002629c f cd_read_toc
+0002636c f cd_play_track             ; (track, loop)
+000263e8 f cd_update                 ; restarts a looping track
+00026458 f cd_stop                   ; STOP AUDIO (85h)
+0002648c f cd_stop_all
+00026498 f cd_resume                 ; RESUME AUDIO (88h)
+00026554 f cd_set_volume             ; IOCTL output 03h audio channel control
+000265e0 f cd_dos_alloc              ; DPMI 0100h
+0002660c f cd_dos_free               ; DPMI 0101h
+
+# --- data archive files (*.DAT, "ALFILE"), optional LZW compression ---
+0004bd48 f archive_fatal_error      sig=void archive_fatal_error(void *af) ; prints the archive error and exits
+0004be4d f archive_open             sig=int archive_open(void *af, char *dat_path, char *entry, char *mode) ; (af, dat_path, entry_name, mode)
+0004bee8 f archive_find_entry        ; directory at end of file, names XOR 0x3A
+0004c14d f archive_close            sig=void archive_close(void *af)
+0004c1a6 f archive_load_alloc        ; (af, dat, name, &ptr, memmgr): allocates ALFILE and reads entry
+0004c245 f archive_load_to           ; reads entry into a caller buffer
+0004c2a5 f archive_read             sig=int archive_read(void *af, void *buf, int size)
+0004c387 f archive_seek
+0004c455 f archive_read_line
+0004c5a0 f archive_entry_size       sig=int archive_entry_size(void *af)
+0004d120 f lzw_init                  ; 9..12-bit LZW
+0004d1bc f lzw_read
+0004d284 f lzw_decode?
+0004d604 f lzw_next_code?
+0004d77a f stricmp?
+
+# --- 3D engine setup ---
+0004bca0 f engine_angles_from_camera?
+0004c5d0 f engine_init               ; tables, persp01.tab, VIS.TAB, DPMI selectors
+0004c610 f engine_set_viewport       ; (width, height, ...) 
+0004c6a8 f engine_alloc_video_buffer ; VIDEO_BUF 0xFC80 bytes
+0004c6e0 f set_text_mode             ; int 10h mode 3
+0004c704 f engine_load_track_geometry
+0004c744 f engine_load_unr           ; <track>.UNR -> OBJ_LST/UNR_FILE
+0004c89c f engine_load_mmp           ; <track>.MMP map grid
+0004c904 f engine_relocate_map
+0004c9c8 f engine_object_instance_init
+0004cb54 f engine_load_materials     ; <track>.MLB + .BCK
+0004cc84 f engine_free_materials
+0004ccac f engine_free_track_objects
+0004cce4 f engine_free_track
+0004ccf4 f engine_load_col           ; <track>.COL palette
+0004cd4c f engine_load_persp_table   ; TABS\persp01.tab
+0004cde8 f engine_load_vis_table     ; TABS\VIS.TAB
+0004ce50 f pcx_load                  ; (dat, name, &buf, palette, mode)
+0004cfcc f engine_build_trig_table?
+0004d018 f engine_build_acos_table?
+0004d094 f engine_build_row_table    ; y*320 for 481 rows
+000d4724 f engine_init_selectors      ; DPMI: GDT, selector for video memory
+00102fa0 d g_map_grid
+0012153c d g_obj_list
+00121570 d g_engine_mem
+00121500 d g_video_buffer
+00121524 d g_back_buffer
+
+# --- HMI SOS MIDI ---
+000d2317 f sosMIDIInitSystem
+000d2483 f sosMIDIUnInitSystem
+000d24c3 f sosMIDIInitDriver
+000d29eb f sosMIDIUnInitDriver
+000d2c19 f sosMIDISetInsData
+000d2d75 f sosMIDIInitSong
+000d354d f sosMIDIUnInitSong
+000d3597 f sosMIDIStartSong
+000d3626 f sosMIDIStopSong
+000d3a54 f sosMIDISetMasterVolume
+000d3f79 f sosMIDISongDone
+000de656 f sosGetErrorString
+
+# ---------------------------------------------------------------------------
+# Keyboard / input
+# ---------------------------------------------------------------------------
+000f0002 d g_key_state               type=byte[128] ; snapshot of the key table, indexed by scancode
+00010113 d g_key_state_live          ; written by the INT 9 handler
+000100e4 l keyboard_isr              ; INT 9 handler (code label; no prologue)
+00010193 f keyboard_snapshot         ; copies the live key table to g_key_state
+000101b4 f key_clear                 ; (scancode)
+00014e1c f keyboard_install         sig=void keyboard_install(int enable) ; (enable): hooks/unhooks INT 9 via int 21h 25h/35h, resets LEDs
+00024d40 f controls_update           ; maps the configured controls (keys, joystick) to driving inputs
+000211d0 f handle_global_keys        ; Esc, P (pause), M, ...
+001197d4 d g_control_bindings        ; 6 x 0x1c, read from config\controls.cfg
+
+# ---------------------------------------------------------------------------
+# Frame loop / timing
+# ---------------------------------------------------------------------------
+000276a0 f attract_mode_run          ; demo race behind the title (runs until state 4)
+00027710 f attract_mode_setup        ; loads choice.dat, sets mode 0x100, loads a MAP%d race
+0002780c f attract_mode_update_cars
+00027944 f attract_mode_cleanup
+000279d4 f attract_mode_overlay
+000279fc f attract_mode_draw_logo?
+00027b64 f attract_mode_scroll_text
+00027d28 f attract_mode_fade_out
+00027de8 f palette_fade              ; scales g_palette by a level and uploads it
+00027e64 f idle_timer_check?
+00027eb4 f frontend_run              ; the menu loop (until a race is chosen)
+00027f9c f frontend_draw_frame
+0002a984 f frontend_poll             ; keyboard snapshot, controls, timing
+0002a998 f present_frame             ; copies the back buffer to VGA memory
+0001fc28 f frame_timing_update       ; waits for 2+ timer ticks and smooths the frame time
+000107f9 d g_timer_ticks             ; incremented by the timer interrupt
+00118e00 d g_frame_time              type=float
+00118e04 d g_frame_time_raw          type=float
+0001f983 f bios_read_tick_count?     ; int 1Ah
+0001f9f4 f tick_delta
+0001fa1c f restore_dos_clock         ; resets the PIT and resyncs DOS date/time from the RTC
+00021e50 f fade_update               ; fades volumes and palette in/out
+0001fd60 f race_run                  ; runs a race, then replay/attack saving
+0001ff04 f race_loop
+0001ff60 f race_frame
+
+# ---------------------------------------------------------------------------
+# Sound effects (HMI SOS DIGI)
+# ---------------------------------------------------------------------------
+0001f190 f sound_init                ; sosTIMERInitSystem + sosDIGIInitDriver from setup.cfg
+0001f27c f sound_shutdown
+0001f2d0 f sfx_load_samples          ; <name>.RAW from data\sound.dat into SOUND_FX
+0001f6e8 f sfx_free_samples
+0001f708 f sfx_play                 sig=int sfx_play(int id) ; (id) -> sample handle
+0001f754 f sfx_play_continue?
+0001f79c f sfx_is_playing
+0001f7d4 f sfx_set_pitch             ; warns "PITCH" above 0x40000
+0001f824 f sfx_is_done
+0001f870 f sfx_stop
+0001f8a4 f sound_set_master_volume
+0001f8cc f sfx_stop_all
+0001f93c f audio_set_volumes         ; (sfx, music, cd)
+0002479c f sfx_play_positional?
+000245a0 f sfx_load_special          ; SPFXBASE / SPFXFULL tables
+00015980 f sfx_load_tables           ; SFXSBASE + track SOUND_FX tables
+00108054 d g_setup_cfg               type=byte[144] ; config\setup.cfg (sound card settings)
+00118d90 d g_digi_driver             ; HMI DIGI driver handle
+000c7f95 f sosTIMERInitSystem?
+000c8071 f sosTIMERUnInitSystem?
+000c842c f sosTIMERRemoveEvent?
+000c8cd1 f sosDIGIInitSystem?
+000c8d4a f sosDIGIUnInitSystem?
+000c8d8a f sosDIGIInitDriver?
+000c9649 f sosDIGIUnInitDriver?
+000c9b05 f sosDIGIStartSample?
+000ca119 f sosDIGIStopSample?
+000ca1c7 f sosDIGIContinueSample?
+000ca565 f sosDIGISampleDone?
+000ca665 f sosDIGISamplesPlaying?
+000c69c3 f sosDIGISetMasterVolume?
+000c63a6 f sosDIGIGetMasterVolume?
+000c63cd f sosDIGISetSampleVolume?
+000c6455 f sosDIGIGetSampleVolume?
+000c64bb f sosDIGISetPanLocation?
+000c6540 f sosDIGIGetPanLocation?
+000c6846 f sosDIGISetPitch?
+000c68cc f sosDIGIGetPitch?
+000c692e f sosDIGIGetSampleID?
+000c696a f sosDIGIGetSampleHandle?
+000de405 f sosTIMER_set_rate?        ; programs PIT ch0 with IRQ0 masked
+000de50d f sosTIMER_mask_irq0
+000de539 f sosTIMER_unmask_irq0
+000de691 f hmi_dpmi_lock_region?     ; DPMI 0600h
+000de6ce f hmi_dpmi_unlock_region?   ; DPMI 0601h
+000deb93 f hmi_vds_lock?             ; int 4Bh VDS
+000debc8 f hmi_vds_unlock?
+000e60b3 f hmi_text_print            ; writes to B800:0 text memory
+
+# ---------------------------------------------------------------------------
+# IPX network (int 7Ah through DPMI 0300h)
+# ---------------------------------------------------------------------------
+000c6a80 f net_init?
+000c6cd0 f net_shutdown?
+000c6d00 f net_get_node_count
+000c6d0c f net_get_local_node
+000c761c f ipx_detect                ; int 2Fh AX=7A00h
+000c76a8 f ipx_open_socket           ; BX=00h
+000c7730 f ipx_close_socket          ; BX=01h
+000c77ac f ipx_relinquish            ; BX=0Ah
+000c7b9c f ipx_get_local_address     ; BX=09h
+000c7c40 f ipx_send_packet?
+0002dc64 f net_add_player_name?
+
+# ---------------------------------------------------------------------------
+# Config / save files
+# ---------------------------------------------------------------------------
+0001bf28 f read_screamer_cfg         ; screamer.cfg: game dir, CD drive, "Files damaged" on failure
+0001bb48 f read_setup_cfg            ; config\setup.cfg, "Run SETUP before." on failure
+0001b2f4 f read_controls_cfg         ; config\controls.cfg
+0001bbb8 f read_choice_dat           ; config\choice.dat (menu choices, volumes); defaults when missing
+0001be5c f write_choice_dat
+0001b384 f text_load                 ; <lang>.txt from data\local.dat -> TEXT
+0001b57c f text_free
+0001b594 f graf_load_pcx            sig=int graf_load_pcx(char *dat, char *name, void *dest, void *palette) ; (dat, name, dest, palette): PCX from gfx\*.dat
+0001b728 f replay_save
+0001b830 f replay_load
+0001b964 f attack_save               ; time attack ghost (.atk)
+0001ba3c f attack_load
+0001af60 f spline_load               ; <track>.spl -> GAMESPLINE
+0001b170 f spline_free
+0001b188 f markers_load              ; <track>.mrk
+0001b22c f cockpit_load              ; <car><res>.pkc
+0001545c f data_load_section        sig=int data_load_section(char *dir, char *file, char *section, void *dest, int stride, int max) ; (dir, file, section, dest, stride, max) from data\<file>.dat/.dtr; returns count
+00015178 f track_load_obstacles?
+00015374 f track_load_animations?
+00014fb4 f track_load_spline_and_markers
+000150f0 f track_load_markers
+0001514c f fatal_cleanup             ; restores text mode, keyboard, timer before exit
+000156a4 f race_unload
+0001571c f build_pow_table
+000157b4 f cd_check_disc             ; volume label must be SCREAMER
+00015870 f show_insert_cd_screen
+
+# ---------------------------------------------------------------------------
+# Text / sprites / fonts
+# ---------------------------------------------------------------------------
+00024fc0 f font_draw_string         sig=unsigned int font_draw_string(int x, int y, char *str, unsigned int font, int mode) ; (x, y, str, font, mode)
+00025448 f font_measure_string
+0002e598 f font_draw_centered?
+000255f8 f font_load                 ; FONTS
+000255e0 f font_free
+00025750 f sprites_load              ; SPRITES
+00025858 f sprites_free
+00025870 f build_shade_tables?
+00025a90 f sprites_draw_queued?
+00025cc8 f draw_shaded_rect?
+
+# ---------------------------------------------------------------------------
+# Frontend (menus)
+# ---------------------------------------------------------------------------
+00029c28 f frontend_load             ; menu.dat fonts/sprites, music, cheats, car/track data
+00029ea0 f frontend_show_title       ; menu1l.pcx
+0002a0b0 f frontend_unload
+0002a114 f frontend_load_attack_map
+0002a264 f frontend_start_race        ; shows load%d%c.pcx, loads and runs the race (race_run)
+0002a458 f frontend_championship_screen
+0002bdcc f frontend_screen_menu4
+0002c078 f frontend_screen_menu3
+0002c320 f frontend_screen_menu2
+0002c698 f frontend_show_champ_pcx
+0002c844 f frontend_show_load_pcx
+0002c930 f frontend_show_net_pcx
+00028080 f frontend_network_menu?
+00028ac4 f frontend_replay_menu?
+0002de34 f set_message_text
+0002de78 f frontend_hide_objects
+
+# ---------------------------------------------------------------------------
+# Math helpers
+# ---------------------------------------------------------------------------
+0002216c f rotate_xz                 ; rotates (x, z) by an angle using sin/cos
+00022b60 f lerp_toward?
+00022b94 f float_to_int_store
+00022bcc f safe_sqrt?
+
+# ---------------------------------------------------------------------------
+# VGA / rendering
+# ---------------------------------------------------------------------------
+000817b0 f vga_wait_vretrace         ; port 3DAh
+000817c5 f vga_set_palette_vsync
+000817e4 f vga_set_palette           ; 256 x RGB to ports 3C8h/3C9h
+00081830 f render_scene              ; 3D world + objects for one camera
+00081870 f render_scene_alt?
+0008a9c8 f render_set_camera
+0008b9cc f render_patch_code         ; patches screen pitch/tables into the self-modifying rasterisers
+0008baa4 f render_set_detail?
+0008bae4 f vga_blit_back_buffer      ; 64000 bytes to A000:0
+0008bb3c f vesa_init?                ; VBE 4F01h mode info
+0008bbe3 f dos_alloc_paragraphs      ; DPMI 0100h
+0008bea0 f memcpy32                 sig=void * memcpy32(void *dst, void *src, unsigned int n) ; (dst, src, bytes) dword copy
+0008beb0 f memset32                 sig=void * memset32(void *dst, unsigned int n, int value) ; (dst, bytes, value)
+0010cf58 d g_palette                 type=byte[768]
+
+# ---------------------------------------------------------------------------
+# Race logic (per-mode update functions called from race_frame)
+# g_game_mode bits: 0x03 race against CPU cars, 0x04 time attack (ghost), 0x10 network,
+# 0x20 / 0x40 other single-car modes, 0x80 replay, 0x100 attract/intro demo.
+# ---------------------------------------------------------------------------
+0002002c f race_update_vs_cpu
+000201c0 f race_update_network
+000202b0 f race_update_time_attack
+00020350 f race_update_mode20?
+000203b4 f race_update_checkpoints?  ; mode 0x40, uses the second marker table
+00020418 f race_update_positions
+000205b4 f obstacles_update
+00020944 f animations_update
+00020d10 f race_countdown_update?
+00020eb8 f race_on_finished?
+00020f88 f race_on_failed?           ; plays sfx 0x19
+00021048 f race_end_screen?
+00022dd8 f replay_playback_update?
+00023400 f hud_draw                  ; lap/race time "%02d:%02d:%02d"
+00024820 f sfx_queue_update?         ; plays queued samples (speech) one after another
+00016f24 f car_update_controls?
+00015a70 f car_physics_step_a?
+00015b9c f car_physics_step_b?
+00015aa8 f car_physics_step_c?
+00015af8 f car_collide_vs_cpu
+00015b34 f car_collide_vs_network
+00015b70 f car_collide_obstacles
+00015c0c f car_sync_render_object    ; copies position/angles to the car's 3D objects
+00019aa0 f camera_update
+0001c750 f opponent_ai_step_a?
+0001c78c f opponent_ai_step_b?
+0001c7c0 f opponent_ai_avoid?        ; uses opponent_find_nearby
+0001c800 f opponent_ai_step_c?
+0001c83c f opponent_sync_render_object
+0001cd34 f opponent_update_position?
+0001ead0 f net_players_init?
+0001f0f8 f net_player_update_wheels?
+
+0010f918 d g_player_car              ; car state, 0x590 bytes
+00110ab4 d g_opponents               ; CPU cars, 0x590 bytes each
+0010f8e8 d g_num_opponents
+00113cd4 d g_net_players             ; network cars, 0x2a8 bytes each
+0011d250 d g_num_net_players
+00115214 d g_num_net_cars
+0011d25c d g_game_mode
+00118e18 d g_race_flags
+00118e14 d g_race_exit               ; 1 = finished, -1 = aborted
+0011d290 d g_track_name
+0010d258 d g_cars_data               ; CARS_DATA, 0x40 bytes per car
+0011099c d g_camera
+00110a1c d g_camera_state
+0010634c d g_visual_list
+0010652c d g_objects                 ; 120 object slots of 0x1c bytes
+00106348 d g_car_index               ; loop counter shared by many functions
+0011d270 d g_display_flags           ; 0x10 mirror horizontally, 0x20 mirror vertically
+0011facc d g_menu_background         ; OPT_PCX buffer
+00102de8 d g_options                 ; pointer to the options block

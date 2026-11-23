@@ -38,6 +38,7 @@ param(
     [switch]   $Webserver,
     [int]      $WebserverPort = 8086,
     [switch]   $Debugger,               # use dosbox_with_debugger.exe (Alt+Pause breaks into the debugger)
+    [switch]   $Headless,               # SDL offscreen video: no window at all (no -Shots; use -Webserver to read memory)
     [switch]   $Sound,                  # audio is off by default for unattended runs
     [string[]] $ExtraConfig = @()       # extra 'section.key=value' overrides
 )
@@ -99,7 +100,14 @@ if (-not ('DosboxKeys' -as [type])) { Add-Type -TypeDefinition $sendKey }
 $log = Join-Path $OutDir 'dosbox.log'
 $dbArgs = @('--noprimaryconf', '--nolocalconf', '-conf', "`"$conf`"")
 foreach ($kv in $ExtraConfig) { $dbArgs += @('--set', "`"$kv`"") }
-$p = Start-Process -FilePath $exe -WorkingDirectory $dosboxDir -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err" -ArgumentList $dbArgs
+if ($Headless -and $Shots.Count) { throw '-Shots needs the DOSBox window; drop -Headless or read VGA memory via -Webserver' }
+$prevDriver = $env:SDL_VIDEODRIVER
+if ($Headless) { $env:SDL_VIDEODRIVER = 'offscreen' }
+$startArgs = @{ FilePath = $exe; WorkingDirectory = $dosboxDir; PassThru = $true
+    RedirectStandardOutput = $log; RedirectStandardError = "$log.err"; ArgumentList = $dbArgs }
+if ($Headless) { $startArgs.WindowStyle = 'Hidden' }   # dosbox.exe is a console app: hide its console too
+$p = Start-Process @startArgs
+$env:SDL_VIDEODRIVER = $prevDriver
 $start = Get-Date
 Write-Host "DOSBox pid $($p.Id), output -> $OutDir"
 
