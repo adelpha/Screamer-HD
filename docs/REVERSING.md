@@ -161,6 +161,11 @@ code when they form tables (a lone fixup there is usually an instruction operand
 * Running original (intro): view 320x200, `g_material_handlers` relocated by the code delta,
   222 visible cells, 84 drawn in depth order.
 
+* The track and object file formats (`.UNR`, `.MMP`, `.MLB`, `.COL`, `.BCK`, `.3DX`) are
+  documented in `src/core/track.h` and `src/core/model3d.h`; `src/core/render3d.cpp` reproduces
+  the camera and projection (`PERSP01.TAB`: screen = centre - 128 * x / (128 - z)) and was checked
+  against a capture of the intro race.
+
 ## Checking against the running original
 
 `tools/ghidra/runtime-probe.ps1` runs the original in DOSBox headless (SDL offscreen driver, no

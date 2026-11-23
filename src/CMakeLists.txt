@@ -5,9 +5,12 @@ add_library(screamer_core STATIC
   core/framebuffer.cpp
   core/gamedata.cpp
   core/image.cpp
+  core/model3d.cpp
   core/pcx.cpp
+  core/render3d.cpp
   core/sim_clock.cpp
   core/testpattern.cpp
+  core/track.cpp
 )
 target_include_directories(screamer_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(screamer_core PUBLIC SDL3::SDL3)

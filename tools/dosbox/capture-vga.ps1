@@ -15,7 +15,8 @@ param(
     [string]$Name = 'vga',
     [double]$Delay = 9,
     [string]$Autotype = '',
-    [string]$Program = 'STARTL.EXE'
+    [string]$Program = 'STARTL.EXE',
+    [switch]$KeepMemory   # keep the 15 MB memory dump (mem_*.bin) for runtime_probe.py
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -34,7 +35,10 @@ for ($i = 0; $i -lt 40; $i++) {
 }
 # VGA memory first (the moment that matters), then 15 MB of extended memory to find the palette.
 Invoke-WebRequest "$api/memory/655360/64000" -UseBasicParsing -OutFile (Join-Path $out 'vga.raw')
-for ($mb = 1; $mb -lt 16; $mb++) {
+# The game's data object lands at 0x2AE000 under the harness config, so read that MB right
+# after the screen to keep camera and screen in step; the rest only serves the palette search.
+$order = @(2) + (1..15 | Where-Object { $_ -ne 2 })
+foreach ($mb in $order) {
     Invoke-WebRequest ("$api/memory/{0}/1048576" -f ($mb * 0x100000)) -UseBasicParsing -OutFile (Join-Path $out ('mem_{0:d2}.bin' -f $mb))
 }
 Stop-Job $job -ErrorAction SilentlyContinue
@@ -42,4 +46,4 @@ Remove-Job $job -Force
 Get-Process dosbox -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$root*" } | Stop-Process -Force
 
 & py -3.14 (Join-Path $PSScriptRoot 'vga_to_bmp.py') (Join-Path $root 'artifacts\ghidra\STARTL\STARTL.elf') $out
-Get-ChildItem $out -Filter 'mem_*.bin' | Remove-Item -Force
+if (-not $KeepMemory) { Get-ChildItem $out -Filter 'mem_*.bin' | Remove-Item -Force }

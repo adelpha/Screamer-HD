@@ -1,8 +1,8 @@
 // Screamer recompilation: SDL3 frontend.
 //
-// Until the original game logic is reconstructed this shows either the title
-// screen from the user's game files (--scene title) or a deterministic test
-// pattern (--scene testpattern) through the full render path. The command line is designed for
+// Until the original game logic is reconstructed this shows the title screen from
+// the user's game files (--scene title), a track from a fixed camera (--scene track)
+// or a deterministic test pattern (--scene testpattern) through the full render path. The command line is designed for
 // automated testing: --headless runs without a visible window (SDL "offscreen"
 // video driver, software renderer, dummy audio) and --frames/--screenshot/
 // --dump-fb produce reproducible images the test harness compares.
@@ -12,6 +12,8 @@
 #include "core/gamedata.h"
 #include "core/image.h"
 #include "core/pcx.h"
+#include "core/render3d.h"
+#include "core/track.h"
 #include "core/sim_clock.h"
 #include "core/testpattern.h"
 
@@ -38,7 +40,11 @@ struct Options {
     int width = 0, height = 0;      // output size; 0 = default
     std::string renderer;           // SDL renderer name, empty = default
     std::string aspect = "4:3";     // 4:3 | stretch | square
-    std::string scene;              // title | testpattern; empty = title when game data is found
+    std::string scene;              // title | track | testpattern; empty = title when game data is found
+    std::string track = "MAP2";     // --scene track: which track
+    std::string camera;             // --scene track: x,y,z,yaw,pitch[,roll]
+    int fb_width = 320, fb_height = 200;  // internal render size (--render-size)
+    bool flat = false;              // --scene track: no textures
 };
 
 void print_usage() {
@@ -48,7 +54,11 @@ void print_usage() {
         "  --data DIR           original game directory (default: $SCREAMER_DATA or build-time path)\n"
         "  --headless           no visible window, software renderer, dummy audio\n"
         "  --frames N           exit after N simulation frames (2 ticks of the game's 100 Hz clock each)\n"
-        "  --scene NAME         title (needs the game files; default when found) or testpattern\n"
+        "  --scene NAME         title (default when the game files are found), track or testpattern\n"
+        "  --track NAME         track for --scene track (MAP1..MAP6, default MAP2)\n"
+        "  --camera X,Y,Z,YAW,PITCH[,ROLL]  camera for --scene track (game units, angles 0..2047)\n"
+        "  --render-size WxH    internal resolution for 3D scenes (default 320x200)\n"
+        "  --flat               --scene track without textures\n"
         "  --screenshot FILE    save the rendered window output after the last frame (.png/.bmp)\n"
         "  --dump-fb FILE       save the native 320x200 framebuffer after the last frame\n"
         "  --capture-every N    save the framebuffer every N frames\n"
@@ -79,6 +89,15 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--renderer") o.renderer = next("--renderer");
         else if (a == "--aspect") o.aspect = next("--aspect");
         else if (a == "--scene") o.scene = next("--scene");
+        else if (a == "--track") o.track = next("--track");
+        else if (a == "--camera") o.camera = next("--camera");
+        else if (a == "--flat") o.flat = true;
+        else if (a == "--render-size") {
+            if (std::sscanf(next("--render-size"), "%dx%d", &o.fb_width, &o.fb_height) != 2 || o.fb_width <= 0 || o.fb_height <= 0) {
+                std::fprintf(stderr, "--render-size expects WxH\n");
+                return false;
+            }
+        }
         else if (a == "--size") {
             if (std::sscanf(next("--size"), "%dx%d", &o.width, &o.height) != 2 || o.width <= 0 || o.height <= 0) {
                 std::fprintf(stderr, "--size expects WxH\n");
@@ -166,7 +185,29 @@ int main(int argc, char** argv) {
     SDL_SetRenderVSync(renderer, opt.headless ? 0 : 1);
     SDL_Log("video driver: %s, renderer: %s", SDL_GetCurrentVideoDriver(), SDL_GetRendererName(renderer));
 
-    scr::Framebuffer fb;
+    // A track viewed from a fixed camera (the first step of the 3D renderer).
+    std::optional<scr::Track> track;
+    scr::Camera cam;
+    if (opt.scene == "track") {
+        if (game_dir) {
+            if (auto path = scr::resolve_game_file(*game_dir, "GFX/" + opt.track + "L.DAT")) track = scr::load_track(*path, opt.track);
+        }
+        if (!track) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "cannot load track %s from the game files", opt.track.c_str());
+            return 1;
+        }
+        SDL_Log("track %s: %zu objects, %zu placements", opt.track.c_str(), track->objects.size(), track->placements.size());
+        if (!opt.camera.empty()) {
+            std::sscanf(opt.camera.c_str(), "%f,%f,%f,%f,%f,%f", &cam.x, &cam.y, &cam.z, &cam.yaw, &cam.pitch, &cam.roll);
+        } else if (!track->placements.empty()) {
+            const auto& p = track->placements.front();
+            cam.x = float(p.x); cam.y = float(p.y) - 400.0f; cam.z = float(p.z); cam.yaw = float(p.ay);
+        }
+    }
+    scr::Renderer renderer3d;
+    renderer3d.set_textures(!opt.flat);
+
+    scr::Framebuffer fb = track ? scr::Framebuffer(opt.fb_width, opt.fb_height) : scr::Framebuffer();
     SDL_Texture* tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, fb.width(), fb.height());
     SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
 
@@ -211,8 +252,14 @@ int main(int argc, char** argv) {
         }
         if (clock.frame_ready()) {
             clock.begin_frame();
-            if (title) scr::blit_pcx(*title, fb);
-            else scr::draw_test_pattern(fb, frame);
+            if (track) {
+                fb.palette() = track->palette;
+                renderer3d.draw_track(*track, cam, fb);
+            } else if (title) {
+                scr::blit_pcx(*title, fb);
+            } else {
+                scr::draw_test_pattern(fb, frame);
+            }
             stepped = true;
             if (opt.capture_every && frame % opt.capture_every == 0) {
                 scr::SurfacePtr s = scr::framebuffer_to_surface(fb);
