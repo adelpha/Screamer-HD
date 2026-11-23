@@ -622,7 +622,7 @@
 0001c83c f opponent_sync_render_object sig=void opponent_sync_render_object(CpuCar *car)
 0001cd34 f opponent_update_position sig=void opponent_update_position(CpuCar *car) ; world position and angles from the spline position plus offsets
 0001ead0 f net_wait_for_players       ; exchanges player states until everyone answers or the timeout runs out
-0001f0f8 f net_player_update_bumpers  ; front/rear bumper points in world space
+0001f0f8 f net_player_update_bumpers    sig=void net_player_update_bumpers(NetCar *car) ; front/rear bumper points in world space
 
 0010f918 d g_player_car             type=PlayerCar              ; the human player's car (0x1084 bytes)
 00110ab4 d g_opponents              type=CpuCar[9]               ; CPU cars, 0x590 bytes each
@@ -773,7 +773,7 @@
 00017b44 f car_resolve_net_collision    sig=void car_resolve_net_collision(PlayerCar *car, int push)
 00017c5c f car_update_bumpers           sig=void car_update_bumpers(PlayerCar *car) ; front/rear bumper points in world space
 00017d04 f car_update_skid              sig=void car_update_skid(PlayerCar *car) ; lateral force against grip
-0001813c f car_apply_view_setting?      sig=void car_apply_view_setting(PlayerCar *car)
+0001813c f car_apply_surface          sig=void car_apply_surface(PlayerCar *car) ; sets the dust render flag and engine sample for the surface type
 0001820c f car_update_track_progress    sig=void car_update_track_progress(PlayerCar *car) ; nearest track marker index (0x598)
 00018518 f car_update_crash_state       sig=void car_update_crash_state(PlayerCar *car) ; state 0x148: 2 = just crashed (sounds), 1 = crashed, 5 = ...
 000188a8 f car_update_spin?             sig=void car_update_spin(PlayerCar *car)
@@ -825,7 +825,7 @@
 0001ec6c f net_send_player_state       
 0001ecf4 f net_pack_player_state        sig=void net_pack_player_state(PlayerCar *car)
 0001eec8 f net_receive_player_states   
-0001ef58 f net_player_sync_render_object
+0001ef58 f net_player_sync_render_object sig=void net_player_sync_render_object(NetCar *car)
 00011a30 f car_update_wheel_ground   sig=void car_update_wheel_ground(PlayerCar *car) ; ground height under each of the four wheels
 00011c00 f collision_query_cells     ; tests the 3x3 map cells around g_probe_x/z
 00011ccc f collision_query_cell_objects
