@@ -103,7 +103,10 @@ foreach ($kv in $ExtraConfig) { $dbArgs += @('--set', "`"$kv`"") }
 if ($Headless -and $Shots.Count) { throw '-Shots needs the DOSBox window; drop -Headless or read VGA memory via -Webserver' }
 $prevDriver = $env:SDL_VIDEODRIVER
 if ($Headless) { $env:SDL_VIDEODRIVER = 'offscreen' }
-$p = Start-Process -FilePath $exe -WorkingDirectory $dosboxDir -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err" -ArgumentList $dbArgs
+$startArgs = @{ FilePath = $exe; WorkingDirectory = $dosboxDir; PassThru = $true
+    RedirectStandardOutput = $log; RedirectStandardError = "$log.err"; ArgumentList = $dbArgs }
+if ($Headless) { $startArgs.WindowStyle = 'Hidden' }   # dosbox.exe is a console app: hide its console too
+$p = Start-Process @startArgs
 $env:SDL_VIDEODRIVER = $prevDriver
 $start = Get-Date
 Write-Host "DOSBox pid $($p.Id), output -> $OutDir"
