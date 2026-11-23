@@ -31,7 +31,11 @@ no manual steps.
 |---|---|
 | `--headless` | SDL `offscreen` video driver, software renderer, dummy audio. No window appears. |
 | `--frames N` | Run exactly N simulation frames, then exit. A frame is 2 ticks of the original's 100 Hz clock (`src/core/sim_clock.h`); headless runs advance exactly 2 ticks per loop, so output depends only on N, never on timing. |
-| `--scene NAME` | `title` (the title screen from the game files; the default when they are found) or `testpattern`. The tests use `testpattern` so they run without game data. |
+| `--scene NAME` | `title` (the title screen from the game files; the default when they are found) `track` (a track drawn by the new 3D renderer) or `testpattern`. The tests use `testpattern` so they run without game data. |
+| `--track NAME` | Track for `--scene track` (default `MAP2`, loaded from `GFX/<NAME>L.DAT`). |
+| `--camera X,Y,Z,YAW,PITCH[,ROLL]` | Camera for `--scene track` in game units (angles 0..2047). Default: the first placement. `48459,196,7124,472,2005,0` is the intro race at the start gate. |
+| `--render-size WxH` | Framebuffer size for the 3D scene (default 320x200), e.g. `1280x800`. |
+| `--flat` | Draw faces with each material's average colour instead of textures. |
 | `--dump-fb FILE` | After the last frame, save the native 320x200 framebuffer (palette applied). Directly comparable with DOSBox raw captures. |
 | `--screenshot FILE` | After the last frame, save the presented output (scaled, letterboxed) at `--size`. |
 | `--capture-every N` / `--capture-dir` | Dump the framebuffer every N frames. |

@@ -11,6 +11,7 @@ add_executable(unit_tests
   unit/test_dtr.cpp
   unit/test_pcx.cpp
   unit/test_sim_clock.cpp
+  unit/test_track.cpp
 )
 target_include_directories(unit_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(unit_tests PRIVATE screamer_core)
