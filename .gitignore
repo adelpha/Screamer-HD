@@ -1,0 +1,33 @@
+# --- Original game data: copyrighted, never commit ---
+/SCREAMER/
+*.bin
+*.cue
+*.iso
+*.EXE
+*.exe
+*.DAT
+*.TAB
+*.386
+
+# --- Third-party tools installed locally ---
+/ghidra_*/
+/tools/bin/
+
+# --- Ghidra project files (contain disassembled original code) ---
+*.gpr
+*.rep/
+
+# --- Build output ---
+/build/
+/out/
+/.vs/
+CMakeUserPresets.json
+
+# --- Test/harness output (screenshots, DOSBox captures, diffs) ---
+/artifacts/
+
+# --- Misc ---
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db

@@ -1,0 +1,21 @@
+# Engine-side code that is independent of the window/frontend. Unit tests link this.
+add_library(screamer_core STATIC
+  core/framebuffer.cpp
+  core/gamedata.cpp
+  core/image.cpp
+  core/testpattern.cpp
+)
+target_include_directories(screamer_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(screamer_core PUBLIC SDL3::SDL3)
+target_compile_definitions(screamer_core PUBLIC
+  SCREAMER_DEFAULT_DATA_DIR="${SCREAMER_DATA_DIR}"
+  SCREAMER_VERSION="${PROJECT_VERSION}"
+)
+
+# The game executable (console subsystem for now so headless runs can log to stdout).
+add_executable(screamer main.cpp)
+target_link_libraries(screamer PRIVATE screamer_core)
+
+# Image comparison tool used by the test harness and the DOSBox reference scripts.
+add_executable(imgcmp tools/imgcmp.cpp)
+target_link_libraries(imgcmp PRIVATE screamer_core)
