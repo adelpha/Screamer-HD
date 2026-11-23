@@ -40,7 +40,12 @@ if ($Fresh -or -not (Test-Path (Join-Path $proj 'screamer.gpr'))) {
 
 $post = @()
 Remove-Item (Join-Path $work 'apply.log') -ErrorAction SilentlyContinue
-if (Test-Path $sym) { $post += @('-postScript', 'ApplySymbols.java', $sym) }
+$hdr = Join-Path $root "reference\symbols\$Exe.types.h"
+if (Test-Path $sym) {
+    $post += @('-postScript', 'ApplySymbols.java')
+    if (Test-Path $hdr) { $post += $hdr }
+    $post += $sym
+}
 if ($Dump) { $post += @('-postScript', 'DumpAnalysis.java', (Join-Path $work 'dump'), $Decompile) }
 & $headless $proj screamer -process "$Exe.elf" -noanalysis -scriptPath $scripts @post -log (Join-Path $work 'apply.log')
 if ($LASTEXITCODE) { throw 'Ghidra apply failed' }
