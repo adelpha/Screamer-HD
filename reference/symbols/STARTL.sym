@@ -211,8 +211,8 @@
 000108e4 f set_video_mode           sig=void set_video_mode(int mode) ; int 10h AH=0
 000101f6 f pit_set_rate              ; programs PIT channel 0
 00010257 f joy_read_buttons          ; game port 0x201 buttons
-00010263 f joy_read_axis?
-0001028c f joy_wait_port?
+00010263 f joy_read_axis              ; game port 201h axis by timing
+0001028c f joy_wait_port_bits         ; polls 201h until the masked bits clear
 000102b0 f rle_copy                  ; skip/copy run-length sprite blit
 000102e4 f draw_clipped_line?
 0001057c f draw_map_objects?
@@ -248,12 +248,12 @@
 000127a0 f game_init                 ; config, data files, sound, CD, video, 3D engine
 000128a8 f game_shutdown
 000128dc f race_load                 ; loads a race according to the game mode
-00012c08 f race_load_normal?
-00012d08 f race_load_replay?
+00012c08 f race_load_vs_cpu           ; modes 1 and 2 (single race / championship)
+00012d08 f race_load_network          ; mode 0x10: network players and cars
 00012e14 f race_load_time_attack     ; ATTACK_RES
-00012f4c f race_load_attract?        ; "attr" text
-0001309c f race_reset_a?
-0001311c f race_reset_b?
+00012f4c f race_load_attract          ; mode 0x100: intro demo race, "attr" text
+0001309c f race_load_checkpoints      ; mode 0x40: clears the checkpoint marker flags
+0001311c f race_load_carnage          ; mode 0x20: clears the obstacle-hit flags
 000131a4 f race_load_track           ; per-track data: OSTACLES, TRACK_DATA, OPPONENTS, ANIMATIONS, CARS_DATA, .smg
 0001353c f race_load_extras?
 0001357c f race_reset_opponent_flags
@@ -341,10 +341,10 @@
 0004d1bc f lzw_read
 0004d284 f lzw_decode?
 0004d604 f lzw_next_code?
-0004d77a f stricmp?
+0004d77a f stricmp                   
 
 # --- 3D engine setup ---
-0004bca0 f engine_angles_from_camera?
+0004bca0 f engine_angles_from_camera  ; object angles relative to the render camera
 0004c5d0 f engine_init               ; tables, persp01.tab, VIS.TAB, DPMI selectors
 0004c610 f engine_set_viewport       ; (width, height, ...) 
 0004c6a8 f engine_alloc_video_buffer ; VIDEO_BUF 0xFC80 bytes
@@ -363,7 +363,7 @@
 0004cde8 f engine_load_vis_table     ; TABS\VIS.TAB
 0004ce50 f pcx_load                  ; (dat, name, &buf, palette, mode)
 0004cfcc f engine_build_trig_table?
-0004d018 f engine_build_acos_table?
+0004d018 f engine_build_acos_table    ; acos of -1..1 in 1/256 steps
 0004d094 f engine_build_row_table    ; y*320 for 481 rows
 000d4724 f engine_init_selectors      ; DPMI: GDT, selector for video memory
 00102fa0 d g_map_grid
@@ -416,11 +416,11 @@
 00027f9c f frontend_draw_frame
 0002a984 f frontend_poll             ; keyboard snapshot, controls, timing
 0002a998 f present_frame             ; copies the back buffer to VGA memory
-0001fc28 f frame_timing_update       ; waits for 2+ timer ticks and smooths the frame time
+0001fc28 f frame_timing_update       ; waits for >= 2 ticks of the 100 Hz timer (max 50 fps); frame time = ticks * 0.01 s, smoothed (9*old + new)/10, clamped 0.02..0.2 s
 000107f9 d g_timer_ticks             ; incremented by the timer interrupt
 00118e00 d g_frame_time              type=float
 00118e04 d g_frame_time_raw          type=float
-0001f983 f bios_read_tick_count?     ; int 1Ah
+0001f983 f bios_read_and_reset_ticks  ; int 1Ah AH=0 then AH=1 with 0
 0001f9f4 f tick_delta
 0001fa1c f restore_dos_clock         ; resets the PIT and resyncs DOS date/time from the RTC
 00021e50 f fade_update               ; fades volumes and palette in/out
@@ -436,7 +436,7 @@
 0001f2d0 f sfx_load_samples          ; <name>.RAW from data\sound.dat into SOUND_FX
 0001f6e8 f sfx_free_samples
 0001f708 f sfx_play                 sig=int sfx_play(int id) ; (id) -> sample handle
-0001f754 f sfx_play_continue?
+0001f754 f sfx_play_continue          ; sosDIGIContinueSample
 0001f79c f sfx_is_playing
 0001f7d4 f sfx_set_pitch             ; warns "PITCH" above 0x40000
 0001f824 f sfx_is_done
@@ -444,14 +444,14 @@
 0001f8a4 f sound_set_master_volume
 0001f8cc f sfx_stop_all
 0001f93c f audio_set_volumes         ; (sfx, music, cd)
-0002479c f sfx_play_positional?
+0002479c f sfx_queue_add              ; queues a sample to play after the current one (unless already queued)
 000245a0 f sfx_load_special          ; SPFXBASE / SPFXFULL tables
 00015980 f sfx_load_tables           ; SFXSBASE + track SOUND_FX tables
 00108054 d g_setup_cfg               type=byte[144] ; config\setup.cfg (sound card settings)
 00118d90 d g_digi_driver             ; HMI DIGI driver handle
 000c7f95 f sosTIMERInitSystem?
 000c8071 f sosTIMERUnInitSystem?
-000c842c f sosTIMERRemoveEvent?
+000c842c f sosTIMERRemoveEvent
 000c8cd1 f sosDIGIInitSystem?
 000c8d4a f sosDIGIUnInitSystem?
 000c8d8a f sosDIGIInitDriver?
@@ -530,14 +530,14 @@
 # ---------------------------------------------------------------------------
 00024fc0 f font_draw_string         sig=unsigned int font_draw_string(int x, int y, char *str, unsigned int font, int mode) ; (x, y, str, font, mode)
 00025448 f font_measure_string
-0002e598 f font_draw_centered?
+0002e598 f font_draw_centered         ; centres horizontally on 320 pixels
 000255f8 f font_load                 ; FONTS
 000255e0 f font_free
 00025750 f sprites_load              ; SPRITES
 00025858 f sprites_free
-00025870 f build_shade_tables?
+00025870 f build_darken_tables        ; two palette remap tables (x0.75, x0.6) for darkened overlays
 00025a90 f sprites_draw_queued?
-00025cc8 f draw_shaded_rect?
+00025cc8 f draw_darkened_rect         ; remaps a back-buffer rectangle through a darken table
 
 # ---------------------------------------------------------------------------
 # Frontend (menus)
@@ -563,9 +563,9 @@
 # Math helpers
 # ---------------------------------------------------------------------------
 0002216c f rotate_xz                 ; rotates (x, z) by an angle using sin/cos
-00022b60 f lerp_toward?
+00022b60 f lerp_toward                ; value = target + (value - target) * pow(k, frame_time)
 00022b94 f float_to_int_store
-00022bcc f safe_sqrt?
+00022bcc f safe_sqrt                  ; sqrt only for non-negative input
 
 # ---------------------------------------------------------------------------
 # VGA / rendering
@@ -573,11 +573,11 @@
 000817b0 f vga_wait_vretrace         ; port 3DAh
 000817c5 f vga_set_palette_vsync
 000817e4 f vga_set_palette           ; 256 x RGB to ports 3C8h/3C9h
-00081830 f render_scene              ; 3D world + objects for one camera
-00081870 f render_scene_alt?
+00081830 f render_menu_scene          ; 3D objects of the menu screens (frontend_draw_frame)
+00081870 f render_race_scene          ; track + cars for races, the intro demo and the pause menu
 0008a9c8 f render_set_camera
 0008b9cc f render_patch_code         ; patches screen pitch/tables into the self-modifying rasterisers
-0008baa4 f render_set_detail?
+0008baa4 f render_set_near_clip       ; patches the near-clip distance into the transform and build_polygon_alt code; value from the detail option
 0008bae4 f vga_blit_back_buffer      ; 64000 bytes to A000:0
 0008bb3c f vesa_init?                ; VBE 4F01h mode info
 0008bbe3 f dos_alloc_paragraphs      ; DPMI 0100h
@@ -587,24 +587,25 @@
 
 # ---------------------------------------------------------------------------
 # Race logic (per-mode update functions called from race_frame)
-# g_game_mode bits: 0x03 race against CPU cars, 0x04 time attack (ghost), 0x10 network,
-# 0x20 / 0x40 other single-car modes, 0x80 replay, 0x100 attract/intro demo.
+# g_game_mode: 1/2 race against CPU cars (single race / championship), 4 time attack (ghost),
+# 0x10 network, 0x20 carnage (hit obstacles), 0x40 checkpoints, 0x100 intro demo;
+# bit 0x80 = play back a replay (race_run strips it).
 # ---------------------------------------------------------------------------
 0002002c f race_update_vs_cpu
 000201c0 f race_update_network
 000202b0 f race_update_time_attack
-00020350 f race_update_mode20?
-000203b4 f race_update_checkpoints?  ; mode 0x40, uses the second marker table
+00020350 f race_update_carnage        ; mode 0x20: +1 s per obstacle hit
+000203b4 f race_update_checkpoints    ; mode 0x40: second marker table
 00020418 f race_update_positions
 000205b4 f obstacles_update
 00020944 f animations_update
-00020d10 f race_countdown_update?
-00020eb8 f race_on_finished?
-00020f88 f race_on_failed?           ; plays sfx 0x19
-00021048 f race_end_screen?
-00022dd8 f replay_playback_update?
+00020d10 f race_countdown_update      ; race flag 2: 3-2-1 countdown with voice, then sets flag 1 (running)
+00020eb8 f race_on_finished           ; race flag 8: stores the results, calls the per-mode result handler
+00020f88 f race_on_failed             ; race flag 0x10: per-mode failure handler, sample 0x19
+00021048 f race_end_screen            ; race flag 4: per-mode end text, then leaves the race
+00022dd8 f replay_update              ; race flag 0x40: plays back or records one replay frame
 00023400 f hud_draw                  ; lap/race time "%02d:%02d:%02d"
-00024820 f sfx_queue_update?         ; plays queued samples (speech) one after another
+00024820 f sfx_queue_update           ; plays queued samples one after another
 00016f24 f car_integrate_motion     sig=void car_integrate_motion(PlayerCar *car) ; moves the car from speed, yaw and yaw rate; sets render flags
 00015a70 f car_update_driving       sig=void car_update_driving(PlayerCar *car) ; race timers, engine/gearbox, throttle, brake, steering
 00015b9c f car_update_dynamics      sig=void car_update_dynamics(PlayerCar *car) ; wheel loads, skid, crash/spin states, debris
@@ -620,8 +621,8 @@
 0001c800 f opponent_update_state    sig=void opponent_update_state(CpuCar *car) ; smoothing, crash state, engine sound
 0001c83c f opponent_sync_render_object sig=void opponent_sync_render_object(CpuCar *car)
 0001cd34 f opponent_update_position sig=void opponent_update_position(CpuCar *car) ; world position and angles from the spline position plus offsets
-0001ead0 f net_players_init?
-0001f0f8 f net_player_update_wheels?
+0001ead0 f net_wait_for_players       ; exchanges player states until everyone answers or the timeout runs out
+0001f0f8 f net_player_update_bumpers  ; front/rear bumper points in world space
 
 0010f918 d g_player_car             type=PlayerCar              ; the human player's car (0x1084 bytes)
 00110ab4 d g_opponents              type=CpuCar[9]               ; CPU cars, 0x590 bytes each
@@ -630,7 +631,7 @@
 0011d250 d g_num_net_players
 00115214 d g_num_net_cars
 0011d25c d g_game_mode
-00118e18 d g_race_flags
+00118e18 d g_race_flags               ; 1 running, 2 countdown, 4 end screen, 8 finished, 0x10 failed, 0x20 leave, 0x40 replay active, 0x200 abort, 0x2000 paused?
 00118e14 d g_race_exit               ; 1 = finished, -1 = aborted
 0011d290 d g_track_name
 0010d258 d g_cars_data              type=CarData[18]               ; CARS_DATA, 0x40 bytes per car
@@ -700,22 +701,22 @@
 00082bcc f vis_compute_view_cone?    ; projects the view frustum onto the map grid
 00083a68 f render_draw_background?   ; horizon/sky band from the camera yaw and pitch
 00083114 f vis_collect_cells?
-00083164 f vis_collect_cell?
-00082e88 f vis_find_first_cell?
-0008a6a8 f render_fill_rows?
+00083164 f vis_collect_near_objects   ; objects of a list within ~52000 units of the camera
+00082e88 f vis_compute_view_bounds    ; map bounds of the camera cell and the view cone
+0008a6a8 f vis_cull_cells_by_bounds   ; keeps list entries inside the view bounds
 0008a7b0 f vis_sort_cells?           ; depth order of the visible cells
-0008a738 f vis_sort_prepare?
-000832c0 f render_begin_cells?
-00083320 f object_select_buffers?
+0008a738 f vis_patch_camera_matrix    ; writes the camera matrix into the self-modifying transform code
+000832c0 f depth_sort_entries         ; quicksort of 8-byte (key, item) entries
+00083320 f object_patch_matrix        ; writes the object matrix into the transform code
 0008ac58 f cell_load_objects
 0008aafc f cell_begin
-0008ad4c f cell_transform_object?
-0008ae38 f cell_transform_object_alt?
-0008af24 f object_transform_static?
-0008b04c f object_transform_dynamic?
-0008acf0 f object_flag_a?
-0008ad02 f object_flag_b?
-0008ad14 f object_bounds_check?
+0008ad4c f object_setup               ; object matrix and camera-relative setup
+0008ae38 f object_setup_alt          
+0008af24 f object_compute_depth       ; distance to camera, depth bias by name prefix ('A'/'a')
+0008b04c f object_compute_depth_dynamic ; half distance, +0x2000 bias for 'Z' objects
+0008acf0 f render_patch_cull_jge      ; patches JGE (0x7D) into three near-plane tests
+0008ad02 f render_patch_cull_jl       ; patches JL (0x7C) into the same tests
+0008ad14 f object_load_bbox           ; 12 + 12 shorts of bounding data into the transform block
 0008a628 f object_begin              ; points g_object_vertices/faces/uvs at the current object
 00083380 f object_transform_vertices ; vertex list ends with 0x7fff
 00083468 f object_build_polygons     ; per face: near-plane test, then g_material_handlers[type].setup
@@ -845,7 +846,7 @@
 00020b0c f animation_advance_on_spline 
 000212c0 f camera_set_listener          ; position/yaw used for distance checks (opponents, animations, 3D sound)
 00021328 f pause_menu                   ; P key: shaded overlay and menu
-000219d0 f pause_menu_draw_scene?      
+000219d0 f pause_menu_draw_scene     
 00021b80 f sfx_update_positional?      
 00021d8c f fade_blocking                ; fades volumes/palette until done
 00021f21 f angle_step_toward            ; wraps at 2pi
@@ -895,7 +896,7 @@
 0002425c f speech_check_events?         sig=void speech_check_events(PlayerCar *car) ; commentary triggers while racing
 000246bc f speech_init?                
 00024740 f speech_current?             
-0002474c f speech_play_event?          
+0002474c f speech_play_event          ; plays a voice sample for an event (countdown numbers, ...)
 000248b8 f speech_queue_clear?         
 0002491c f speech_queue_age?           
 000249c8 f speech_play_queued?         
@@ -958,3 +959,136 @@
 00014d28 f ghost_car_load               ; (ghost, car index): time-attack ghost car object
 00025ab0 f sprite_draw                 
 0004d0d1 f __sprintf_putc               ; sprintf output callback
+
+# ---------------------------------------------------------------------------
+# Watcom runtime internals
+# ---------------------------------------------------------------------------
+000e99f6 f __dos4g_detect               ; int 2Fh, "RATIONAL DOS/4G"
+000e9ac0 f __dos4g_cleanup?            
+000e9b1a f __chk_infinity?             
+000e9b42 f __dbl_split?                
+000e9c1e f __digits_to_dbl?            
+000e9c69 f __dbl_normalize?            
+000e9cba f ldexp?                      
+000e9cfb f __scale_pow10?              
+000e9de2 f __dbl_compare?              
+000e9dec f __dbl_compare_core?         
+000e9ed3 f isatty                       ; int 21h 4400h, device bit
+000e9ef1 f __GetIOMode                 
+000e9f46 f __SetIOMode                 
+000e9f60 f __flushall                  
+000e9f8f f __dos_exit_hook?            
+000e9fac f setmode?                    
+000ea287 f __leapyear                  
+000ea2c2 f __dst_day_of_year?          
+000ea3a7 f __dst_before?               
+000ea3cf f __isindst                   
+000ea682 f __time_less?                
+000ea6b2 f __find_last_char?           
+000ea6e9 f __getcwd_drive?             
+000ea7fc f __dos_read?                 
+000ea832 f getenv                      
+000ea88c f __setbits                    ; 256-bit charset bitmap (strpbrk, scanf sets)
+000ea8ca f strncpy                     
+000ea9be f __dos_error?                
+000eaa8d f __fmt_exponent              
+000eab34 f __fmt_fraction              
+000eab97 f __shift_digits              
+000eac02 f __cvt                        ; ecvt/fcvt core
+000eae26 f __dos_commit?               
+000eae52 f __cvt_helper_a?             
+000eae8c f __dbl_to_mantissa?          
+000eaef7 f __mantissa_to_digits?       
+000eaf61 f __cvt_helper_b?             
+000eb01e f __matherr_print              ; "<func> in <msg>"
+000eb066 f __math_error_handler        
+000eb096 f tzset                        ; TZ variable, EST/EDT defaults
+000eb0a9 f __parse_int                 
+000eb0cf f __parse_time                
+000eb1e5 f __parse_dst_rule            
+000eb366 f __dos_result                
+000eb37a f __fmt_inf_nan               
+000eb3fe f __double_to_int?            
+000eb43a f __cvt_engine?               
+000eb625 f __get_std_stream             ; __iob + n
+000eb718 f __chp_store                 
+000eb731 f frexp?                      
+000eb7a0 f matherr                      ; default handler, returns 0
+
+# ---------------------------------------------------------------------------
+# x87 emulator internals (used only without an FPU)
+# ---------------------------------------------------------------------------
+000e8300 f emu387_add?                 
+000e832a f emu387_sub?                 
+000e835a f emu387_add_core?            
+000e84c6 f emu387_compare?             
+000e855f f emu387_mul?                 
+000e8589 f emu387_mul_core?            
+000e8734 f emu387_div?                 
+000e875e f emu387_div_core?            
+000e88af f emu387_to_int_a?            
+000e88b4 f emu387_to_int?              
+000e891e f emu387_from_int32           
+000e892f f emu387_from_uint32          
+000e8964 f emu387_from_double          
+000e89e4 f emu387_to_double?           
+000e8a63 f emu387_round?               
+000e8b2a f emu387_from_float           
+000e8bef f emu387_apply_rounding?      
+000e8d22 f emu387_raise_exception?     
+000e8d7c f emu387_fxch?                
+000e8e32 f emu387_fprem?               
+000e8f95 f emu387_ftst?                
+000e8ffb f emu387_fscale?              
+000e9076 f emu387_check_exception?     
+000e917d f emu387_fsqrt?               
+000e91c0 f emu387_fsqrt_core?          
+000e9458 f emu387_transcendental?      
+000e9666 f emu387_transcendental_entry?
+000e969c f emu387_fpatan?              
+000e995c f emu387_load?                
+000e99ae f emu387_store?               
+
+# ---------------------------------------------------------------------------
+# Library markers, HMI driver loading, IPX helpers
+# ---------------------------------------------------------------------------
+000e6e3a f emu387_ea_e6e3a              ; effective-address helper for the emulator ModRM decoder
+000e6e40 f emu387_ea_e6e40              ; effective-address helper for the emulator ModRM decoder
+000e6e46 f emu387_ea_e6e46              ; effective-address helper for the emulator ModRM decoder
+000e6e4c f emu387_ea_e6e4c              ; effective-address helper for the emulator ModRM decoder
+000e6e52 f emu387_ea_e6e52              ; effective-address helper for the emulator ModRM decoder
+000e6e5a f emu387_ea_e6e5a              ; effective-address helper for the emulator ModRM decoder
+000e6e60 f emu387_ea_e6e60              ; effective-address helper for the emulator ModRM decoder
+000e6e66 f emu387_ea_e6e66              ; effective-address helper for the emulator ModRM decoder
+000e6e6c f emu387_ea_e6e6c              ; effective-address helper for the emulator ModRM decoder
+000e6e74 f emu387_ea_e6e74              ; effective-address helper for the emulator ModRM decoder
+000e6e7c f emu387_ea_e6e7c              ; effective-address helper for the emulator ModRM decoder
+000e6e84 f emu387_ea_e6e84              ; effective-address helper for the emulator ModRM decoder
+000e6e8c f emu387_ea_e6e8c              ; effective-address helper for the emulator ModRM decoder
+000e6e96 f emu387_ea_e6e96              ; effective-address helper for the emulator ModRM decoder
+000e6ea0 f emu387_ea_e6ea0              ; effective-address helper for the emulator ModRM decoder
+000e6ea8 f emu387_ea_e6ea8              ; effective-address helper for the emulator ModRM decoder
+000e6eb0 f emu387_ea_e6eb0              ; effective-address helper for the emulator ModRM decoder
+000e6eb9 f emu387_ea_e6eb9              ; effective-address helper for the emulator ModRM decoder
+000e6ec2 f emu387_ea_e6ec2              ; effective-address helper for the emulator ModRM decoder
+000e6ecb f emu387_ea_e6ecb              ; effective-address helper for the emulator ModRM decoder
+000e6ed4 f emu387_ea_e6ed4              ; effective-address helper for the emulator ModRM decoder
+000e6edf f emu387_ea_e6edf              ; effective-address helper for the emulator ModRM decoder
+000e6eea f emu387_ea_e6eea              ; effective-address helper for the emulator ModRM decoder
+000e6ef3 f emu387_ea_e6ef3              ; effective-address helper for the emulator ModRM decoder
+000e6efc f emu387_decode_modrm         
+000defe5 f hmi_load_digi_driver         ; reads hmidrv.386 and picks the driver for the configured card
+000df2e0 f hmi_load_digi_driver_file?  
+000df639 f hmi_detect_load              ; hmidet.386 (hardware detection)
+000e2219 f hmi_load_midi_driver         ; hmimdrv.386
+000e1672 f hmi_digi_find_driver_header? ; "HMIDIGIP" signature
+000c6d18 f net_sort_nodes?             
+000c6e50 f net_get_local_address        ; copies the 16-byte IPX address
+000c6e7c f net_add_node?               
+000c6f2c f net_remove_node             
+000c6f98 f net_find_node               
+000c6ff4 f net_get_free_ecb?           
+000c70ec f net_receive_packet           ; returns 0 when nothing is waiting
+000c71c8 f net_send_packet?            
+000c7440 f net_post_listen?             ; re-arms a receive ECB
+000c80ab f sosTIMERRegisterEvent     ; registers timer_tick_callback at 100 Hz in sound_init
