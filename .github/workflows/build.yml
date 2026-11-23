@@ -1,9 +1,10 @@
 name: build
 
+# Manual only for now: GitHub Actions is unavailable on this account (billing),
+# and the local harness (tools/test.ps1) is the primary check. Add push/pull_request
+# triggers back once Actions minutes are available.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   windows:
