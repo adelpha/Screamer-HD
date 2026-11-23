@@ -165,6 +165,34 @@ typedef struct SoundFxDef {       /* 0x24 bytes, SOUND_FX in several .dtr files 
     unsigned int pan;             /* 0x01000000 = centre */
 } SoundFxDef;
 
+typedef struct CornerProbe {      /* 0x2c bytes, PlayerCar.probe[4] */
+    unsigned char pad_00[0xc];
+    int x;                        /* 0x0c world position of the corner */
+    unsigned char pad_10[0x4];
+    int z;                        /* 0x14 */
+    int hit;                      /* 0x18 inside a wall */
+    int push_x;                   /* 0x1c */
+    unsigned char pad_20[0x4];
+    int push_z;                   /* 0x24 */
+    int f_28;                     /* 0x28 */
+} CornerProbe;
+
+typedef struct Wheel {            /* 0x54 bytes, PlayerCar.wheel[4] */
+    int x;                        /* 0x00 */
+    int y;                        /* 0x04 height = ground_y (+ bump) */
+    int z;                        /* 0x08 */
+    unsigned char pad_0c[0x18];
+    int ground_y;                 /* 0x24 track height under the wheel */
+    int f_28;                     /* 0x28 */
+    int bumpy;                    /* 0x2c surface adds a small bump */
+    int f_30;                     /* 0x30 */
+    unsigned char pad_34[0x4];
+    float load_lat;               /* 0x38 lateral load */
+    unsigned char pad_3c[0x4];
+    float load_long;              /* 0x40 longitudinal load */
+    unsigned char pad_44[0x10];
+} Wheel;
+
 /* The human player's car (g_player_car). Size from the gap to the next global. */
 typedef struct PlayerCar { /* 0x1084 bytes */
     unsigned char pad_000[0x4];
@@ -175,31 +203,27 @@ typedef struct PlayerCar { /* 0x1084 bytes */
     unsigned char pad_014[0x4];
     int f_018;
     unsigned char pad_01c[0x24];
-    int f_040;
-    int f_044;
+    int wall_contact; /* set when a corner probe hits a wall */
+    int wall_push_x; /*  */
     unsigned char pad_048[0x4];
-    int f_04c;
+    int wall_push_z; /*  */
     int f_050;
-    unsigned char pad_054[0x18];
-    int f_06c;
-    unsigned char pad_070[0x54];
-    int f_0c4;
-    unsigned char pad_0c8[0x3c];
+    CornerProbe probe[4]; /* 0x054 wall probes at the four corners */
     unsigned int nearby_cpu_mask; /* bit n set when g_opponents[n] is within 1500 units */
     unsigned int f_108;
     unsigned char pad_10c[0x4];
     int f_110;
     float brake; /* 0..1 */
-    int f_118;
-    int f_11c;
-    int f_120;
+    int shadow_x; /* car_update_shadow_position */
+    int shadow_y; /* pos_y - 20 */
+    int shadow_z; /*  */
     float f_124;
     float f_128;
     float f_12c;
-    int f_130;
-    int f_134;
-    int f_138;
-    int f_13c;
+    int body_ofs_x; /* added to pos_* for the body object */
+    int body_ofs_y; /*  */
+    int body_ofs_z; /*  */
+    int track_heading; /* heading of the track at the car (track_find_nearest_point) */
     int f_140;
     float throttle; /* 0..1 */
     int crash_state; /* 0x148: 0 driving, 2 just crashed, 1 crashed, 5 ... */
@@ -210,62 +234,19 @@ typedef struct PlayerCar { /* 0x1084 bytes */
     int f_15c;
     int f_160;
     unsigned char pad_164[0xc];
-    int f_170;
+    int spin_state; /* 1 = spinning (car_update_spin) */
     float f_174;
     float f_178;
-    float f_17c;
-    float f_180;
-    float f_184;
+    float brake_decel; /* speed -= brake_decel * dt * brake */
+    float slide_threshold; /* speed * heading error above this slides the car */
+    float grip_limit; /* lateral force limit before skidding */
     float f_188;
     float f_18c;
     float f_190;
-    unsigned char pad_194[0x4];
-    int f_198;
-    unsigned char pad_19c[0x1c];
-    int f_1b8;
-    unsigned char pad_1bc[0x4];
-    int f_1c0;
-    unsigned char pad_1c4[0x4];
-    int f_1c8;
-    unsigned char pad_1cc[0x10];
-    int f_1dc;
-    unsigned char pad_1e0[0x4];
-    int f_1e4;
-    unsigned char pad_1e8[0x4];
-    int f_1ec;
-    unsigned char pad_1f0[0x1c];
-    int f_20c;
-    unsigned char pad_210[0x4];
-    int f_214;
-    unsigned char pad_218[0x4];
-    int f_21c;
-    unsigned char pad_220[0x10];
-    int f_230;
-    unsigned char pad_234[0xc];
-    int f_240;
-    unsigned char pad_244[0x1c];
-    int f_260;
-    unsigned char pad_264[0x4];
-    int f_268;
-    unsigned char pad_26c[0x4];
-    int f_270;
-    unsigned char pad_274[0x10];
-    int f_284;
-    unsigned char pad_288[0x4];
-    int f_28c;
-    unsigned char pad_290[0x4];
-    int f_294;
-    unsigned char pad_298[0x1c];
-    int f_2b4;
-    unsigned char pad_2b8[0x4];
-    int f_2bc;
-    unsigned char pad_2c0[0x4];
-    int f_2c4;
-    unsigned char pad_2c8[0x10];
-    int f_2d8;
-    unsigned char pad_2dc[0x14];
+    Wheel wheel[4]; /* 0x194 */
+    unsigned char pad_2e4[0xc];
     int f_2f0;
-    float f_2f4;
+    float turn_rate; /* steering curvature; lateral load ~ turn_rate * speed^2 */
     float f_2f8;
     unsigned int f_2fc;
     unsigned char pad_300[0x14c];
@@ -294,7 +275,7 @@ typedef struct PlayerCar { /* 0x1084 bytes */
     float f_4e0;
     unsigned char pad_4e4[0x4];
     float f_4e8;
-    int f_4ec;
+    int ground_y; /* average ground height under the wheels */
     int f_4f0;
     unsigned int f_4f4;
     unsigned char pad_4f8[0x4];
@@ -305,30 +286,30 @@ typedef struct PlayerCar { /* 0x1084 bytes */
     float speed;
     float f_510;
     unsigned char pad_514[0x18];
-    int f_52c;
+    int front_bumper_x; /* world space (car_update_bumpers) */
     unsigned char pad_530[0x4];
-    int f_534;
-    int f_538;
+    int front_bumper_z; /*  */
+    int rear_bumper_x; /*  */
     unsigned char pad_53c[0x4];
-    int f_540;
-    int f_544;
+    int rear_bumper_z; /*  */
+    int collision_radius; /* used for all car/car and car/obstacle tests */
     float yaw_rate; /* rad/s, decays each frame */
     float f_54c;
-    float f_550;
+    float impact_vel_x; /* set by collisions */
     unsigned char pad_554[0x4];
-    float f_558;
-    int f_55c;
+    float impact_vel_z; /*  */
+    int contact_dist; /* distance to the car being tested */
     int f_560;
-    int f_564;
+    int contact_dx; /*  */
     unsigned char pad_568[0x4];
-    int f_56c;
+    int contact_dz; /*  */
     unsigned char pad_570[0x18];
     float prev_speed; /* speed last frame */
     int f_58c;
     int f_590;
     unsigned char pad_594[0x4];
     int track_marker; /* nearest track marker index */
-    int f_59c;
+    int checkpoints_passed; /*  */
     unsigned char pad_5a0[0xc8];
     int f_668;
     unsigned int f_66c;
@@ -338,7 +319,7 @@ typedef struct PlayerCar { /* 0x1084 bytes */
     float f_67c;
     int f_680;
     int lap; /* laps completed */
-    int f_688;
+    int race_position; /* 1 = first; also used as result code in some modes */
     unsigned char pad_68c[0xd0];
     int f_75c;
     unsigned char pad_760[0x20];
@@ -349,15 +330,15 @@ typedef struct PlayerCar { /* 0x1084 bytes */
     float time_left; /* checkpoint timer; +bonus_time per checkpoint, +1 per obstacle */
     float race_time; /* s */
     unsigned char pad_798[0x10];
-    float f_7a8;
-    int f_7ac;
+    float engine_rpm; /* (unconfirmed) engine gearbox and cockpit gauges */
+    int gear; /* (unconfirmed)  */
     int f_7b0;
     unsigned int render_flags; /* CarData.animation | 0x4000 no brake | 0x2000 slow */
     int obstacles_hit; /* count */
-    int f_7bc;
-    int f_7c0;
+    int obstacles_counted; /* car_add_obstacle_time */
+    int markers_passed; /* checkpoint mode */
     unsigned char pad_7c4[0x8];
-    int f_7cc;
+    int engine_sfx; /* sample handle of the engine sound */
     int f_7d0;
     int f_7d4;
     unsigned char pad_7d8[0x10];
@@ -417,8 +398,8 @@ typedef struct CpuCar { /* 0x590 bytes */
     float f_23c;
     unsigned char pad_240[0x4];
     float f_244;
-    int f_248;
-    int f_24c;
+    int spline_index; /* racing line */
+    int spline_segment; /*  */
     int spline_t; /* position within the current spline segment */
     int f_254;
     int f_258;
@@ -464,7 +445,7 @@ typedef struct CpuCar { /* 0x590 bytes */
     float f_314;
     float f_318;
     float f_31c;
-    int f_320;
+    int track_marker; /* nearest track marker */
     int f_324;
     unsigned char pad_328[0xc8];
     int f_3f0;
@@ -484,17 +465,17 @@ typedef struct CpuCar { /* 0x590 bytes */
     int f_428;
     unsigned char pad_42c[0x4];
     int f_430;
-    int f_434;
+    int front_bumper_x; /* world space */
     unsigned char pad_438[0x4];
-    int f_43c;
-    int f_440;
+    int front_bumper_z; /*  */
+    int rear_bumper_x; /*  */
     unsigned char pad_444[0x4];
-    int f_448;
-    int f_44c;
+    int rear_bumper_z; /*  */
+    int collision_radius; /*  */
     float f_450;
-    int f_454;
+    int lateral_ofs_x; /* offset from the racing line */
     int f_458;
-    int f_45c;
+    int lateral_ofs_z; /*  */
     unsigned char pad_460[0xc];
     float f_46c;
     unsigned char pad_470[0x14];

@@ -70,6 +70,8 @@ the types (for example `g_player_car` is a `PlayerCar` and the car functions tak
 * Fields named after their meaning are confirmed (from the code, the data files or the running game).
 * `f_<offset>` fields have a known type, from how the code accesses them, but no known meaning yet.
   `pad_<offset>` are bytes that no analysed function touches.
+* `tools/ghidra/check_types.py` checks every struct against the size in its comment; run it
+  after editing the header.
 * `tools/ghidra/field_usage.py` lists every access through a function's first parameter in the
   decompiler dump, or drafts a struct (`--struct Name --size N`) to start a new record from.
 
@@ -170,7 +172,7 @@ and the video buffers in conventional memory, which is what `attract_mode_setup`
 
 ## What is known so far
 
-See `reference/symbols/STARTL.sym` for every name; 867 of the 1,118 functions are
+See `reference/symbols/STARTL.sym` for every name; 928 of the 1,118 functions are
 named. Address ranges in `code1`:
 
 | Range | Contents |

@@ -444,7 +444,7 @@
 0001f8a4 f sound_set_master_volume
 0001f8cc f sfx_stop_all
 0001f93c f audio_set_volumes         ; (sfx, music, cd)
-0002479c f sfx_queue_add              ; queues a sample to play after the current one (unless already queued)
+0002479c f speech_queue_add           ; (event, variant, delay): queues an announcer line unless already queued
 000245a0 f sfx_load_special          ; SPFXBASE / SPFXFULL tables
 00015980 f sfx_load_tables           ; SFXSBASE + track SOUND_FX tables
 00108054 d g_setup_cfg               type=byte[144] ; config\setup.cfg (sound card settings)
@@ -554,8 +554,8 @@
 0002c698 f frontend_show_champ_pcx
 0002c844 f frontend_show_load_pcx
 0002c930 f frontend_show_net_pcx
-00028080 f frontend_network_menu?
-00028ac4 f frontend_replay_menu?
+00028080 f frontend_handle_keys       ; Esc, Enter and the arrow keys on the menu pages
+00028ac4 f frontend_activate_item     ; Enter on a menu item: changes page, starts races, championship, network
 0002de34 f set_message_text
 0002de78 f frontend_hide_objects
 
@@ -605,7 +605,7 @@
 00021048 f race_end_screen            ; race flag 4: per-mode end text, then leaves the race
 00022dd8 f replay_update              ; race flag 0x40: plays back or records one replay frame
 00023400 f hud_draw                  ; lap/race time "%02d:%02d:%02d"
-00024820 f sfx_queue_update           ; plays queued samples one after another
+00024820 f speech_update              ; plays the queued announcer lines one after another
 00016f24 f car_integrate_motion     sig=void car_integrate_motion(PlayerCar *car) ; moves the car from speed, yaw and yaw rate; sets render flags
 00015a70 f car_update_driving       sig=void car_update_driving(PlayerCar *car) ; race timers, engine/gearbox, throttle, brake, steering
 00015b9c f car_update_dynamics      sig=void car_update_dynamics(PlayerCar *car) ; wheel loads, skid, crash/spin states, debris
@@ -893,20 +893,20 @@
 00024174 f race_end_draw_attack        
 000241ac f race_end_draw_checkpoints   
 00024204 f race_end_draw_carnage       
-0002425c f speech_check_events?         sig=void speech_check_events(PlayerCar *car) ; commentary triggers while racing
-000246bc f speech_init?                
-00024740 f speech_current?             
+0002425c f speech_check_events        sig=void speech_check_events(PlayerCar *car) ; announcer triggers while racing: wrong way, slow, time running out (0x16), taking the lead (0x15), losing it (0x18), all obstacles/markers (0x1a), ...
+000246bc f speech_init                ; clears the queue and event timers, picks random variants
+00024740 f speech_current             ; event at the head of the queue, -1 when idle
 0002474c f speech_play_event          ; plays a voice sample for an event (countdown numbers, ...)
-000248b8 f speech_queue_clear?         
-0002491c f speech_queue_age?           
-000249c8 f speech_play_queued?         
-00024a24 f speech_pick_sample?         
-00024ae8 f speech_cycle_variant?       
-00024b9f f timer_bits_match?           
-00024bec f sfx_cooldown_a?             
-00024c68 f sfx_cooldown_b?             
-00024cd0 f sfx_play_once                ; plays once until reset
-00024d1c f sfx_once_reset              
+000248b8 f speech_queue_pop           ; removes the head of the queue
+0002491c f speech_queue_pick_next     ; moves the entry with the shortest delay to the head
+000249c8 f speech_play_queued        
+00024a24 f speech_pick_sample         ; sample for (event, variant 0-2 or 3 = cycle); falls back to variant 0 without the full voice set
+00024ae8 f speech_cycle_variant      
+00024b9f f frame_counter_matches      ; (mask) true when the low bits of g_frame_counter equal the value
+00024bec f speech_trigger_once_after  ; says the line once the condition has held for the given time, then not again until it clears
+00024c68 f speech_trigger_repeat_after ; says the line every time the condition has held for the given time
+00024cd0 f speech_say_once            ; queues the line unless it was already said (until speech_once_reset)
+00024d1c f speech_once_reset         
 000255c0 f font_set_tables             
 00025740 f sprites_set_table           
 00025a4c f engine_load_shade_table      ; 16 KB colour/shade table at 0xcda64
@@ -916,34 +916,34 @@
 # ---------------------------------------------------------------------------
 000288dc f frontend_text_input          ; typed keys into the name buffer
 00028a7c f frontend_return_to_title    
-000292c8 f champ_advance?              
+000292c8 f champ_advance              ; moves the championship to the next race or ends it
 000293e8 f frontend_init_state         
 00029484 f frontend_update_page         ; dispatch on the current page
-00029530 f frontend_animate_background?
+00029530 f frontend_update_camera     ; moves the menu camera between page positions
 00029738 f frontend_fade_update        
-000297d4 f menu_toggle_option?         
+000297d4 f menu_cycle_option          ; steps an option value and wraps at its maximum
 00029838 f menu_build_page_items        ; up to 80 items of 100 bytes
 00029acc f champ_store_race_result     
 0002a9a4 f menu_load_page_objects       ; AAUTO00, ALETTER, AMAP1 3D objects
-0002af30 f menu_item_draw_text?        
+0002af30 f menu_item_draw_text        ; centred text of a menu item
 0002b1f4 f menu_hide_page_items        
-0002b2d0 f menu_items_busy?            
+0002b2d0 f menu_items_busy            ; loop over the 80 items with an empty body (always "not busy")
 0002b33c f menu_item_init              
 0002b380 f menu_item_update            
 0002b54c f menu_item_update_slide?     
 0002b8b8 f menu_item_update_zoom?      
 0002bd84 f frontend_show_page_background
-0002ca10 f menu_animate_cars?          
-0002cb88 f net_lobby_update?           
+0002ca10 f menu_spin_car_models       ; rotates the 14 car models on the car selection page
+0002cb88 f menu_spin_track_models     ; rotates the 12 track models; in network mode also re-sends the player name
 0002cd74 f menu_letters_update?        
-0002ce58 f champ_draw_standings?       
+0002ce58 f champ_draw_standings       ; championship table (positions and points)
 0002d348 f menu_draw_dialog?           
-0002d654 f frontend_options_screen?    
+0002d654 f net_lobby_screen           ; network game setup: exchanges player names and car choices
 0002ddf0 f net_reset_space              ; NET_SPACE buffer
 0002df38 f menu_draw_title_scroll?     
 0002e08c f menu_draw_car_select         ; "%d KMH"
-0002e384 f menu_draw_track_select?     
-0002e4f8 f menu_draw_name_entry?       
+0002e384 f menu_draw_track_select     ; track name, blinking hint
+0002e4f8 f menu_draw_name_entry       ; player name with cursor
 0002e5e4 f menu_replay_files            ; REPLAY%d%d.RPL save/load
 00010000 f debug_break                  ; INT3 at the start of the code object
 00010101 f keyboard_isr_store_key       ; tail of the INT 9 handler: stores the key state, EOI
@@ -1092,3 +1092,73 @@
 000c71c8 f net_send_packet?            
 000c7440 f net_post_listen?             ; re-arms a receive ECB
 000c80ab f sosTIMERRegisterEvent     ; registers timer_tick_callback at 100 Hz in sound_init
+0011d2c4 d g_speech_enabled          ; announcer on; switched off when memory is short
+00119068 d g_speech_first_sfx        ; index of the first SPFX sample in g_sound_fx_defs
+00119060 d g_speech_full_set         ; SPFXFULL loaded (needs ~1.9 MB free)
+00119064 d g_num_speech_sfx
+0011907c d g_speech_queue            ; {event, variant, delay, ...} entries, event -1 ends
+00119228 d g_speech_event_timers     type=float[27]
+
+# ---------------------------------------------------------------------------
+# HMI SOS internals
+# ---------------------------------------------------------------------------
+000c6391 f lock_marker_0c6391           ; empty function used as a code-range marker
+000c69fe f lock_marker_0c69fe           ; empty function used as a code-range marker
+000c7f85 f lock_marker_0c7f85           ; empty function used as a code-range marker
+000c871f f lock_marker_0c871f           ; empty function used as a code-range marker
+000c8735 f lock_marker_0c8735           ; empty function used as a code-range marker
+000c9ade f lock_marker_0c9ade           ; empty function used as a code-range marker
+000c9af5 f lock_marker_0c9af5           ; empty function used as a code-range marker
+000ca53d f lock_marker_0ca53d           ; empty function used as a code-range marker
+000ca555 f lock_marker_0ca555           ; empty function used as a code-range marker
+000ca640 f lock_marker_0ca640           ; empty function used as a code-range marker
+000ca655 f lock_marker_0ca655           ; empty function used as a code-range marker
+000ca6c7 f lock_marker_0ca6c7           ; empty function used as a code-range marker
+000d1dd1 f lock_marker_0d1dd1           ; empty function used as a code-range marker
+000d2bf2 f lock_marker_0d2bf2           ; empty function used as a code-range marker
+000d2c09 f lock_marker_0d2c09           ; empty function used as a code-range marker
+000d2d4f f lock_marker_0d2d4f           ; empty function used as a code-range marker
+000d2d65 f lock_marker_0d2d65           ; empty function used as a code-range marker
+000d3f52 f lock_marker_0d3f52           ; empty function used as a code-range marker
+000d3f69 f lock_marker_0d3f69           ; empty function used as a code-range marker
+000d3fbe f lock_marker_0d3fbe           ; empty function used as a code-range marker
+000de641 f lock_marker_0de641           ; empty function used as a code-range marker
+000de680 f lock_marker_0de680           ; empty function used as a code-range marker
+000def19 f lock_marker_0def19           ; empty function used as a code-range marker
+000defbf f lock_marker_0defbf           ; empty function used as a code-range marker
+000defd5 f lock_marker_0defd5           ; empty function used as a code-range marker
+000df581 f lock_marker_0df581           ; empty function used as a code-range marker
+000df599 f lock_marker_0df599           ; empty function used as a code-range marker
+000df610 f lock_marker_0df610           ; empty function used as a code-range marker
+000df625 f lock_marker_0df625           ; empty function used as a code-range marker
+000e02f9 f lock_marker_0e02f9           ; empty function used as a code-range marker
+000e0e49 f lock_marker_0e0e49           ; empty function used as a code-range marker
+000e0f03 f lock_marker_0e0f03           ; empty function used as a code-range marker
+000e0f19 f lock_marker_0e0f19           ; empty function used as a code-range marker
+000e0ff6 f lock_marker_0e0ff6           ; empty function used as a code-range marker
+000e100d f lock_marker_0e100d           ; empty function used as a code-range marker
+000e1823 f lock_marker_0e1823           ; empty function used as a code-range marker
+000e1839 f lock_marker_0e1839           ; empty function used as a code-range marker
+000e21f3 f lock_marker_0e21f3           ; empty function used as a code-range marker
+000e2209 f lock_marker_0e2209           ; empty function used as a code-range marker
+000e2503 f lock_marker_0e2503           ; empty function used as a code-range marker
+000e2519 f lock_marker_0e2519           ; empty function used as a code-range marker
+000e2c2c f lock_marker_0e2c2c           ; empty function used as a code-range marker
+000e2c41 f lock_marker_0e2c41           ; empty function used as a code-range marker
+000e2c83 f lock_marker_0e2c83           ; empty function used as a code-range marker
+000e2c99 f lock_marker_0e2c99           ; empty function used as a code-range marker
+000e3c3d f lock_marker_0e3c3d           ; empty function used as a code-range marker
+000e3c55 f lock_marker_0e3c55           ; empty function used as a code-range marker
+000e3d2a f lock_marker_0e3d2a           ; empty function used as a code-range marker
+000e3d41 f lock_marker_0e3d41           ; empty function used as a code-range marker
+000e546c f lock_marker_0e546c           ; empty function used as a code-range marker
+000e9b19 f lock_marker_0e9b19           ; empty function used as a code-range marker
+000d1de1 f hmi_midi_lock_memory         ; DPMI-locks the MIDI code and data ranges
+000d207c f hmi_midi_unlock_memory      
+000d3fce f __fputc_for_vfprintf         ; vfprintf output callback
+000d3ac0 f sosMIDIRegisterLoopFunction?
+000d3afc f sosMIDIRegisterTriggerFunction?
+000d3b37 f sosMIDIRegisterEventFunction?
+000e1849 f hmi_digi_clear_sample_queue? ; 32 entries of 0x10 per driver
+000e3bc8 f hmi_call_driver_function?   
+000e3c0c f hmi_set_callback?           
