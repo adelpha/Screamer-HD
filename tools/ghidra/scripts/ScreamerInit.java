@@ -58,6 +58,7 @@ public class ScreamerInit extends GhidraScript {
             return;
         }
         applyFixups(Files.readString(f.toPath()));
+        createOrphanFunctions();
         setWatcallEverywhere(currentProgram, monitor);
     }
 
@@ -74,6 +75,33 @@ public class ScreamerInit extends GhidraScript {
         return n;
     }
 
+    /**
+     * The renderer's hand-written assembly is mostly reached through jump/call tables and
+     * patched code, so auto-analysis disassembles it but creates no functions. Start a
+     * function at every instruction that is outside any function and does not follow on
+     * from a previous orphan instruction (i.e. after a RET/JMP, data or a gap).
+     */
+    void createOrphanFunctions() throws Exception {
+        ghidra.program.model.listing.Listing listing = currentProgram.getListing();
+        int created = 0;
+        for (MemoryBlock b : currentProgram.getMemory().getBlocks()) {
+            if (!b.isExecute()) continue;
+            Instruction prev = null;
+            for (Instruction ins : listing.getInstructions(b.getStart(), true)) {
+                if (monitor.isCancelled() || !b.contains(ins.getAddress())) break;
+                boolean orphan = getFunctionContaining(ins.getAddress()) == null;
+                boolean fallsIn = prev != null && prev.getFallThrough() != null
+                        && prev.getFallThrough().equals(ins.getAddress())
+                        && getFunctionContaining(prev.getAddress()) == null;
+                if (orphan && !fallsIn) {
+                    if (createFunction(ins.getAddress(), null) != null) created++;
+                }
+                prev = ins;
+            }
+        }
+        println("orphan code blocks turned into functions: " + created);
+    }
+
     void installWatcall() throws Exception {
         SpecExtension ext = new SpecExtension(currentProgram);
         ext.addReplaceCompilerSpecExtension(WATCALL, monitor);
@@ -81,19 +109,23 @@ public class ScreamerInit extends GhidraScript {
     }
 
     void applyFixups(String json) throws Exception {
+        // Only 32-bit offset fixups. In the code object, a lone fixup outside known instructions
+        // is usually an operand of code that analysis has not reached yet (the renderer), so
+        // marking it as a pointer would block disassembly there. Only runs of adjacent fixups
+        // (pointer/jump tables) are marked in executable blocks; everything is marked in data.
         Pattern p = Pattern.compile("\\{\"src\": (\\d+), \"type\": (\\d+), \"target\": (\\d+), \"target_obj\": (\\d+)\\}");
         Matcher m = p.matcher(json);
-        int pointers = 0, skipped = 0;
-        MemoryBlock code = null;
-        for (MemoryBlock b : currentProgram.getMemory().getBlocks()) {
-            if (b.isExecute()) code = b;
-        }
+        java.util.TreeSet<Long> srcs = new java.util.TreeSet<>();
         while (m.find()) {
+            if (Integer.parseInt(m.group(2)) == 7) srcs.add(Long.parseLong(m.group(1)));
+        }
+        int pointers = 0, skipped = 0;
+        for (long src : srcs) {
             if (monitor.isCancelled()) break;
-            long src = Long.parseLong(m.group(1));
-            int type = Integer.parseInt(m.group(2));
-            if (type != 7) continue;
             Address a = toAddr(src);
+            MemoryBlock blk = currentProgram.getMemory().getBlock(a);
+            boolean inTable = srcs.contains(src - 4) || srcs.contains(src + 4);
+            if (blk == null || (blk.isExecute() && (!inTable || (src & 3) != 0))) { skipped++; continue; }
             Instruction ins = currentProgram.getListing().getInstructionContaining(a);
             if (ins != null) { skipped++; continue; }
             Data d = currentProgram.getListing().getDefinedDataContaining(a);
@@ -108,6 +140,7 @@ public class ScreamerInit extends GhidraScript {
                 skipped++;
             }
         }
-        println("fixup pointers created: " + pointers + ", inside code/other: " + skipped);
+        println("fixup pointers created: " + pointers + ", skipped (code operands etc.): " + skipped);
     }
+
 }

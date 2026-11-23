@@ -656,3 +656,101 @@
 00118d80 d g_num_sound_fx
 0010d6f4 d g_num_obstacles
 0010d6fc d g_obstacles               type=ObstacleInstance[100]
+
+# ---------------------------------------------------------------------------
+# Renderer: material dispatch table at 0x822e0 (16 material types x 4 handlers)
+# ---------------------------------------------------------------------------
+000822e0 d g_material_handlers       type=pointer[64] ; per material type: draw, draw_alt, build_polygon, build_polygon_alt
+
+# ---------------------------------------------------------------------------
+# Renderer pipeline (hand-written assembly, 0x81000-0x8c000)
+# Fixed point: matrices and sin/cos are 2.14 (>> 14); angles are 0..0x7ff (2048 per turn).
+# Frame: render_scene[_alt] -> collect visible map cells -> for each cell: load its objects ->
+# for each object: transform vertices, build screen polygons per material into the polygon
+# buffer, then draw the buffer through g_material_handlers.
+# ---------------------------------------------------------------------------
+00030190 d g_sincos_table            type=int[4096] ; 2048 x {sin, cos}, 1.15 fixed (0x7fff = 1.0); code uses (short)v >> 1
+0008a4fc d g_render_camera           ; camera block passed to render_set_camera (angles, position, matrices)
+0008a540 d g_view_width
+0008a514 d g_view_height
+0008a544 d g_view_height_plus1
+0008a50c d g_view_fill_value?
+00120bb8 d g_row_offsets             type=int[481] ; y * 320, built by engine_build_row_table
+00121540 d g_materials               ; MATERIALS block (.MLB): per material {handler offset, ..., width, height}
+000792ac d g_poly_write_ptr          ; next free slot in g_poly_buffer
+000792b0 d g_poly_buffer             ; screen polygons built this frame (material, count, vertices)
+00064e94 d g_projected_vertices      ; screen x/y of the current object's vertices
+00084270 d g_current_material
+000841b0 d g_current_object
+000841bc d g_object_vertices
+000841c0 d g_object_faces
+000841c4 d g_object_uvs
+00082248 d g_num_visible_cells
+0008a7ec d g_num_sorted_cells
+0008b564 d g_poly_vertex_count
+000d7a60 d g_clip_vertex_buffer      ; polygon after screen clipping
+
+000829d4 f camera_precompute_sincos  ; sin/cos of the three camera angles
+00081d90 f matrix_from_angles        ; 3x3 rotation from sin/cos (2.14)
+00081e34 f matrix_from_angles_inverse
+00081d40 f matrix_rotate_translation ; rotates the (negated) position by the matrix
+00082018 f matrix_concat             ; 3x4 matrix multiply
+0008b360 f camera_build_matrices
+0008b26c f camera_build_matrices_from_view
+00082bcc f vis_compute_view_cone?    ; projects the view frustum onto the map grid
+00083a68 f render_draw_background?   ; horizon/sky band from the camera yaw and pitch
+00083114 f vis_collect_cells?
+00083164 f vis_collect_cell?
+00082e88 f vis_find_first_cell?
+0008a6a8 f render_fill_rows?
+0008a7b0 f vis_sort_cells?           ; depth order of the visible cells
+0008a738 f vis_sort_prepare?
+000832c0 f render_begin_cells?
+00083320 f object_select_buffers?
+0008ac58 f cell_load_objects
+0008aafc f cell_begin
+0008ad4c f cell_transform_object?
+0008ae38 f cell_transform_object_alt?
+0008af24 f object_transform_static?
+0008b04c f object_transform_dynamic?
+0008acf0 f object_flag_a?
+0008ad02 f object_flag_b?
+0008ad14 f object_bounds_check?
+0008a628 f object_begin              ; points g_object_vertices/faces/uvs at the current object
+00083380 f object_transform_vertices ; vertex list ends with 0x7fff
+00083468 f object_build_polygons     ; per face: near-plane test, then g_material_handlers[type].setup
+000840fc l draw_polygon_list_thunk
+0008411d f draw_polygon_list         ; calls g_material_handlers[type].draw / draw_alt for each list entry (-1 ends)
+0008a598 f clip_outcode?
+000c1fc0 f object_transform_float?   ; float path used for objects flagged 0x40000000
+000c2330 f object_matrix_to_float?
+
+# Material handlers: [0] draw, [1] draw_alt (picked by bit 2 of the list entry), [2] setup and
+# [3] setup_alt (build the screen polygon: project, near-clip, add to the depth list; the two
+# differ in the near-plane test). Textured fillers walk vertical columns (EDI += 320) with the
+# texture base patched into the code (0xaaaabbbb placeholder).
+000d5350 f mat0_draw                 ; types 0-2: textured
+000d51e0 f mat0_draw_alt             ; bbox reject, then unclipped or screen-clipped fill
+000d7308 f mat0_build_polygon        ; also used by types 3-7 and 14-15
+000d76a0 f mat0_build_polygon_alt
+000dc1b4 f mat3_draw                 ; types 3-7: textured (writes clipped u/v)
+000dc078 f mat3_draw_alt
+000d8844 f mat8_draw                 ; types 8-9: no texture reads (flat colour?)
+000d8744 f mat8_draw_alt
+000d80a0 f mat8_build_polygon
+000d8280 f mat8_build_polygon_alt    ; also used by types 12-13
+000db310 f mat10_draw                ; types 10-11: textured
+000db1c0 f mat10_draw_alt
+000da500 f mat10_build_polygon
+000da844 f mat10_build_polygon_alt
+000cae84 f mat12_draw                ; types 12-13: no texture reads (flat colour?)
+000cad84 f mat12_draw_alt
+000ca6e0 f mat12_build_polygon
+000cd324 f mat14_draw                ; types 14-15: textured
+000cd1e8 f mat14_draw_alt
+000ccb20 f raster_patch_pitch_cc ; patches the view height into the rasteriser code next to it
+000d1a64 f raster_patch_pitch_cd ; patches the view height into the rasteriser code next to it
+000d65e0 f raster_patch_pitch_d5 ; patches the view height into the rasteriser code next to it
+000da4d8 f raster_patch_pitch_d7 ; patches the view height into the rasteriser code next to it
+000db9b0 f raster_patch_pitch_db ; patches the view height into the rasteriser code next to it
+000dc8d0 f raster_patch_pitch_dc ; patches the view height into the rasteriser code next to it
