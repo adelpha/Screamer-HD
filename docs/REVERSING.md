@@ -123,6 +123,12 @@ runtime helpers). Some findings worth knowing for the port:
   `ticks * 0.01 s` as the raw frame time, smooths it as `(9 * old + raw) / 10` and clamps it to
   0.02-0.2 s. The simulation therefore uses a variable step quantised to 10 ms, which the
   replay records per frame.
+* **Damping table:** `build_pow_table` fills 50 rows x 100 floats with
+  `pow(0.5 + 0.005 k, 50 / (row + 1))`, and each frame uses row `trunc(1 / frame_time)`.
+  That row is one higher than "frames per second - 1", and when the frame time settles at
+  exactly 0.02 s it is row 50, past the end of the table. In the running game the smoothing
+  usually stops a few ulps above 0.02 (0.020000007) and uses row 49. `src/core/sim_clock.*`
+  reproduces the clock and the table bit for bit (verified against the game's memory).
 * **Time-attack ghosts** store positions instead (`ghost_record_frame`, 0x28 bytes per frame).
 * Frame-rate independence comes from `g_frame_pow_table`: pow(k, frame_time) factors used by
   the `*_lerp_toward` helpers and the damping of speeds and yaw rate.

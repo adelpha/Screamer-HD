@@ -27,6 +27,9 @@ Full details: docs/HARNESS.md.
 
 ## Conventions
 - C++20, MSVC /W4 clean. Engine code under `src/core/` stays free of window/frontend code.
-- Headless runs must be deterministic (fixed 70 Hz step; output depends only on frame count).
+- Headless runs must be deterministic (each frame = 2 ticks of the original's 100 Hz clock,
+  see src/core/sim_clock.h; output depends only on frame count).
+- DOSBox runs must be headless (`run-original.ps1 -Headless`); the user doesn't want windows popping up.
+  Window-free screen captures of the original: `.\tools\dosbox\capture-vga.ps1 -Name x -Delay 9 -Autotype '-w 4 esc'`.
 - New unit tests go in `tests/unit/test_*.cpp` and must be listed in `tests/CMakeLists.txt`;
   tests needing original data call `SKIP(...)` when it is absent so CI passes.

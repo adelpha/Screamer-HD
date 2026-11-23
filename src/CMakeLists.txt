@@ -1,8 +1,12 @@
 # Engine-side code that is independent of the window/frontend. Unit tests link this.
 add_library(screamer_core STATIC
+  core/archive.cpp
+  core/dtr.cpp
   core/framebuffer.cpp
   core/gamedata.cpp
   core/image.cpp
+  core/pcx.cpp
+  core/sim_clock.cpp
   core/testpattern.cpp
 )
 target_include_directories(screamer_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

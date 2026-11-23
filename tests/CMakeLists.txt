@@ -7,6 +7,10 @@ add_executable(unit_tests
   unit/test_framebuffer.cpp
   unit/test_image.cpp
   unit/test_gamedata.cpp
+  unit/test_archive.cpp
+  unit/test_dtr.cpp
+  unit/test_pcx.cpp
+  unit/test_sim_clock.cpp
 )
 target_include_directories(unit_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(unit_tests PRIVATE screamer_core)
@@ -34,17 +38,17 @@ function(add_render_test name)
   set_tests_properties(render.${name} PROPERTIES LABELS "render")
 endfunction()
 
-add_render_test(testpattern_fb_f0  ARGS --headless --frames 1  --dump-fb    OUTPUT testpattern_fb_f0.png  GOLDEN testpattern_fb_f0.png)
-add_render_test(testpattern_fb_f60 ARGS --headless --frames 61 --dump-fb    OUTPUT testpattern_fb_f60.png GOLDEN testpattern_fb_f60.png)
+add_render_test(testpattern_fb_f0  ARGS --headless --scene testpattern --frames 1  --dump-fb    OUTPUT testpattern_fb_f0.png  GOLDEN testpattern_fb_f0.png)
+add_render_test(testpattern_fb_f60 ARGS --headless --scene testpattern --frames 61 --dump-fb    OUTPUT testpattern_fb_f60.png GOLDEN testpattern_fb_f60.png)
 add_render_test(testpattern_window_640x480
-  ARGS --headless --frames 1 --size 640x480 --screenshot
+  ARGS --headless --scene testpattern --frames 1 --size 640x480 --screenshot
   OUTPUT testpattern_window_640x480.png GOLDEN testpattern_window_640x480.png)
 add_render_test(testpattern_window_widescreen
-  ARGS --headless --frames 1 --size 1280x720 --screenshot
+  ARGS --headless --scene testpattern --frames 1 --size 1280x720 --screenshot
   OUTPUT testpattern_window_1280x720.png GOLDEN testpattern_window_1280x720.png)
 
 # --- Smoke test: the executable starts, runs and exits cleanly ---
-add_test(NAME smoke.headless_run COMMAND screamer --headless --frames 10)
+add_test(NAME smoke.headless_run COMMAND screamer --headless --scene testpattern --frames 10)
 set_tests_properties(smoke.headless_run PROPERTIES LABELS "smoke" PASS_REGULAR_EXPRESSION "frames=10")
 
 # --- Original game data: verify the user's copy against the recorded manifest ---

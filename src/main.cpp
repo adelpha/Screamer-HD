@@ -1,14 +1,18 @@
 // Screamer recompilation: SDL3 frontend.
 //
-// Until the original game logic is reconstructed this drives a deterministic
-// test pattern through the full render path. The command line is designed for
+// Until the original game logic is reconstructed this shows either the title
+// screen from the user's game files (--scene title) or a deterministic test
+// pattern (--scene testpattern) through the full render path. The command line is designed for
 // automated testing: --headless runs without a visible window (SDL "offscreen"
 // video driver, software renderer, dummy audio) and --frames/--screenshot/
 // --dump-fb produce reproducible images the test harness compares.
 
+#include "core/archive.h"
 #include "core/framebuffer.h"
 #include "core/gamedata.h"
 #include "core/image.h"
+#include "core/pcx.h"
+#include "core/sim_clock.h"
 #include "core/testpattern.h"
 
 #include <SDL3/SDL.h>
@@ -17,11 +21,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 namespace {
-
-constexpr double kSimHz = 70.0;  // VGA mode 13h refresh rate
 
 struct Options {
     std::string data_dir;
@@ -35,6 +38,7 @@ struct Options {
     int width = 0, height = 0;      // output size; 0 = default
     std::string renderer;           // SDL renderer name, empty = default
     std::string aspect = "4:3";     // 4:3 | stretch | square
+    std::string scene;              // title | testpattern; empty = title when game data is found
 };
 
 void print_usage() {
@@ -43,7 +47,8 @@ void print_usage() {
         "Usage: screamer [options]\n"
         "  --data DIR           original game directory (default: $SCREAMER_DATA or build-time path)\n"
         "  --headless           no visible window, software renderer, dummy audio\n"
-        "  --frames N           exit after N simulation frames (70 Hz)\n"
+        "  --frames N           exit after N simulation frames (2 ticks of the game's 100 Hz clock each)\n"
+        "  --scene NAME         title (needs the game files; default when found) or testpattern\n"
         "  --screenshot FILE    save the rendered window output after the last frame (.png/.bmp)\n"
         "  --dump-fb FILE       save the native 320x200 framebuffer after the last frame\n"
         "  --capture-every N    save the framebuffer every N frames\n"
@@ -73,6 +78,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--capture-dir") o.capture_dir = next("--capture-dir");
         else if (a == "--renderer") o.renderer = next("--renderer");
         else if (a == "--aspect") o.aspect = next("--aspect");
+        else if (a == "--scene") o.scene = next("--scene");
         else if (a == "--size") {
             if (std::sscanf(next("--size"), "%dx%d", &o.width, &o.height) != 2 || o.width <= 0 || o.height <= 0) {
                 std::fprintf(stderr, "--size expects WxH\n");
@@ -131,8 +137,25 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (auto dir = scr::find_game_dir(opt.data_dir)) SDL_Log("game data: %s", dir->c_str());
+    const auto game_dir = scr::find_game_dir(opt.data_dir);
+    if (game_dir) SDL_Log("game data: %s", game_dir->c_str());
     else SDL_Log("game data: not found (pass --data or set SCREAMER_DATA)");
+
+    // The title screen as frontend_show_title draws it: menu1l.pcx from gfx\graf.dat.
+    std::optional<scr::PcxImage> title;
+    if (opt.scene.empty() || opt.scene == "title") {
+        if (game_dir) {
+            if (auto path = scr::resolve_game_file(*game_dir, "GFX/GRAF.DAT")) {
+                if (auto archive = scr::Archive::open(*path)) {
+                    if (auto file = archive->read("menu1l.pcx")) title = scr::decode_pcx(*file);
+                }
+            }
+        }
+        if (!title && opt.scene == "title") {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "--scene title needs the original game files");
+            return 1;
+        }
+    }
 
     SDL_WindowFlags wflags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (opt.fullscreen) wflags |= SDL_WINDOW_FULLSCREEN;
@@ -149,8 +172,9 @@ int main(int argc, char** argv) {
 
     uint64_t frame = 0;
     bool running = true;
-    const uint64_t step_ns = static_cast<uint64_t>(1e9 / kSimHz);
-    uint64_t last = SDL_GetTicksNS(), acc = step_ns;  // draw frame 0 immediately
+    scr::SimClock clock;  // the original's frame clock: 100 Hz ticks, at least 2 per frame
+    uint64_t last = SDL_GetTicksNS(), tick_acc = 0;
+    clock.add_ticks(scr::SimClock::kMinTicksPerFrame);  // draw frame 0 immediately
     int exit_code = 0;
 
     while (running) {
@@ -173,19 +197,22 @@ int main(int argc, char** argv) {
         }
         if (!running) break;
 
-        // Fixed-step simulation. Headless runs exactly one step per loop so
-        // output depends only on the frame count, never on wall-clock time.
+        // Headless runs advance exactly 2 ticks per loop, so output depends only on the
+        // frame count. Interactive runs count real 10 ms ticks, like the timer interrupt.
         bool stepped = false;
         if (opt.headless) {
-            acc = step_ns;
+            if (frame > 0) clock.add_ticks(scr::SimClock::kMinTicksPerFrame);
         } else {
             const uint64_t now = SDL_GetTicksNS();
-            acc += now - last;
+            tick_acc += now - last;
             last = now;
+            clock.add_ticks(static_cast<uint32_t>(tick_acc / scr::SimClock::kTickNs));
+            tick_acc %= scr::SimClock::kTickNs;
         }
-        while (acc >= step_ns) {
-            acc -= step_ns;
-            scr::draw_test_pattern(fb, frame);
+        if (clock.frame_ready()) {
+            clock.begin_frame();
+            if (title) scr::blit_pcx(*title, fb);
+            else scr::draw_test_pattern(fb, frame);
             stepped = true;
             if (opt.capture_every && frame % opt.capture_every == 0) {
                 scr::SurfacePtr s = scr::framebuffer_to_surface(fb);
@@ -194,7 +221,6 @@ int main(int argc, char** argv) {
                 save_or_log(s.get(), opt.capture_dir + name);
             }
             ++frame;
-            if (opt.headless) break;
         }
 
         if (stepped) {
