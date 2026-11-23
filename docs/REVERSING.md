@@ -103,6 +103,29 @@ py -3.14 tools\data\datfile.py cat SCREAMER\DATA\GEN.DAT CARS.DTR
 * Library functions use their Watcom C / HMI SOS API names; game code uses snake_case
   grouped by subsystem prefix (`obj_`, `MemMgr_`, `archive_`, `cd_`, `sfx_`, `race_`, ...).
 
+## Renderer
+
+The 3D renderer is hand-written assembly (`0x81000`-`0x8C000` for the pipeline,
+`0xCA6E0`-`0xDC8F0` for the polygon fillers) that patches its own code at run time (view
+height, texture base addresses). Much of it is only reached through the material dispatch table,
+so `ScreamerInit.java` turns orphan code into functions and only marks fixups as pointers inside
+code when they form tables (a lone fixup there is usually an instruction operand).
+
+* Fixed point: matrices and `g_sincos_table` are 1.15/2.14; angles run 0..0x7FF (2048 per turn).
+* Per frame (`render_scene`, `render_scene_alt`): camera matrices (`camera_build_matrices`),
+  background band, collect and depth-sort the visible map cells (`vis_*`), then for every cell
+  and object `object_begin` -> `object_transform_vertices` -> `object_build_polygons` ->
+  `draw_polygon_list`.
+* `g_material_handlers` (0x822E0) has four handlers for each of 16 material types:
+  `draw`, `draw_alt`, `build_polygon`, `build_polygon_alt`. `build_polygon` projects a face,
+  clips it at the near plane and adds it to `g_poly_buffer`; `draw_polygon_list` then calls
+  `draw` or `draw_alt` (bit 2 of the entry) per polygon. The textured fillers walk vertical
+  columns (destination += 320), which matters for any higher-resolution port: the column loop,
+  the patched pitch (`raster_patch_pitch_*`) and `g_row_offsets` (481 rows) assume a
+  320-byte-wide buffer.
+* Running original (intro): view 320x200, `g_material_handlers` relocated by the code delta,
+  222 visible cells, 84 drawn in depth order.
+
 ## Checking against the running original
 
 `tools/ghidra/runtime-probe.ps1` runs the original in DOSBox headless (SDL offscreen driver, no
@@ -123,7 +146,7 @@ and the video buffers in conventional memory, which is what `attract_mode_setup`
 
 ## What is known so far
 
-See `reference/symbols/STARTL.sym` for every name; about half of the 1,032 functions are
+See `reference/symbols/STARTL.sym` for every name; 566 of the 1,118 functions are
 named. Address ranges in `code1`:
 
 | Range | Contents |
