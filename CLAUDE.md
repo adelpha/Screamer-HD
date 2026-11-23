@@ -16,6 +16,7 @@ disassembly dumps, or Ghidra projects to git. Hashes, notes and our own code are
 - Original game reference: `.\tools\dosbox\run-original.ps1 -Name x -Autotype '-w 4 esc' -Shots 9 -Duration 10`
   then Read `artifacts\dosbox\x\shot_*.png`. Add `-Webserver` and use `tools\dosbox\read-memory.ps1`
   for memory/CPU state.
+- Ghidra headless: `.	oolsghidra-headless.ps1 <projdir> <name> ...` (keep projects under artifacts). Python: `py -3.14`.
 - Compare images: `build\debug\bin\imgcmp.exe expected.png actual.png --diff d.png`.
 
 Full details: docs/HARNESS.md.

@@ -11,7 +11,8 @@ no manual steps.
 | SDL3 | fetched by CMake (`cmake/Dependencies.cmake`) | pinned to `release-3.4.20` |
 | DOSBox Staging 0.83.1 | `tools/bin/dosbox-staging/` (git-ignored) | only for reference runs of the original |
 | Original game | `SCREAMER/` (git-ignored) or `$env:SCREAMER_DATA` | never committed |
-| Ghidra 12.1.4 | `ghidra_12.1.4_PUBLIC/` (git-ignored) | needs JDK 21+ |
+| Ghidra 12.1.4 | `ghidra_12.1.4_PUBLIC/` (git-ignored) | run via `tools/ghidra-headless.ps1`, which selects Temurin JDK 21 (default JAVA_HOME is Java 8) |
+| Python 3.14 | `py -3.14` (not on PATH as `python`) | for data-parsing scripts |
 
 ## Build, run, test
 
