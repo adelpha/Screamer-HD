@@ -195,96 +195,93 @@ typedef struct Wheel {            /* 0x54 bytes, PlayerCar.wheel[4] */
 
 /* The human player's car (g_player_car). Size from the gap to the next global. */
 typedef struct PlayerCar { /* 0x1084 bytes */
-    unsigned char pad_000[0x4];
-    int f_004;
-    int f_008;
-    int f_00c;
-    int f_010;
+    int wheel_susp[4]; /* 0x000 suspension travel per wheel; lowers the wheel sub-objects */
+    int frame_flags_010; /* 0x010 cleared every frame (copy of frame_flags_018) */
     unsigned char pad_014[0x4];
-    int f_018;
+    int frame_flags_018; /* 0x018 cleared every frame */
     unsigned char pad_01c[0x24];
     int wall_contact; /* set when a corner probe hits a wall */
     int wall_push_x; /*  */
     unsigned char pad_048[0x4];
     int wall_push_z; /*  */
-    int f_050;
+    int wall_probe_data; /* 0x050 f_28 of the probe that hit the wall */
     CornerProbe probe[4]; /* 0x054 wall probes at the four corners */
     unsigned int nearby_cpu_mask; /* bit n set when g_opponents[n] is within 1500 units */
-    unsigned int f_108;
+    unsigned int crash_yaw_rate; /* 0x108 yaw spin while crashed; 0 when driving normally */
     unsigned char pad_10c[0x4];
-    int f_110;
+    int braking; /* 0x110 brake as an int: non-zero while the brake is applied */
     float brake; /* 0..1 */
     int shadow_x; /* car_update_shadow_position */
     int shadow_y; /* pos_y - 20 */
     int shadow_z; /*  */
-    float f_124;
-    float f_128;
-    float f_12c;
+    float body_pitch_ofs; /* 0x124 added to pitch for drawing, ghosts and network */
+    float drift_angle; /* 0x128 added to yaw for drawing; relaxes back to 0 (car_update_skid) */
+    float body_roll_ofs; /* 0x12c added to roll for drawing */
     int body_ofs_x; /* added to pos_* for the body object */
     int body_ofs_y; /*  */
     int body_ofs_z; /*  */
     int track_heading; /* heading of the track at the car (track_find_nearest_point) */
-    int f_140;
+    int gear_shift_latch; /* 0x140 one shift per key press */
     float throttle; /* 0..1 */
     int crash_state; /* 0x148: 0 driving, 2 just crashed, 1 crashed, 5 ... */
-    int f_14c;
-    int f_150;
-    int f_154;
+    int crash_bounce; /* 0x14c bounce speed after a crash, starts at 3000 */
+    int crash_bounce_count; /* 0x150 crash ends after 4 bounces */
+    int crash_pitch_rate; /* 0x154 */
     unsigned char pad_158[0x4];
-    int f_15c;
-    int f_160;
+    int crash_roll_rate; /* 0x15c */
+    int crash_event_slot; /* 0x160 announcer slot set on a crash */
     unsigned char pad_164[0xc];
     int spin_state; /* 1 = spinning (car_update_spin) */
-    float f_174;
-    float f_178;
+    float rpm_per_speed; /* 0x174 engine_rpm = sh_rap[gear-1] * speed * rpm_per_speed */
+    float engine_f178; /* 0x178 read by car_update_engine_gearbox */
     float brake_decel; /* speed -= brake_decel * dt * brake */
     float slide_threshold; /* speed * heading error above this slides the car */
     float grip_limit; /* lateral force limit before skidding */
-    float f_188;
-    float f_18c;
-    float f_190;
+    float skid_brake_limit; /* 0x188 braking force above this skids */
+    float max_accel; /* 0x18c speed gain per second limit */
+    float brake_skid_limit; /* 0x190 brake * speed above this starts a skid */
     Wheel wheel[4]; /* 0x194 */
     unsigned char pad_2e4[0xc];
-    int f_2f0;
+    int brake_mode; /* 0x2f0 car_update_brake takes another path when non-zero */
     float turn_rate; /* steering curvature; lateral load ~ turn_rate * speed^2 */
-    float f_2f8;
-    unsigned int f_2fc;
+    float turn_radius_k; /* 0x2f8 lateral acceleration = speed^2 / turn_radius_k */
+    unsigned int net_contact_mask; /* 0x2fc bit n set when touching network car n */
     unsigned char pad_300[0x14c];
-    int f_44c;
+    int wheel_part0; /* 0x44c sub-object index of a wheel inside the body model */
     unsigned char pad_450[0x4];
-    int f_454;
+    int wheel_part1; /* 0x454 */
     unsigned char pad_458[0x4];
-    int f_45c;
+    int wheel_part2; /* 0x45c */
     int body_obj; /* index into g_objects */
-    int f_464;
+    int wheel_part3; /* 0x464 */
     int shadow_obj; /* index into g_objects */
     unsigned char pad_46c[0x4];
     CarData car; /* 0x470 copy of the selected g_cars_data entry */
     int pos_x; /* world position, map units */
     int pos_y;
     int pos_z;
-    int f_4bc;
-    int f_4c0;
+    int cam_shake_x; /* 0x4bc chase camera x offset, toggled while crashing */
+    int body_lift; /* 0x4c0 raises the body and chase camera, lowers the wheels */
     unsigned char pad_4c4[0x4];
     float pitch; /* radians */
     float yaw; /* radians, wrapped to 0..2pi */
     float roll; /* radians */
-    float f_4d4;
+    float ground_pitch; /* 0x4d4 from the wheel heights (car_update_body_from_wheels) */
     unsigned char pad_4d8[0x4];
-    float f_4dc;
-    float f_4e0;
+    float ground_pitch_neg; /* 0x4dc */
+    float lean_pitch; /* 0x4e0 from wheel loads (car_update_wheel_loads) */
     unsigned char pad_4e4[0x4];
-    float f_4e8;
+    float lean_roll; /* 0x4e8 */
     int ground_y; /* average ground height under the wheels */
-    int f_4f0;
-    unsigned int f_4f4;
+    int skid_prev; /* 0x4f0 */
+    unsigned int skid; /* 0x4f4 non-zero while skidding */
     unsigned char pad_4f8[0x4];
-    float f_4fc;
-    float f_500;
+    float skid_level; /* 0x4fc decays to 0 */
+    float slip_a; /* 0x500 */
     unsigned char pad_504[0x4];
-    float f_508;
+    float slip_b; /* 0x508 */
     float speed;
-    float f_510;
+    float speed_limit; /* 0x510 top speed for the current gear and surface */
     unsigned char pad_514[0x18];
     int front_bumper_x; /* world space (car_update_bumpers) */
     unsigned char pad_530[0x4];
@@ -294,37 +291,37 @@ typedef struct PlayerCar { /* 0x1084 bytes */
     int rear_bumper_z; /*  */
     int collision_radius; /* used for all car/car and car/obstacle tests */
     float yaw_rate; /* rad/s, decays each frame */
-    float f_54c;
+    float impact_timer; /* 0x54c 5000 after a hit, decays */
     float impact_vel_x; /* set by collisions */
     unsigned char pad_554[0x4];
     float impact_vel_z; /*  */
     int contact_dist; /* distance to the car being tested */
-    int f_560;
+    int contact_limit; /* 0x560 sum of the two collision radii */
     int contact_dx; /*  */
     unsigned char pad_568[0x4];
     int contact_dz; /*  */
     unsigned char pad_570[0x18];
     float prev_speed; /* speed last frame */
-    int f_58c;
-    int f_590;
+    int prev_surface; /* 0x58c */
+    int prev_marker_flags; /* 0x590 */
     unsigned char pad_594[0x4];
     int track_marker; /* nearest track marker index */
     int checkpoints_passed; /*  */
     unsigned char pad_5a0[0xc8];
-    int f_668;
-    unsigned int f_66c;
-    float f_670;
+    int checkpoint_marker; /* 0x668 track marker index for checkpoint logic */
+    unsigned int surface; /* 0x66c surface type from the track marker; picks engine sample and dust flag (car_apply_surface) */
+    float surface_grip; /* 0x670 from the track marker table */
     unsigned char pad_674[0x4];
-    int f_678;
-    float f_67c;
-    int f_680;
+    int marker_flags; /* 0x678 bit 1 checkpoint, bit 2 announcer cue */
+    float marker_fraction; /* 0x67c progress between this marker and the next */
+    int track_progress; /* 0x680 marker_fraction + marker + lap * 100; used for race positions */
     int lap; /* laps completed */
     int race_position; /* 1 = first; also used as result code in some modes */
     unsigned char pad_68c[0xd0];
-    int f_75c;
+    int marker_index; /* 0x75c checkpoint mode */
     unsigned char pad_760[0x20];
-    int f_780;
-    int f_784;
+    int checkpoint_event; /* 0x780 1 passed a checkpoint, 2 passed the line */
+    int timing_started; /* 0x784 lap timing runs once the line has been crossed */
     unsigned char pad_788[0x4];
     int lap_time; /* s */
     float time_left; /* checkpoint timer; +bonus_time per checkpoint, +1 per obstacle */
@@ -332,37 +329,37 @@ typedef struct PlayerCar { /* 0x1084 bytes */
     unsigned char pad_798[0x10];
     float engine_rpm; /* (unconfirmed) engine gearbox and cockpit gauges */
     int gear; /* (unconfirmed)  */
-    int f_7b0;
+    int surface_render_flag; /* 0x7b0 0x8000 off-road (dust); passed to the body object */
     unsigned int render_flags; /* CarData.animation | 0x4000 no brake | 0x2000 slow */
     int obstacles_hit; /* count */
     int obstacles_counted; /* car_add_obstacle_time */
     int markers_passed; /* checkpoint mode */
     unsigned char pad_7c4[0x8];
     int engine_sfx; /* sample handle of the engine sound */
-    int f_7d0;
-    int f_7d4;
+    int skid_sfx; /* 0x7d0 sample handle, -1 when silent */
+    int surface_sfx; /* 0x7d4 */
     unsigned char pad_7d8[0x10];
-    int f_7e8;
-    int f_7ec;
-    unsigned int f_7f0;
-    int f_7f4;
-    int f_7f8;
-    int f_7fc;
-    int f_800;
-    int f_804;
-    int f_808;
-    int f_80c;
+    int net_session; /* 0x7e8 network packet sent by net_pack_player_state */
+    int net_node; /* 0x7ec */
+    unsigned int net_flags; /* 0x7f0 render flags */
+    int net_surface_flag; /* 0x7f4 */
+    int net_car_index; /* 0x7f8 */
+    int net_lap; /* 0x7fc */
+    int net_position; /* 0x800 */
+    int net_progress; /* 0x804 */
+    int net_lap_time; /* 0x808 */
+    int net_impact_x; /* 0x80c */
     unsigned char pad_810[0x4];
-    int f_814;
-    int f_818;
-    int f_81c;
-    int f_820;
-    float f_824;
-    float f_828;
-    float f_82c;
-    int f_830;
-    int f_834;
-    int f_838;
+    int net_impact_z; /* 0x814 */
+    int net_x; /* 0x818 */
+    int net_y; /* 0x81c */
+    int net_z; /* 0x820 */
+    float net_pitch; /* 0x824 */
+    float net_yaw; /* 0x828 */
+    float net_roll; /* 0x82c */
+    int net_ground_y; /* 0x830 */
+    int net_pitch_i; /* 0x834 */
+    int net_roll_i; /* 0x838 */
     unsigned char pad_83c[0x848];
 } PlayerCar;
 
@@ -372,99 +369,99 @@ typedef struct CpuCar { /* 0x590 bytes */
     int shadow_obj; /* index into g_objects */
     unsigned char pad_008[0x4];
     int nearby_cpu_mask; /* bit n set when a later opponent is within 1500 units */
-    float f_010;
+    float unused_010; /* 0x010 no reads or writes found */
     unsigned char pad_014[0x44];
-    int f_058;
+    int wheel_part1; /* 0x058 sub-object index; wheel blocks are 0x54 apart */
     unsigned char pad_05c[0x50];
-    int f_0ac;
+    int wheel_part2; /* 0x0ac */
     unsigned char pad_0b0[0x50];
-    int f_100;
+    int wheel_part3; /* 0x100 */
     unsigned char pad_104[0x50];
-    int f_154;
+    int wheel_part4; /* 0x154 */
     unsigned char pad_158[0x8];
-    int f_160;
+    int prev_lateral_x; /* 0x160 opponent_save_prev_position */
     unsigned char pad_164[0x4];
-    int f_168;
-    int f_16c;
+    int prev_lateral_z; /* 0x168 */
+    int prev_x; /* 0x16c */
     unsigned char pad_170[0x4];
-    int f_174;
-    int f_178;
+    int prev_z; /* 0x174 */
+    int prev_speed; /* 0x178 a sudden drop marks a hit (opponent_find_cpu_contacts) */
     unsigned char pad_17c[0x6c];
-    int f_1e8;
+    int body_front_z; /* 0x1e8 used to place the bumpers */
     unsigned char pad_1ec[0x28];
-    int f_214;
+    int body_rear_z; /* 0x214 */
     unsigned char pad_218[0x20];
-    int f_238;
-    float f_23c;
+    int ground_y; /* 0x238 track height on the racing line (opponent_check_ground) */
+    float ground_pitch; /* 0x23c */
     unsigned char pad_240[0x4];
-    float f_244;
+    float ground_roll; /* 0x244 */
     int spline_index; /* racing line */
     int spline_segment; /*  */
     int spline_t; /* position within the current spline segment */
-    int f_254;
-    int f_258;
-    int f_25c;
-    int f_260;
-    int f_264;
+    int spline_step; /* 0x254 0 or 1: which half of the segment */
+    int line_x; /* 0x258 racing-line position; pos = line + lateral offset */
+    int line_point; /* 0x25c current spline point index */
+    int line_z; /* 0x260 */
+    int ctrl_a_x; /* 0x264 spline control points */
     unsigned char pad_268[0x4];
-    int f_26c;
-    int f_270;
+    int ctrl_a_z; /* 0x26c */
+    int ctrl_b_x; /* 0x270 */
     unsigned char pad_274[0x4];
-    int f_278;
-    float f_27c;
-    int f_280;
-    float f_284;
-    float f_288;
+    int ctrl_b_z; /* 0x278 */
+    float line_yaw; /* 0x27c heading of the racing line */
+    int line_yaw_prev; /* 0x280 */
+    float seg_p0x; /* 0x284 segment control points (floats) */
+    float seg_p0z; /* 0x288 */
     unsigned char pad_28c[0x4];
-    float f_290;
-    float f_294;
+    float seg_p1x; /* 0x290 */
+    float seg_p1z; /* 0x294 */
     unsigned char pad_298[0x4];
-    float f_29c;
-    float f_2a0;
+    float seg_p2x; /* 0x29c */
+    float seg_p2z; /* 0x2a0 */
     unsigned char pad_2a4[0x10];
-    int f_2b4;
-    int f_2b8;
+    int ctrl_next_x; /* 0x2b4 */
+    int ctrl_next_z; /* 0x2b8 */
     unsigned char pad_2bc[0x4];
-    int f_2c0;
-    int f_2c4;
-    int f_2c8;
-    int f_2cc;
-    int f_2d0;
-    int f_2d4;
-    int f_2d8;
-    int f_2dc;
-    int f_2e0;
+    int catching_up; /* 0x2c0 set while the target speed is raised to catch the player */
+    int shadow_y; /* 0x2c4 */
+    int part_front_wheels; /* 0x2c8 "fauto" sub-object */
+    int part_front_angle; /* 0x2cc */
+    int part_rear_wheels; /* 0x2d0 "rauto" sub-object */
+    int part_rear_angle; /* 0x2d4 */
+    int part_steer; /* 0x2d8 "MV_mauto" sub-object */
+    int part_steer_angle; /* 0x2dc */
+    int car_index; /* 0x2e0 index into g_cars_data */
     OpponentDef def; /* 0x2e4 from the track's OPPONENTS section */
     int crash_state; /* 0 driving, 2 just crashed, 1 crashed */
-    int f_2fc;
-    int f_300;
-    int f_304;
-    int f_308;
-    int f_30c;
+    int crash_bounce; /* 0x2fc starts at 3000 */
+    int crash_bounce_count; /* 0x300 */
+    int crash_pitch_rate; /* 0x304 */
+    int crash_yaw_rate; /* 0x308 */
+    int crash_roll_rate; /* 0x30c */
     unsigned char pad_310[0x4];
-    float f_314;
-    float f_318;
-    float f_31c;
+    float crash_pitch; /* 0x314 added to pitch */
+    float crash_yaw; /* 0x318 added to yaw */
+    float crash_roll; /* 0x31c added to roll */
     int track_marker; /* nearest track marker */
-    int f_324;
+    int checkpoints_passed; /* 0x324 */
     unsigned char pad_328[0xc8];
-    int f_3f0;
-    int f_3f4;
+    int checkpoint_marker; /* 0x3f0 */
+    int marker_flags; /* 0x3f4 */
     unsigned char pad_3f8[0x4];
-    float f_3fc;
+    float speed_factor; /* 0x3fc multiplies OpponentDef speeds */
     unsigned char pad_400[0x4];
-    float f_404;
-    float f_408;
-    int f_40c;
+    float marker_fraction; /* 0x404 */
+    float track_progress; /* 0x408 marker_fraction + marker + lap * 100 */
+    int lap; /* 0x40c */
     int race_position; /*  */
     int active;
     float speed; /*  */
-    int f_41c;
+    int front_bumper_local_x; /* 0x41c body space */
     unsigned char pad_420[0x4];
-    int f_424;
-    int f_428;
+    int front_bumper_local_z; /* 0x424 */
+    int rear_bumper_local_x; /* 0x428 */
     unsigned char pad_42c[0x4];
-    int f_430;
+    int rear_bumper_local_z; /* 0x430 */
     int front_bumper_x; /* world space */
     unsigned char pad_438[0x4];
     int front_bumper_z; /*  */
@@ -472,18 +469,18 @@ typedef struct CpuCar { /* 0x590 bytes */
     unsigned char pad_444[0x4];
     int rear_bumper_z; /*  */
     int collision_radius; /*  */
-    float f_450;
+    float lateral_push; /* 0x450 decays each frame */
     int lateral_ofs_x; /* offset from the racing line */
-    int f_458;
+    int lateral_start; /* 0x458 */
     int lateral_ofs_z; /*  */
     unsigned char pad_460[0xc];
-    float f_46c;
+    float lateral_timer; /* 0x46c */
     unsigned char pad_470[0x14];
-    int f_484;
-    int f_488;
-    int f_48c;
+    int contact_dist; /* 0x484 */
+    int contact_limit; /* 0x488 sum of radii */
+    int contact_dx; /* 0x48c */
     unsigned char pad_490[0x4];
-    int f_494;
+    int contact_dz; /* 0x494 */
     int pos_x; /* world position */
     int pos_y;
     int pos_z;
@@ -491,87 +488,88 @@ typedef struct CpuCar { /* 0x590 bytes */
     float yaw; /* radians */
     float roll; /* radians */
     unsigned char pad_4b0[0xc];
-    float f_4bc;
+    float draw_yaw; /* 0x4bc yaw + yaw_wobble */
     unsigned char pad_4c0[0x8];
-    float f_4c8;
+    float yaw_wobble; /* 0x4c8 relaxes to 0 */
     unsigned char pad_4cc[0x10];
     int body_obj; /* index into g_objects */
-    int f_4e0;
-    float f_4e4;
-    int f_4e8;
-    int f_4ec;
+    int part_extra; /* 0x4e0 sub-object index */
+    float viewer_distance; /* 0x4e4 the car is simulated only while this is small enough */
+    int render_flags; /* 0x4e8 0 or 0xff00 (brake lights) */
+    int engine_sfx; /* 0x4ec sample handle, -1 when silent */
     unsigned char pad_4f0[0x8];
-    int f_4f8;
-    int f_4fc;
-    int f_500;
-    int f_504;
+    int tv_cam_x; /* 0x4f8 camera_tv_track_opponent state */
+    int tv_cam_y; /* 0x4fc */
+    int tv_cam_z; /* 0x500 */
+    int tv_cam_target_x; /* 0x504 */
     unsigned char pad_508[0x4];
-    int f_50c;
+    int tv_cam_target_z; /* 0x50c */
     unsigned char pad_510[0x18];
-    int f_528;
-    int f_52c;
-    int f_530;
+    int tv_cam_angle; /* 0x528 */
+    int tv_cam_dist; /* 0x52c */
+    int tv_cam_flag; /* 0x530 */
     unsigned char pad_534[0x18];
-    int f_54c;
-    int f_550;
-    int f_554;
-    int f_558;
+    int tv_cam_a; /* 0x54c */
+    int tv_cam_b; /* 0x550 */
+    int tv_cam_point; /* 0x554 nearest TV camera point */
+    int tv_cam_prev_point; /* 0x558 */
     unsigned char pad_55c[0x8];
-    int f_564;
-    int f_568;
-    int f_56c;
+    int tv_cam_cut; /* 0x564 */
+    int tv_cam_target; /* 0x568 */
+    int tv_cam_c; /* 0x56c */
     unsigned char pad_570[0x4];
-    int f_574;
-    int f_578;
+    int tv_cam_d; /* 0x574 */
+    int tv_cam_e; /* 0x578 */
     unsigned char pad_57c[0x10];
-    int f_58c;
+    int tv_cam_car_id; /* 0x58c */
 } CpuCar;
 
-/* A network player's car (g_net_players[]). */
+/* A network player's car (g_net_players[]): filled from the packets other players send
+ * (see the net_* fields of PlayerCar). */
 typedef struct NetCar { /* 0x2a8 bytes */
     unsigned char pad_000[0x14];
-    int f_014;
-    int f_018;
-    int f_01c;
+    int flags; /* 0x014 bit per node, 0x10000 crashed, 0x20000 left the race */
+    int render_flags; /* 0x018 passed to the body object */
+    int car_index; /* 0x01c index into g_cars_data (0..12) */
     unsigned char pad_020[0x1c];
-    int f_03c;
-    int f_040;
-    int f_044;
+    int pos_x; /* 0x03c */
+    int pos_y; /* 0x040 */
+    int pos_z; /* 0x044 */
     unsigned char pad_048[0x4];
-    float f_04c;
+    float yaw; /* 0x04c */
     unsigned char pad_050[0x4];
-    int f_054;
+    int shadow_y; /* 0x054 */
     unsigned char pad_058[0xc];
-    int f_064;
+    int body_obj; /* 0x064 index into g_objects */
     unsigned char pad_068[0x4];
-    int f_06c;
+    int shadow_obj; /* 0x06c */
     unsigned char pad_070[0xb4];
-    float f_124;
-    float f_128;
-    float f_12c;
-    int f_130;
-    int f_134;
-    int f_138;
+    unsigned char pad_124[0x4]; /* draft field from a PlayerCar function; not a NetCar access */
+    unsigned char pad_128[0x4]; /* draft field from a PlayerCar function; not a NetCar access */
+    unsigned char pad_12c[0x4]; /* draft field from a PlayerCar function; not a NetCar access */
+    unsigned char pad_130[0x4]; /* draft field from a PlayerCar function; not a NetCar access */
+    unsigned char pad_134[0x4]; /* draft field from a PlayerCar function; not a NetCar access */
+    unsigned char pad_138[0x4]; /* draft field from a PlayerCar function; not a NetCar access */
     unsigned char pad_13c[0xc];
-    int f_148;
+    unsigned char pad_148[0x4]; /* draft field from a PlayerCar function; not a NetCar access */
     unsigned char pad_14c[0xd8];
-    int f_224;
+    int body_front_z; /* 0x224 used to place the bumpers */
     unsigned char pad_228[0x28];
-    int f_250;
+    int body_rear_z; /* 0x250 */
     unsigned char pad_254[0x20];
-    int f_274;
+    int front_bumper_local_x; /* 0x274 body space */
     unsigned char pad_278[0x4];
-    int f_27c;
-    int f_280;
+    int front_bumper_local_z; /* 0x27c */
+    int rear_bumper_local_x; /* 0x280 */
     unsigned char pad_284[0x4];
-    int f_288;
-    int f_28c;
+    int rear_bumper_local_z; /* 0x288 */
+    int front_bumper_x; /* 0x28c world space */
     unsigned char pad_290[0x4];
-    int f_294;
-    int f_298;
+    int front_bumper_z; /* 0x294 */
+    int rear_bumper_x; /* 0x298 */
     unsigned char pad_29c[0x4];
-    int f_2a0;
-    int f_2a4;
+    int rear_bumper_z; /* 0x2a0 */
+    int collision_radius; /* 0x2a4 */
 } NetCar;
 
 #pragma pack(pop)

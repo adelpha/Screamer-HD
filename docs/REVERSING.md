@@ -68,6 +68,9 @@ parses it with Ghidra's C parser before applying the symbol map, so `type=` and 
 the types (for example `g_player_car` is a `PlayerCar` and the car functions take a `PlayerCar *`).
 
 * Fields named after their meaning are confirmed (from the code, the data files or the running game).
+  Every field the code touches in `PlayerCar`, `CpuCar` and `NetCar` has a name; a few names that
+  only describe how a field is used (`frame_flags_010`, `engine_f178`, `tv_cam_a`...) are worth
+  revisiting when that code is ported.
 * `f_<offset>` fields have a known type, from how the code accesses them, but no known meaning yet.
   `pad_<offset>` are bytes that no analysed function touches.
 * `tools/ghidra/check_types.py` checks every struct against the size in its comment; run it
