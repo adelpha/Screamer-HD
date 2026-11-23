@@ -75,6 +75,8 @@ config (user's own DOSBox config is ignored), mounts `SCREAMER/` as C: and the C
 * **Memory/CPU**: `-Webserver` enables the DOSBox REST API on `127.0.0.1:8086`. While running,
   `tools/dosbox/read-memory.ps1` reads memory (e.g. `-Address 0xA0000 -Length 64000` for the
   mode 13h screen) or `-Cpu` for registers. Works with the DOS4GW protected-mode game.
+* **Headless**: `-Headless` sets SDL's offscreen video driver, so no DOSBox window appears
+  (cannot be combined with `-Shots`; read memory through `-Webserver` instead).
 * **Debugger**: `-Debugger` uses `dosbox_with_debugger.exe` (Alt+Pause breaks in).
 * `-Cycles 'fixed 60000'` gives more repeatable timing than `max`. Audio is off unless `-Sound`.
 
@@ -99,3 +101,8 @@ game memory through the REST API (below) over screenshots.
   SPECIAL MODES, NETWORK GAME, OPTIONS), reached by ~6 s. The menu animates (the
   background and title shimmer), so two captures of it are not pixel-identical.
 * Several Escs in a row quit the game back to DOS.
+
+## Reverse engineering
+
+Ghidra import, the symbol map and the DOSBox memory probe are described in
+[REVERSING.md](REVERSING.md).
