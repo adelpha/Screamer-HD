@@ -10,6 +10,7 @@
 #include "core/archive.h"
 #include "core/car.h"
 #include "core/dtr.h"
+#include "core/opponent.h"
 #include "core/framebuffer.h"
 #include "core/gamedata.h"
 #include "core/image.h"
@@ -260,8 +261,10 @@ int main(int argc, char** argv) {
     }
     // --scene drive: the player car with the ported physics and the chase camera.
     struct Player {
-        scr::Car car;
+        scr::Race race;                    // the player car (race.player) and the CPU cars
+        bool cpu_cars = false;             // DATA/<track>.DAT had racing lines
         scr::Model model;
+        std::vector<scr::Model> cpu_models;  // per CPU car
         scr::ChaseCamera camera;
     };
     std::optional<Player> player;
@@ -288,10 +291,30 @@ int main(int argc, char** argv) {
         if (!shadow) shadow = scr::load_object(*path, "SHADOW.3DX");
         player.emplace();
         player->model = std::move(*model);
-        int sx = 44000, sz = 4550;  // the intro demo's grid, MAP2
-        if (!opt.start.empty()) std::sscanf(opt.start.c_str(), "%d,%d", &sx, &sz);
-        player->car.reset(scr::car_setup(rec, player->model), *track, sx, sz);
-        SDL_Log("driving %s (CARS_DATA %zu)", name.c_str(), idx);
+        const scr::CarSetup setup = scr::car_setup(rec, player->model);
+        // CPU cars: the racing lines and OPPONENTS of DATA/<track>.DAT; each takes the next
+        // CARS_DATA record, skipping the player's (opponent_car_load).
+        auto data = scr::resolve_game_file(*game_dir, "DATA/" + opt.track + ".DAT");
+        player->cpu_cars = opt.start.empty() && data && player->race.load(*data, opt.track);
+        std::vector<scr::CarSetup> cpu_setups;
+        if (player->cpu_cars) {
+            size_t next = 0;
+            for (size_t i = 0; i < player->race.defs.size(); ++i) {
+                if (next == idx) next = (next + 1) % n;
+                const uint8_t* r = cars_data->data() + next * 0x40;
+                next = (next + 1) % n;
+                auto m = scr::load_object(*path, std::string(reinterpret_cast<const char*>(r)) + ".3DX");
+                if (!m) break;
+                cpu_setups.push_back(scr::car_setup(r, *m));
+                player->cpu_models.push_back(std::move(*m));
+            }
+            player->race.start(*track, setup, cpu_setups);
+        } else {
+            int sx = 44000, sz = 4550;  // the intro demo's grid, MAP2
+            if (!opt.start.empty()) std::sscanf(opt.start.c_str(), "%d,%d", &sx, &sz);
+            player->race.player.reset(setup, *track, sx, sz);
+        }
+        SDL_Log("driving %s (CARS_DATA %zu), %zu CPU cars", name.c_str(), idx, player->race.opponents.size());
     }
     SDL_Gamepad* pad = nullptr;
     scr::Renderer renderer3d;
@@ -370,8 +393,11 @@ int main(int argc, char** argv) {
                             in.steer = lx * 1023 / 32767;
                         }
                     }
-                    player->car.update(*track, in, clock.frame_time(), clock.pow_table_row());
-                    player->camera.update(player->car, clock.frame_time(), clock.pow_table_row());
+                    if (player->cpu_cars)
+                        player->race.update(*track, in, clock.frame_time(), clock.pow_table_row());
+                    else
+                        player->race.player.update(*track, in, clock.frame_time(), clock.pow_table_row());
+                    player->camera.update(player->race.player, clock.frame_time(), clock.pow_table_row());
                     constexpr float kToUnits = 1024.0f / 3.1415927410125732f;
                     cam.x = float(player->camera.x);
                     cam.y = float(player->camera.y);
@@ -385,7 +411,7 @@ int main(int argc, char** argv) {
                 if (player) {
                     // car_sync_render_object: body at the car, angles in 2048 units; the
                     // shadow sits on the ground just below.
-                    const scr::Car& c = player->car;
+                    const scr::Car& c = player->race.player;
                     constexpr float kToUnits = 1024.0f / 3.1415927410125732f;
                     scr::Pose pose;
                     pose.x = float(c.pos_x);
@@ -399,6 +425,25 @@ int main(int argc, char** argv) {
                     sh.y = float(c.ground_y - 2);
                     if (shadow) renderer3d.draw_model(*shadow, sh);
                     renderer3d.draw_model(player->model, pose);
+                    // opponent_sync_render_object
+                    for (size_t i = 0; i < player->race.opponents.size(); ++i) {
+                        const scr::Opponent& o = player->race.opponents[i];
+                        scr::Pose op;
+                        op.x = float(o.pos_x);
+                        op.y = float(o.pos_y);
+                        op.z = float(o.pos_z);
+                        op.ax = float(int(o.pitch * kToUnits) & 0x7ff);
+                        op.ay = float(int(o.draw_yaw * kToUnits) & 0x7ff);
+                        op.az = float(int(o.roll * kToUnits) & 0x7ff);
+                        op.animation = int32_t(uint32_t(o.setup.animation) | (o.catching_up ? 0u : 0x4000u) |
+                                               (o.speed <= 4000.0f ? 0x2000u : 0u));
+                        scr::Pose osh = op;
+                        osh.y = float(o.ground_y - 2);
+                        osh.ax = 0;
+                        osh.az = 0;
+                        if (shadow) renderer3d.draw_model(*shadow, osh);
+                        renderer3d.draw_model(player->cpu_models[i], op);
+                    }
                 }
                 for (const auto& c : cars) {
                     if (shadow) renderer3d.draw_model(*shadow, c.pose);
@@ -437,7 +482,7 @@ int main(int argc, char** argv) {
 
         const bool last_frame = opt.frames && frame >= opt.frames;
         if (last_frame && player) {
-            const scr::Car& c = player->car;
+            const scr::Car& c = player->race.player;
             SDL_Log("car: pos %d,%d,%d yaw %.3f speed %.0f gear %d rpm %.0f wall %d", c.pos_x, c.pos_y, c.pos_z, double(c.yaw),
                     double(c.speed), c.gear, double(c.engine_rpm), int(c.wall_contact));
         }

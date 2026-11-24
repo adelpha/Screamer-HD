@@ -249,6 +249,8 @@ std::optional<GroundHit> ground_query(const Track& track, int x, int z, bool wal
                     if (!inside) continue;
                     GroundHit hit;
                     hit.surface = part.name.size() > 3 ? part.name[3] : char(0);
+                    hit.normal_x = f.normal[0];
+                    hit.normal_z = f.normal[2];
                     if (f.normal[1] != 0) {
                         const Vec3i16& v0 = part.vertices[f.vtx[0]];
                         const int64_t num = int64_t(px - (v0.x + p.x)) * f.normal[0] + int64_t(pz - (v0.z + p.z)) * f.normal[2];

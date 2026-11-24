@@ -19,9 +19,11 @@ Usage: py -3.14 tools/dosbox/step_race.py OUT.trace FRAMES SCRIPT [SKIP]
   SKIP: frames to drive (following SCRIPT) before recording FRAMES frames
   SCRIPT: comma-separated segments "frames:keys", keys from accel, brake, left, right, e.g.
           "100:accel,60:accel+left,40:brake"
-Trace file: b"SCRTRACE", u32 version 2, u32 record size, then records of
+Set RECORD_OPPONENTS=1 in the environment to also copy g_opponents (9 x 0x590 bytes) after
+the player; the buffer then holds about 65 frames.
+Trace file: b"SCRTRACE", u32 version (2, or 3 with opponents), u32 record size, then records of
   f32 frame_time, i32 pow_row, u32 race_flags, i32 accel, brake, steer_left, steer_right,
-  u8[CAR_BYTES] g_player_car
+  u8[CAR_BYTES] g_player_car [, u8[OPP_BYTES] g_opponents]
 """
 import struct
 import sys
@@ -43,8 +45,10 @@ ACCEL_SIGN, BRAKE_SIGN = 0x1197E8, 0x119804
 
 HOOK_BASE = 0xF00000       # vars: +0 write pointer, +4 frame count, +8 buffer end, +0x10 code
 SCRIPT_AT = HOOK_BASE + 0x100
+OPPONENTS, OPP_BYTES = 0x110AB4, 9 * 0x590
+WITH_OPPONENTS = bool(__import__("os").environ.get("RECORD_OPPONENTS"))
 HEADER = 28
-RECORD = HEADER + CAR_BYTES
+RECORD = HEADER + CAR_BYTES + (OPP_BYTES if WITH_OPPONENTS else 0)
 
 
 def _retry(fn):
@@ -102,6 +106,9 @@ def hook_code():
         c += x("a1") + d(a + DATA) + x("ab")           # mov eax, [a]; stosd
     c += x("be") + d(PLAYER_CAR + DATA)                # mov esi, g_player_car
     c += x("b9") + d(CAR_BYTES // 4) + x("f3a5")       # mov ecx, n; rep movsd
+    if WITH_OPPONENTS:
+        c += x("be") + d(OPPONENTS + DATA)             # mov esi, g_opponents
+        c += x("b9") + d(OPP_BYTES // 4) + x("f3a5")   # mov ecx, n; rep movsd
     c += x("893d") + d(HOOK_BASE)                      # mov [ptr], edi
     done = len(c)
     for j in jumps:
@@ -157,7 +164,7 @@ def main():
         struct.pack_into("<i", r, 4, (ptr - (POW_BASE + DATA)) // 400)
         recs.append(bytes(r))
     with open(out, "wb") as f:
-        f.write(b"SCRTRACE" + struct.pack("<II", 2, RECORD))
+        f.write(b"SCRTRACE" + struct.pack("<II", 3 if WITH_OPPONENTS else 2, RECORD))
         f.write(b"".join(recs))
     flags = [struct.unpack_from("<I", r, 8)[0] for r in recs]
     if flags:

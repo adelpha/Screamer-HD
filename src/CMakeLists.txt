@@ -7,6 +7,7 @@ add_library(screamer_core STATIC
   core/gamedata.cpp
   core/image.cpp
   core/model3d.cpp
+  core/opponent.cpp
   core/pcx.cpp
   core/render3d.cpp
   core/sim_clock.cpp

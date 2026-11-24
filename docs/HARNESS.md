@@ -107,6 +107,8 @@ config (user's own DOSBox config is ignored), mounts `SCREAMER/` as C: and the C
   drives N frames before recording. Stepping through the web API instead (JMP $ traps) hangs
   DOSBox after a frame or two. `tracecmp TRACE GFX/MAP1H.DAT MAP1` then starts every frame from
   the recorded state, runs our `Car::update` and lists the fields that differ from the next record.
+  With `RECORD_OPPONENTS=1` in the environment the recording also holds `g_opponents` (about 65
+  frames fit); `tracecmp ... --data DATA/MAP1.DAT` then steps the whole race (player and CPU cars).
 
 Comparing our output with the original:
 
