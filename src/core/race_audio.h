@@ -20,6 +20,7 @@
 // The announcer table (0x101fb0) maps 27 events to up to three SPFX samples; variant 3 cycles
 // through them. Without SPFXFULL only the first of each is used.
 
+#include "core/animations.h"
 #include "core/opponent.h"
 #include "core/sound.h"
 
@@ -36,6 +37,8 @@ public:
                bool speech = true);
     // After Race::update, once per frame.
     void update(const Race& race, float frame_time);
+    // sfx_update_positional for the moving scenery (after TrackAnimations::update, same frame).
+    void animations(const TrackAnimations& anims);
     void stop();
 
     // Announcer state (for tests).
@@ -71,6 +74,8 @@ private:
     int listener_x_ = 0, listener_z_ = 0;
     float listener_yaw_ = 0;
     bool have_listener_ = false;
+    int prev_listener_x_ = 0, prev_listener_z_ = 0;
+    float prev_listener_yaw_ = 0;
     int countdown_stage_ = -2;
     bool finished_ = false, failed_ = false;
     float countdown_time_ = 0;
@@ -81,6 +86,7 @@ private:
     std::array<float, 27> timers_{};
     std::array<int, 27> variant_{};
     bool had_lead_ = false;
+    std::vector<int> anim_sfx_, anim_prev_dist_;  // AnimationDef runtime +0x20, +0x24
 };
 
 } // namespace scr

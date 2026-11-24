@@ -44,6 +44,7 @@ no manual steps.
 | `--capture-every N` / `--capture-dir` | Dump the framebuffer every N frames. |
 | `--size WxH`, `--aspect 4:3\|stretch\|square`, `--renderer NAME`, `--fullscreen`, `--data DIR` | |
 | `--record-audio FILE.wav` | Write the run's sound (effects, announcer and CD music) to a 44.1 kHz WAV, one 1/50 s block per frame, so headless runs give the same file every time. |
+| `--music-source cd\|midi\|auto` | Music from the CD image, or the MIDI versions in DATA/MUSIC.DAT on the built-in FM synth (auto: CD when the image is found). |
 | `--audio-log` | Log every sample that starts, with its frame: `frame 300: sound 19 go`. |
 | `--mute`, `--sfx-volume N`, `--music-volume N`, `--no-music`, `--no-speech`, `--audio-filter linear\|nearest` | Sound options (volumes 0..100). The music is the CD audio, read from the CD image in the game directory (`SCREAM.cue`/`.bin`, or `SCREAM.DAT`/`SCREAM.gog` as the Steam and GOG releases name them). |
 

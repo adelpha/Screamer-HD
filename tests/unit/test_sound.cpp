@@ -1,5 +1,6 @@
 #include "testing.h"
 
+#include "core/animations.h"
 #include "core/archive.h"
 #include "core/cd_audio.h"
 #include "core/dtr.h"
@@ -10,6 +11,7 @@
 #include "core/sound.h"
 #include "core/track.h"
 
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -237,4 +239,31 @@ TEST_CASE("sound: a race on MAP1 - engines, countdown and announcer") {
     run(300);
     CHECK(mixer.active_voices() >= 4);
     for (float v : buf) CHECK(std::fabs(v) <= 1.0f);
+}
+
+TEST_CASE("animations: the moving scenery of MAP1 follows its splines") {
+    auto dir = scr::find_game_dir();
+    if (!dir) SKIP("original game data not present");
+    auto data = scr::resolve_game_file(*dir, "DATA/MAP1.DAT");
+    REQUIRE(data.has_value());
+    scr::TrackAnimations anims;
+    REQUIRE(anims.load(*data, "MAP1"));
+    REQUIRE(anims.list.size() == 5);
+    CHECK(anims.list[0].name == "awtruck");
+    CHECK(anims.list[4].name == "ajet");
+    CHECK(anims.list[4].sound_fx == 1);  // "airplane", after the base table
+    anims.start(0.02f);
+    CHECK(anims.list[4].y == 9000);
+    // Every frame each one moves about speed * frame time along its line (listener close to all).
+    for (int f = 0; f < 500; ++f) {
+        std::vector<std::array<int, 2>> before;
+        for (const auto& a : anims.list) before.push_back({a.x, a.z});
+        anims.update(anims.list[0].x, anims.list[0].z, 0.02f);
+        const auto& a = anims.list[0];
+        const double moved = std::hypot(double(a.x - before[0][0]), double(a.z - before[0][1]));
+        CHECK(moved > 16000 * 0.02 * 0.7);
+        CHECK(moved < 16000 * 0.02 * 2.0);  // a knot can add a jump, as in the original
+        CHECK(a.yaw >= 0.0f);
+        CHECK(a.yaw < 6.2832f);
+    }
 }

@@ -15,8 +15,13 @@ harness exist; the game itself is not reconstructed yet (a test pattern is drawn
 
 ## Building (Windows)
 
-Requires Visual Studio 2022 (or its Build Tools) with the C++ workload. SDL3 is fetched
-automatically.
+Requires Visual Studio 2022 (or its Build Tools) with the C++ workload. The dependencies are
+fetched automatically at pinned versions:
+
+- [SDL3](https://github.com/libsdl-org/SDL) (zlib license): window, graphics, audio, input.
+- [Nuked-OPL3-fast](https://github.com/tgies/Nuked-OPL3-fast) (LGPL-2.1): the OPL3 FM chip
+  that plays the MIDI music. It is built as its own `opl3.dll`, so it can be swapped for any
+  build of the same source.
 
 ```powershell
 .\tools\build.ps1            # debug
