@@ -33,6 +33,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <ctime>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -615,6 +616,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
 
     uint64_t frame = 0;
     float end_timer = 0;
+    bool screenshot_pending = false;      // F12
     double perf_total = 0, perf_max = 0;  // --perf
     int perf_frames = 0;
     // race_run's "PLAY AGAIN?" after a race from the menu (pause_menu_draw_scene): -1 not shown,
@@ -694,9 +696,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     mixer.sfx_volume = 0;
                     mixer.music_volume = 0;
                 }
-                else if (ev.key.key == SDLK_F12) {
-                    scr::SurfacePtr s(SDL_RenderReadPixels(renderer, nullptr));
-                    save_or_log(s.get(), "artifacts/screenshots/frame_" + std::to_string(frame) + ".png");
+                else if (ev.key.key == SDLK_F12 && !ev.key.repeat) {
+                    screenshot_pending = true;  // saved once the next frame is drawn
                 }
                 break;
             case SDL_EVENT_GAMEPAD_ADDED:
@@ -1083,6 +1084,22 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             ++frame;
         }
 
+        if (screenshot_pending && frame > 0) {
+            // F12: the frame as drawn (render size, before scaling to the window), as a PNG in
+            // Pictures/Screamer (or next to the program when there is no Pictures folder).
+            screenshot_pending = false;
+            std::string dir;
+            if (const char* pics = SDL_GetUserFolder(SDL_FOLDER_PICTURES)) dir = std::string(pics) + "Screamer/";
+            const std::time_t now = std::time(nullptr);
+            std::tm tm{};
+            localtime_s(&tm, &now);
+            char name[64];
+            std::strftime(name, sizeof name, "screamer_%Y%m%d_%H%M%S", &tm);
+            std::string path = dir + name + ".png";
+            for (int i = 2; std::filesystem::exists(path); ++i) path = dir + name + "_" + std::to_string(i) + ".png";
+            scr::SurfacePtr shot = scr::framebuffer_to_surface(fb);
+            save_or_log(shot.get(), path);
+        }
         if (stepped) {
             void* pixels; int pitch;
             if (SDL_LockTexture(tex, nullptr, &pixels, &pitch)) {
