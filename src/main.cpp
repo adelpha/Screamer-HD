@@ -43,6 +43,9 @@
 
 namespace {
 
+// Car shadows are tested against the depth buffer as if this much nearer (see Pose::depth_bias).
+constexpr float kShadowBias = 64.0f;
+
 struct Options {
     std::string data_dir;
     bool headless = false;
@@ -383,6 +386,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         scr::ViewCamera camera;            // F1..F4
         scr::EnvScroll env;                // glass reflection scroll of the player car
         std::vector<scr::EnvScroll> cpu_env;
+        std::vector<std::array<float, 2>> cpu_shadow;  // shadow pitch and roll of each CPU car
     };
     std::optional<Player> player;
     std::optional<scr::Hud> hud;  // the race HUD (--scene drive with CPU cars)
@@ -915,8 +919,20 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     const float env_rate = c.marker_flags == 0 ? 0.002f : 0.03f;
                     pose.env = &player->env;
                     pose.env_rate = env_rate;
+                    // car_update_shadow_position: 20 units further from the camera, on the ground,
+                    // tilted with the body.
                     scr::Pose sh = pose;
+                    {
+                        const double dx = double(cam.x) - c.pos_x, dz = double(cam.z) - c.pos_z;
+                        const double len = std::sqrt(dx * dx + dz * dz);
+                        if (len > 0) {
+                            sh.x = float(std::lrint(double(c.pos_x) - dx / len * 20.0));
+                            sh.z = float(std::lrint(double(c.pos_z) - dz / len * 20.0));
+                        }
+                    }
                     sh.y = float(c.ground_y - 2);
+                    sh.env = nullptr;
+                    sh.depth_bias = kShadowBias;
                     if (player->camera.car_visible) {
                         if (shadow) renderer3d.draw_model(*shadow, sh);
                         renderer3d.draw_model(player->model, pose);
@@ -955,10 +971,16 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                             player->cpu_env.resize(player->race.opponents.size());
                         op.env = &player->cpu_env[i];
                         op.env_rate = env_rate;
+                        // the shadow on the ground, tilted with the car (kept as it was while it crashes)
+                        if (player->cpu_shadow.size() < player->race.opponents.size())
+                            player->cpu_shadow.resize(player->race.opponents.size());
+                        if (o.crash_state == 0) player->cpu_shadow[i] = {op.ax, op.az};
                         scr::Pose osh = op;
                         osh.y = float(o.ground_y - 2);
-                        osh.ax = 0;
-                        osh.az = 0;
+                        osh.ax = player->cpu_shadow[i][0];
+                        osh.az = player->cpu_shadow[i][1];
+                        osh.env = nullptr;
+                        osh.depth_bias = kShadowBias;
                         if (shadow) renderer3d.draw_model(*shadow, osh);
                         renderer3d.draw_model(player->cpu_models[i], op);
                     }
@@ -1098,7 +1120,19 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             std::string path = dir + name + ".png";
             for (int i = 2; std::filesystem::exists(path); ++i) path = dir + name + "_" + std::to_string(i) + ".png";
             scr::SurfacePtr shot = scr::framebuffer_to_surface(fb);
-            save_or_log(shot.get(), path);
+            if (save_or_log(shot.get(), path)) {
+                // where it was taken, to look at the same view again (--scene track --camera)
+                if (std::FILE* f = std::fopen((path.substr(0, path.size() - 4) + ".txt").c_str(), "w")) {
+                    std::fprintf(f, "track %s\n", opt.track.c_str());
+                    std::fprintf(f, "--camera %d,%d,%d,%d,%d,%d\n", int(cam.x), int(cam.y), int(cam.z), int(cam.yaw),
+                                 int(cam.pitch), int(cam.roll));
+                    if (player) {
+                        const scr::Car& c = player->race.player;
+                        std::fprintf(f, "car %d,%d,%d yaw %.4f\n", c.pos_x, c.pos_y, c.pos_z, double(c.yaw));
+                    }
+                    std::fclose(f);
+                }
+            }
         }
         if (stepped) {
             void* pixels; int pitch;

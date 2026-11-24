@@ -68,6 +68,10 @@ struct Pose {
     // until the first car_apply_surface).
     EnvScroll* env = nullptr;
     float env_rate = 0.008f;
+    // Drawn as if this many units nearer the camera in the depth test. The original sorts
+    // whole objects and never depth-tests, so a car's shadow (a flat quad tilted with the car)
+    // always lies on the road; a bias keeps it from sinking into slopes here.
+    float depth_bias = 0;
 };
 
 // Material frame shown by cell_begin + mat*_draw: frames * phase >> 14, where the phase is
@@ -123,6 +127,7 @@ private:
         uint8_t color;
         int32_t animation, reflection;
         float depth;
+        float depth_bias;
     };
     struct Scr {
         float x, y, iz, uz, vz;
@@ -136,6 +141,7 @@ private:
         int wmask, hmask;       // size - 1 for power-of-two sizes, else -1
         uint8_t flat;
         bool use_texels, writes_depth;
+        float depth_bias;       // in units of d = 128 - z
     };
     struct Tri {
         Scr a, b, c;
@@ -144,7 +150,7 @@ private:
     };
     // Clips, projects and queues the polygon's triangles.
     void draw_polygon(const ClipVert* poly, size_t count, const Material* mat, uint8_t face_color, int32_t animation,
-                      int32_t reflection);
+                      int32_t reflection, float depth_bias = 0);
     bool sphere_visible(float x, float y, float z, float r) const;
     void fill_rows(int y0, int y1);
 

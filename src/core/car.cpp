@@ -702,11 +702,13 @@ void ChaseCamera::update(const Car& car, float frame_time, int pow_row, int view
     if (snap) {
         y = y_target;
         yaw = car.yaw;
-        roll = car.ground_roll;
+        roll = car.roll;
         pitch = pitch_target;
         snap = false;
     } else {
-        y = chop((double(y) - double(y_target)) * pow_table(pow_row, 0x51) + double(y_target));
+        // float_to_int_store(&cam.y, target, EBX): EBX is the snap flag, 0 here, so the height
+        // follows with pow_table index 0 (quickly), not 0x51 like the angles.
+        y = chop((double(y) - double(y_target)) * pow_table(pow_row, 0) + double(y_target));
         angle_lerp(yaw, car.yaw, 0x51);
         angle_lerp(roll, car.ground_roll, 0x51);
         angle_lerp(pitch, pitch_target, 0x51);

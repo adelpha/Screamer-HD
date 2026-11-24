@@ -241,11 +241,11 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
             const Mode mode = material_mode(mat);
             if (mode == Mode::Translucent || mode == Mode::Darken) {
                 deferred_.push_back({uint32_t(deferred_verts_.size()), uint32_t(n), mat, f.color, pose.animation,
-                                     pose.reflection, depth});
+                                     pose.reflection, depth, pose.depth_bias});
                 deferred_verts_.insert(deferred_verts_.end(), poly.begin(), poly.begin() + ptrdiff_t(n));
                 continue;
             }
-            draw_polygon(poly.data(), n, mat, f.color, pose.animation, pose.reflection);
+            draw_polygon(poly.data(), n, mat, f.color, pose.animation, pose.reflection, pose.depth_bias);
         }
     }
 }
@@ -255,7 +255,7 @@ RenderStats Renderer::finish() {
     std::stable_sort(deferred_.begin(), deferred_.end(),
                      [](const Deferred& a, const Deferred& b) { return a.depth > b.depth; });
     for (const Deferred& d : deferred_)
-        draw_polygon(deferred_verts_.data() + d.first, d.count, d.mat, d.color, d.animation, d.reflection);
+        draw_polygon(deferred_verts_.data() + d.first, d.count, d.mat, d.color, d.animation, d.reflection, d.depth_bias);
     deferred_.clear();
     deferred_verts_.clear();
     // Fill the pixels: bands of rows, several per thread so that the busy parts of the
@@ -298,7 +298,7 @@ void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Fram
 }
 
 void Renderer::draw_polygon(const ClipVert* in, size_t count, const Material* mat, uint8_t face_color, int32_t animation,
-                            int32_t reflection) {
+                            int32_t reflection, float depth_bias) {
     const Framebuffer& fb = *fb_;
     const MaterialLibrary* lib = track_->materials ? &*track_->materials : nullptr;
     // Clip against the near plane (a convex polygon gains at most one corner).
@@ -339,6 +339,7 @@ void Renderer::draw_polygon(const ClipVert* in, size_t count, const Material* ma
     fill.use_texels = textures_ || mode == Mode::Translucent;
     fill.flat = mode == Mode::Flat && mat && (mat->type >> 1) == 4 ? face_color : (mat ? mat->color : 15);
     fill.writes_depth = mode != Mode::Translucent && mode != Mode::Darken;
+    fill.depth_bias = depth_bias;
     // mat10_draw takes its frame from the instance's +0x3c word, the others from the
     // animation phase (cell_begin).
     fill.frame = !mat ? 0
@@ -426,7 +427,8 @@ void Renderer::fill_rows(int band0, int band1) {
                 float& dz = drow[x];
                 // Coplanar surfaces (road decals on the road, shadows) are resolved like the
                 // original's painter's order: the later polygon wins near-ties.
-                if (iz * 1.0005f < dz) continue;
+                const float tz = fl.depth_bias > 0 ? iz / std::max(1e-3f, 1.0f - fl.depth_bias * iz) : iz;
+                if (tz * 1.0005f < dz) continue;
                 uint8_t& dst = row[x];
                 if (mode == Mode::Darken) {
                     dst = track_->darken[dst];
