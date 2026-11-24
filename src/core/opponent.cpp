@@ -608,13 +608,13 @@ void Race::player_progress() {
                 // "checkpoint": how close it was (below 3 s, up to 15 s, more)
                 speech_cues.push_back({4, time_left < 3.0f ? 2 : time_left <= 15.0f ? 0 : 1, 0.0f});
             }
-            if (laps != p.lap + 1) {
+            if (laps != p.lap) {  // car_add_checkpoint_time: g_laps - 1 + 1 != lap
                 time_left = time_left / 5.0f + float((mode & 0x60) ? carnage_time : bonus_time);
                 speech_cues.push_back({-0x16, 0, 0.0f});  // speech_once_reset(0x16): "hurry" again
             }
         }
     } else if (event == 2 && checkpoint_marker == 0 && checkpoints_passed == n) {
-        if (laps != p.lap + 1) {
+        if (laps != p.lap) {
             time_left = time_left / 5.0f + float((mode & 0x60) ? carnage_time : bonus_time);
             speech_cues.push_back({-0x16, 0, 0.0f});
         }
