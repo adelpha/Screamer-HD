@@ -82,6 +82,8 @@ void RaceAudio::stop() {
     engine_ = skid_ = wall_ = -1;
     cpu_engine_.clear();
     cpu_voices_ = 0;
+    anim_sfx_.clear();
+    anim_prev_dist_.clear();
     queue_.clear();
     speech_handle_ = -1;
 }
@@ -268,6 +270,42 @@ void RaceAudio::cpu_engines(const Race& race) {
     }
 }
 
+void RaceAudio::animations(const TrackAnimations& anims) {
+    if (!mixer_ || !bank_) return;
+    if (anim_sfx_.size() != anims.list.size()) {
+        anim_sfx_.assign(anims.list.size(), -1);
+        anim_prev_dist_.assign(anims.list.size(), 0);
+    }
+    for (size_t i = 0; i < anims.list.size(); ++i) {
+        const TrackAnimation& a = anims.list[i];
+        // Only the animations animations_update moved this frame.
+        if (std::abs(prev_listener_x_ - a.x) >= 52000 || std::abs(prev_listener_z_ - a.z) >= 52000) continue;
+        int& handle = anim_sfx_[i];
+        const int dx = (a.x - prev_listener_x_) >> 3, dz = (a.z - prev_listener_z_) >> 3;
+        const float d = float(std::sqrt(double(dx * dx + dz * dz)) * 8.0);
+        if (handle == -1) {
+            if (d < 40000.0f) {
+                anim_prev_dist_[i] = int(std::trunc(d));
+                handle = mixer_->play(bank_->num_base + a.sound_fx);
+            }
+        } else if (40000.0f < d) {
+            handle = mixer_->stop(handle);
+        }
+        if (handle == -1) continue;
+        int lx, lz;
+        rotate_xz(lx, lz, prev_listener_x_ - a.x, prev_listener_z_ - a.z, prev_listener_yaw_);
+        const float closeness = (40000.0f - d) / 40000.0f;
+        const int pitch = int(std::trunc((float(anim_prev_dist_[i]) - d) * 9.0f + 65536.0f));
+        const int volume = int(std::trunc(closeness * closeness * 32767.0f));
+        const float dd = std::max(d, 1.0f);
+        const int pan = int(std::trunc(std::sqrt(std::fabs(double(lx) / dd)) * 32767.0 * (lx < 0 ? -1.0 : 1.0))) + 0x8000;
+        anim_prev_dist_[i] = int(std::trunc(d));
+        mixer_->set_pitch(handle, std::max(pitch, 1));
+        mixer_->set_volume(handle, volume);
+        mixer_->set_pan(handle, pan);
+    }
+}
+
 void RaceAudio::update(const Race& race, float frame_time) {
     if (!mixer_ || !bank_) return;
     const Car& car = race.player;
@@ -324,7 +362,10 @@ void RaceAudio::update(const Race& race, float frame_time) {
     }
     finished_ = race.finished;
     failed_ = race.failed;
-    // camera_set_listener
+    // camera_set_listener (animations() still uses the one from the last frame)
+    prev_listener_x_ = listener_x_;
+    prev_listener_z_ = listener_z_;
+    prev_listener_yaw_ = listener_yaw_;
     listener_x_ = car.pos_x;
     listener_z_ = car.pos_z;
     listener_yaw_ = car.yaw;
