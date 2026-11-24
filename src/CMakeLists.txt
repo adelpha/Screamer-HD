@@ -10,6 +10,7 @@ add_library(screamer_core STATIC
   core/image.cpp
   core/menu.cpp
   core/model3d.cpp
+  core/obstacles.cpp
   core/opponent.cpp
   core/race_audio.cpp
   core/sound.cpp

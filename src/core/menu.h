@@ -93,7 +93,8 @@ struct MenuKeys {
 
 // What the menu asks the game to run (frontend_start_race).
 struct MenuRace {
-    int game_mode = 1;   // 1 normal game
+    int game_mode = 1;   // 1 normal game, 2 championship, 4 time attack, 0x20 cone carnage, 0x40 slalom
+    bool ghost = false;  // time attack: race the saved ghost (RESUME)
     int map = 1;         // 1..6
     bool mirrored = false;  // tracks 7..12: the same maps the other way round
     int car = 0;         // CARS_DATA record (the two paints of each car are next to each other)
@@ -235,6 +236,7 @@ private:
     int records_row_ = 0;     // DAT_0012098c
     float idle_ = 0;          // DAT_0011d248: seconds without a key (texts move on after 10)
     int champ_total_ = 0;     // DAT_001203e0
+    bool ghost_ = false;      // DAT_0011d260
     std::array<uint8_t, 256> darken_{};  // build_darken_tables for the dialog's backdrop
     struct Block {
         int row = 0, ypos = 0, start = 0, centred = 1, turned = 0;

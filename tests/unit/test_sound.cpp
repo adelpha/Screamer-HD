@@ -1,6 +1,7 @@
 #include "testing.h"
 
 #include "core/animations.h"
+#include "core/obstacles.h"
 #include "core/archive.h"
 #include "core/cd_audio.h"
 #include "core/dtr.h"
@@ -266,4 +267,43 @@ TEST_CASE("animations: the moving scenery of MAP1 follows its splines") {
         CHECK(a.yaw >= 0.0f);
         CHECK(a.yaw < 6.2832f);
     }
+}
+
+TEST_CASE("obstacles: MAP1's cones, barriers and slalom gates") {
+    auto dir = scr::find_game_dir();
+    if (!dir) SKIP("original game data not present");
+    auto data = scr::resolve_game_file(*dir, "DATA/MAP1.DAT");
+    auto gfx = scr::resolve_game_file(*dir, "GFX/MAP1H.DAT");
+    REQUIRE(data && gfx);
+    auto track = scr::load_track(*gfx, "MAP1");
+    REQUIRE(track.has_value());
+    scr::Obstacles ost;
+    REQUIRE(ost.load(*data, *gfx, "MAP1", "OST", *track));
+    CHECK(ost.list.size() == 45);
+    scr::Obstacles cng;
+    REQUIRE(cng.load(*data, *gfx, "MAP1", "CNG", *track));
+    CHECK(cng.list.size() == 36);
+    CHECK(cng.list[0].x == 930);
+    CHECK(cng.list[0].z == 44477);
+    // A car driving into the first cone knocks it over and sends it flying
+    scr::Car car;
+    car.reset(scr::CarSetup{}, *track, 930, 44000);
+    car.collision_radius = 300;
+    car.pos_x = 930;
+    car.pos_z = 44477 + 200;
+    car.pos_y = cng.list[0].y;
+    car.yaw = 0;
+    car.speed = 8000;
+    CHECK(cng.collide(car) == 1);
+    CHECK(cng.hits == 1);
+    CHECK(cng.list[0].hit);
+    const int y0 = cng.list[0].y;
+    cng.update(*track, 0.02f);
+    CHECK(cng.list[0].y > y0);
+    CHECK(cng.collide(car) == 0);  // counted once
+    scr::Race race;
+    REQUIRE(race.load(*data, "MAP1"));
+    REQUIRE(race.loads_gates(*data, "MAP1"));
+    CHECK(race.gates.size() == 14);
+    CHECK(race.gates[0].x == 900);
 }

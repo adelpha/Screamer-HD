@@ -104,6 +104,16 @@ public:
     // A new game plays level 'B' (DAT_0011d2b0 = 1).
     bool load(const std::string& data_dat, const std::string& track_name, char level = 'B');
     int bonus_time = 0;          // TRACK_DATA.bonus_time: seconds added at a timed checkpoint
+    int carnage_time = 0;        // TRACK_DATA.carnage: the same in Cone Carnage and Slalom
+    // g_game_mode: 1/2 against the CPU cars, 4 time attack, 0x20 cone carnage, 0x40 slalom
+    // (the special modes race alone, start from the first grid place and run one lap)
+    int mode = 1;
+    // Slalom: the gates of MAPnSLA.MRK; passing one adds its +0x10 seconds (car_check_markers)
+    std::vector<TrackMarker> gates;
+    std::vector<int> gates_passed;
+    int markers_passed = 0;
+    bool loads_gates(const std::string& data_dat, const std::string& track_name);
+    bool gate_sound = false;     // sfx 9 this frame
     int camera_hi = 300;         // TRACK_DATA.camera_hi: bumper camera height
     int laps = 3;                // DAT_0011d2ac + 1
 

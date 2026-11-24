@@ -898,6 +898,11 @@ void Menu::start_race() {
     r.car = car;
     r.laps = kLaps[std::clamp(option(2), 0, 3)];
     r.level = option(1) == 3 ? 4 : option(1);
+    if (game_mode == 4 || game_mode == 0x20 || game_mode == 0x40) {
+        // the special modes: alone, one lap (frontend_load_attack_map passes 0 laps - 1)
+        r.laps = 1;
+        r.ghost = ghost_;
+    }
     if (game_mode == 2) {
         // a championship race: the step's track and league, three laps
         const ChampStep& st = kChamp[champ_step];
@@ -989,6 +994,24 @@ void Menu::activate() {
         sounds.push_back(3);
         break;
     case 1: push(5); break;   // championship: NEW / RESUME
+    case 28:                  // TIME ATTACK: NEW (no ghost) / RESUME (the saved ghost)
+        game_mode = 4;
+        push(3);
+        break;
+    case 24:
+    case 25:
+        ghost_ = action == 25;
+        after_name_ = 3;
+        init_state(4);
+        sounds.push_back(3);
+        break;
+    case 29:                  // CONE CARNAGE
+    case 30:                  // SLALOM
+        game_mode = action == 29 ? 0x20 : 0x40;
+        after_name_ = 3;
+        init_state(4);
+        sounds.push_back(3);
+        break;
     case 26:                  // a new championship
         game_mode = -1;
         after_name_ = 5;

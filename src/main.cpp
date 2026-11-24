@@ -12,6 +12,7 @@
 #include "core/car.h"
 #include "core/cd_audio.h"
 #include "core/dtr.h"
+#include "core/obstacles.h"
 #include "core/opponent.h"
 #include "core/fm_synth.h"
 #include "core/framebuffer.h"
@@ -71,7 +72,10 @@ struct Options {
     std::string menu_keys;
     int laps = 3;                   // a race from the menu: laps, opponent level ('A' + level)
     int level = 1;
-    bool from_menu = false;         // Esc and the end of the race go back to the menu          // --scene menu: scripted keys "frame:key,..." (headless runs)
+    bool from_menu = false;         // Esc and the end of the race go back to the menu
+    int game_mode = 1;              // 1/2 CPU cars, 4 time attack, 0x20 cone carnage, 0x40 slalom
+    bool ghost = false;             // time attack against the saved ghost
+    std::string ghost_dir;          // where the time attack ghosts are kept          // --scene menu: scripted keys "frame:key,..." (headless runs)
     std::string record_audio;       // write the mix to a .wav (frame-locked, works headless)
     bool audio_log = false;         // log every sample that starts
 };
@@ -180,6 +184,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--music-source") o.music_source = next("--music-source");
         else if (a == "--record-audio") o.record_audio = next("--record-audio");
         else if (a == "--menu-keys") o.menu_keys = next("--menu-keys");
+        else if (a == "--game-mode") o.game_mode = int(std::strtol(next("--game-mode"), nullptr, 0));
         else if (a == "--audio-log") o.audio_log = true;
         else if (a == "--audio-filter") o.audio_smooth = std::string(next("--audio-filter")) != "nearest";
         else if (a == "--detail") o.detail = std::string(next("--detail")) == "low" ? "L" : "H";
@@ -255,6 +260,46 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     std::optional<scr::Track> track;
     scr::Camera cam;
     scr::TrackAnimations anims;           // trucks, jets, trams... on their splines
+    scr::Obstacles obstacles;             // cones and the like (MAPnOST.SPL in races)
+    std::optional<std::string> gfx_path;  // GFX/MAPn?.DAT
+    // Time attack: the ghost of the best lap (ghost_record_frame / ghost_update), kept as
+    // <pref dir>/MAPn.ghost: int car, float lap time, then frames of
+    // { x, y, z, pitch, yaw, roll, animation, reflection, time }.
+    struct GhostFrame {
+        int x, y, z;
+        float pitch, yaw, roll;
+        int32_t animation, reflection;
+        float time;
+    };
+    struct Ghost {
+        std::string path;
+        int car = 0;
+        float lap = 0;              // 0: none
+        std::vector<GhostFrame> frames, recording;
+        bool load() {
+            std::FILE* f = std::fopen(path.c_str(), "rb");
+            if (!f) return false;
+            int32_t c = 0;
+            float l = 0;
+            bool ok = std::fread(&c, 4, 1, f) == 1 && std::fread(&l, 4, 1, f) == 1;
+            GhostFrame g{};
+            frames.clear();
+            while (ok && std::fread(&g, sizeof g, 1, f) == 1) frames.push_back(g);
+            std::fclose(f);
+            car = c;
+            lap = ok && !frames.empty() ? l : 0;
+            return lap > 0;
+        }
+        void save(float lap_time) {
+            std::FILE* f = std::fopen(path.c_str(), "wb");
+            if (!f) return;
+            const int32_t c = car;
+            std::fwrite(&c, 4, 1, f);
+            std::fwrite(&lap_time, 4, 1, f);
+            for (const GhostFrame& g : recording) std::fwrite(&g, sizeof g, 1, f);
+            std::fclose(f);
+        }
+    } ghost;
     std::vector<scr::Model> anim_models;  // per animation (an empty model draws nothing)
     const bool drive = opt.scene == "drive";
     if (opt.scene == "track" || drive) {
@@ -269,6 +314,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         // Moving scenery (track_load_animations).
         auto data = scr::resolve_game_file(*game_dir, "DATA/" + opt.track + ".DAT");
         auto gfx = scr::resolve_game_file(*game_dir, "GFX/" + opt.track + opt.detail + ".DAT");
+        gfx_path = gfx;
+        if (data && gfx) obstacles.load(*data, *gfx, opt.track, "OST", *track);
         if (data && gfx && anims.load(*data, opt.track)) {
             for (const scr::TrackAnimation& an : anims.list) {
                 std::string obj = an.name;
@@ -372,8 +419,20 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         auto data = scr::resolve_game_file(*game_dir, "DATA/" + opt.track + ".DAT");
         player->cpu_cars = opt.start.empty() && data && player->race.load(*data, opt.track, char('A' + opt.level));
         player->race.laps = opt.laps;
+        player->race.mode = opt.game_mode;
         std::vector<scr::CarSetup> cpu_setups;
-        if (player->cpu_cars) {
+        const bool solo = opt.game_mode == 4 || opt.game_mode == 0x20 || opt.game_mode == 0x40;
+        if (player->cpu_cars && solo) {
+            // the special modes: no CPU cars, the first grid place, the mode's obstacles
+            player->race.start(*track, setup, {});
+            if (opt.game_mode == 0x40) player->race.loads_gates(*data, opt.track);
+            if (gfx_path) obstacles.load(*data, *gfx_path, opt.track, opt.game_mode == 0x20 ? "CNG" : opt.game_mode == 0x40 ? "SLA" : "OST", *track);
+            if (opt.game_mode == 4) {
+                ghost.path = opt.ghost_dir + opt.track + ".ghost";
+                ghost.car = int(idx);
+                if (opt.ghost) ghost.load();
+            }
+        } else if (player->cpu_cars) {
             size_t next = 0;
             for (size_t i = 0; i < player->race.defs.size(); ++i) {
                 if (next == idx) next = (next + 1) % n;
@@ -759,6 +818,28 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     else
                         player->race.player.update(*track, in, clock.frame_time(), clock.pow_table_row());
                     race_audio.update(player->race, clock.frame_time());
+                    if (player->race.mode == 4 || player->race.mode == 0x20 || player->race.mode == 0x40) {
+                        scr::Race& rr = player->race;
+                        // car_collide_obstacles; Cone Carnage gives a second per obstacle
+                        if (rr.started && !rr.finished && !rr.failed) {
+                            const int hits = obstacles.collide(rr.player);
+                            for (int i = 0; i < hits; ++i) mixer.play(5);
+                            if (rr.mode == 0x20) rr.time_left += float(hits);
+                        }
+                        if (rr.gate_sound) mixer.play(9);
+                        if (rr.mode == 4 && rr.timing_started && !rr.finished) {
+                            const scr::Car& pc = rr.player;
+                            ghost.recording.push_back({pc.pos_x, pc.pos_y + pc.body_lift, pc.pos_z, pc.pitch + pc.lean_pitch,
+                                                       pc.yaw + pc.drift_angle, pc.roll + pc.lean_roll,
+                                                       int32_t(pc.render_animation()), pc.surface_render_flag, rr.lap_time});
+                        }
+                        if (rr.finished && !rr.failed && rr.mode == 4 && !ghost.recording.empty() &&
+                            (ghost.lap <= 0 || rr.best_lap < ghost.lap)) {
+                            // race_run's attack_save: the new best lap becomes the ghost
+                            ghost.save(rr.best_lap);
+                            ghost.recording.clear();
+                        }
+                    }
                     // animations_update, heard from where the player was last frame.
                     anims.update(listener_x, listener_z, clock.frame_time());
                     race_audio.animations(anims);
@@ -778,6 +859,20 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 }
                 renderer3d.begin(*track, cam, fb);
                 renderer3d.draw_placements();
+                // obstacles_update and the obstacles
+                obstacles.update(*track, clock.frame_time());
+                for (const scr::Obstacle& o : obstacles.list) {
+                    if (o.y == -20000 || size_t(o.model) >= obstacles.models.size()) continue;
+                    constexpr float kObsUnits = 1024.0f / 3.1415927410125732f;
+                    scr::Pose op;
+                    op.x = float(o.x);
+                    op.y = float(o.y);
+                    op.z = float(o.z);
+                    op.ax = float(int(o.ax * kObsUnits) & 0x7ff);
+                    op.ay = float(int(o.ay * kObsUnits) & 0x7ff);
+                    op.az = float(int(o.az * kObsUnits) & 0x7ff);
+                    renderer3d.draw_model(obstacles.models[size_t(o.model)], op);
+                }
                 // The moving scenery (instance angles: yaw only).
                 if (!player) anims.update(int(cam.x), int(cam.z), clock.frame_time());
                 constexpr float kAnimToUnits = 1024.0f / 3.1415927410125732f;
@@ -813,6 +908,23 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     if (player->camera.car_visible) {
                         if (shadow) renderer3d.draw_model(*shadow, sh);
                         renderer3d.draw_model(player->model, pose);
+                    }
+                    // ghost_sync_render_object: where the ghost was at this lap time
+                    if (player->race.mode == 4 && ghost.lap > 0 && !ghost.frames.empty() && player->race.timing_started) {
+                        const float t = player->race.lap_time;
+                        size_t gi = 0;
+                        while (gi + 1 < ghost.frames.size() && ghost.frames[gi + 1].time <= t) ++gi;
+                        const GhostFrame& g = ghost.frames[gi];
+                        scr::Pose gp;
+                        gp.x = float(g.x);
+                        gp.y = float(g.y);
+                        gp.z = float(g.z);
+                        gp.ax = float(int(g.pitch * kToUnits) & 0x7ff);
+                        gp.ay = float(int(g.yaw * kToUnits) & 0x7ff);
+                        gp.az = float(int(g.roll * kToUnits) & 0x7ff);
+                        gp.animation = g.animation;
+                        gp.reflection = g.reflection;
+                        renderer3d.draw_model(player->model, gp);
                     }
                     // opponent_sync_render_object
                     for (size_t i = 0; i < player->race.opponents.size(); ++i) {
@@ -1082,6 +1194,10 @@ int main(int argc, char** argv) {
             opt.speech = shared.race->speech;
             opt.music = shared.race->music;
             opt.from_menu = true;
+            opt.game_mode = shared.race->game_mode;
+            opt.ghost = shared.race->ghost;
+            if (!shared.choice_path.empty())
+                opt.ghost_dir = shared.choice_path.substr(0, shared.choice_path.size() - std::strlen("CHOICE.DAT"));
             opt.start.clear();
             opt.menu_keys.clear();
             continue;
