@@ -54,12 +54,20 @@ std::optional<Model> parse_model(const uint8_t* d, size_t size) {
             if (part.vertices.size() > 20000) return std::nullopt;
         }
 
-        // The first draw order lists every face of the part.
+        // The 16 draw orders (one per view direction) usually all list every face, but a few
+        // objects leave a face out of some of them: take the union, in list 0's order first.
         std::set<int> seen;
-        for (size_t q = p + size_t(order0);; q += 2) {
-            int16_t fo = 0;
-            if (!rd(d, size, q, fo) || fo <= 0) break;
-            if (!seen.insert(fo).second) continue;
+        std::vector<int> face_offsets;
+        for (size_t list = 0; list < 16; ++list) {
+            int32_t order = 0;
+            if (!rd(d, size, p + 0x28 + 4 * list, order)) break;
+            for (size_t q = p + size_t(order);; q += 2) {
+                int16_t fo = 0;
+                if (!rd(d, size, q, fo) || fo <= 0) break;
+                if (seen.insert(fo).second) face_offsets.push_back(fo);
+            }
+        }
+        for (const int fo : face_offsets) {
             const size_t f = p + size_t(fo);
             Face face;
             uint16_t n = 0;

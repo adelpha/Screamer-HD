@@ -243,7 +243,7 @@ int main(int argc, char** argv) {
             pose.y = cam.y - 196.0f;
             pose.ay = cam.yaw + 1024.0f - 256.0f;
         }
-        pose.frame = scr::car_frame(animation);
+        pose.animation = int32_t(animation);
         cars.push_back({std::move(*model), pose});
     }
     scr::Renderer renderer3d;
@@ -296,6 +296,7 @@ int main(int argc, char** argv) {
             clock.begin_frame();
             if (track) {
                 fb.palette() = track->palette;
+                renderer3d.set_anim_counter(clock.anim_counter());
                 renderer3d.begin(*track, cam, fb);
                 renderer3d.draw_placements();
                 for (const auto& c : cars) {

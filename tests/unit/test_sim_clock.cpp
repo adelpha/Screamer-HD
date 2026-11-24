@@ -68,3 +68,19 @@ TEST_CASE("sim_clock: damping table matches the original bit for bit") {
     CHECK(bits(scr::pow_table(12, 99)) == 0x3f7b1ca2u);
     CHECK(scr::pow_table(50, 0) == scr::pow_table(49, 0));  // clamped
 }
+
+TEST_CASE("sim_clock: texture animation counter turns 0.3 times per second") {
+    scr::SimClock c;
+    for (int i = 0; i < 1000; ++i) {
+        c.add_ticks(2);
+        c.begin_frame();
+    }
+    // 1000 frames settle at ~0.02 s: 20 s * 0.3 = 6 turns, so the phase is back near 0
+    // (the first frames are shorter while the smoothed time converges).
+    CHECK(c.anim_counter() >= 0);
+    CHECK(c.anim_counter() <= 65535);
+    scr::SimClock d;
+    d.add_ticks(2);
+    d.begin_frame();  // frame_time = 0.02 (clamped), phase = 0.006
+    CHECK(d.anim_counter() == 393);
+}

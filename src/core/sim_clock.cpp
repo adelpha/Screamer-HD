@@ -25,6 +25,10 @@ void SimClock::begin_frame() {
     if (0.2 <= static_cast<double>(frame_time_)) frame_time_ = 0.2f;
     if (static_cast<double>(frame_time_) <= 0.02) frame_time_ = 0.02f;
     pow_row_ = static_cast<int>(1.0 / static_cast<double>(frame_time_));  // __CHP truncates toward zero
+    // Texture animation clock (frame_timing_update, 0x118e08 / 0x121538): 0.3 turns per second.
+    anim_phase_ = static_cast<float>(static_cast<double>(frame_time_) * 0.3 + static_cast<double>(anim_phase_));
+    if (1.0f <= anim_phase_) anim_phase_ += -1.0f;
+    anim_counter_ = static_cast<int32_t>(std::lround(static_cast<double>(anim_phase_) * 65535.0));
 }
 
 } // namespace scr

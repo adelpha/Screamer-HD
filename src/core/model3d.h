@@ -12,7 +12,8 @@
 //   +0x10 int32 vertex count (informational), +0x14 int32 face count
 //   +0x1c int32 vertex list offset (object-relative): int16 x, y, z per vertex, ends with x == 0x7fff
 //   +0x24 int32 uv list offset (object-relative): int16 u, v at the same byte offset as each vertex
-//   +0x28 int32 draw-order offsets[16] (part-relative): int16 face offsets, ends with a value <= 0
+//   +0x28 int32 draw-order offsets[16] (part-relative, one per view direction): int16 face
+//         offsets, ends with a value <= 0
 //   +0x68 char name[...]
 // Face (0x24 bytes, part-relative offset):
 //   +0x02 int16 flat colour (material types 8 and 9)

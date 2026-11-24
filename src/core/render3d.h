@@ -45,16 +45,23 @@ struct Mat3 {
 struct Pose {
     float x = 0, y = 0, z = 0;
     float ax = 0, ay = 0, az = 0;
-    int frame = 0;  // material frame (cars: animation bits 13-15 of the instance, see car_frame)
+    // Object animation word (instance +0x20, placement +0x20): a texture phase in bits 2-15,
+    // or negative (track placements) to follow the global animation counter. Cars use 0x8000
+    // for the second paint scheme (CarData.animation), 0x4000 and 0x2000 for game state.
+    int32_t animation = -1;
 };
 
-// Material frame of a car from its object animation bits (opponent_sync_render_object):
-// 0x8000 second paint scheme (CarData.animation), 0x4000 and 0x2000 set by the game state.
-constexpr int car_frame(uint32_t animation) { return int((animation >> 13) & 7); }
+// Material frame shown by cell_begin + mat*_draw: frames * phase >> 14, where the phase is
+// animation >> 2, or the low 14 bits of the global animation counter for animation < 0.
+constexpr int material_frame(int frames, int32_t animation, int32_t anim_counter) {
+    const int32_t phase = animation >= 0 ? (animation >> 2) & 0x3fff : anim_counter & 0x3fff;
+    return int((int64_t(frames) * phase) >> 14);
+}
 
 class Renderer {
 public:
     void set_textures(bool on) { textures_ = on; }
+    void set_anim_counter(int32_t counter) { anim_counter_ = counter; }  // SimClock::anim_counter()
 
     // Clears, draws the background panorama and every placement of the track.
     // Equivalent to begin() + draw_placements() + finish().
@@ -81,10 +88,10 @@ private:
         std::vector<ClipVert> poly;
         const Material* mat;
         uint8_t color;
-        int frame;
+        int32_t animation;
         float depth;
     };
-    void draw_polygon(const std::vector<ClipVert>& poly, const Material* mat, uint8_t face_color, int frame);
+    void draw_polygon(const std::vector<ClipVert>& poly, const Material* mat, uint8_t face_color, int32_t animation);
 
     const Track* track_ = nullptr;
     const Camera* cam_ = nullptr;
@@ -95,6 +102,7 @@ private:
     std::vector<Deferred> deferred_;
     std::vector<float> wx_, wy_, wz_;
     bool textures_ = true;
+    int32_t anim_counter_ = 0;
 };
 
 } // namespace scr

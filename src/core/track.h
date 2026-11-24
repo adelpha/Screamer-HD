@@ -8,13 +8,18 @@
 //             int32 row offsets[256] (-1 = empty) -> int32 cell offsets[256] (-1 = empty) ->
 //             cell { int32 slot offsets[5]; int32 slot counts[5] }.
 //             Slots 0 and 1 hold 64-byte placements { int32 object, flags, x, y, z,
-//             angle x, angle y, angle z, ... } (slot 0: road pieces, slot 1: scenery);
-//             slots 2-4 hold other data (collision and so on, not decoded yet).
+//             angle x, angle y, angle z, animation (-1), ... } (slot 0: road pieces, slot 1: scenery).
+//             The game finds the ground under a car by testing the faces of the cell's slot 0
+//             objects (collision_query_cells); the 4th character of the part name is the
+//             surface type. Slot 2: 12-byte track points { float heading (radians), int32 x, z }
+//             (track_find_nearest_point). Slot 3: 28-byte road cross-sections { float heading,
+//             int32 centre x, z, left x, z, right x, z }. Slot 4: one 36+ byte record per cell
+//             (bounds and a copy of the slot table; unused here).
 //   MAPn.MLB  materials: 16 bytes each { int32 handler offset (type * 16), int32 texture
 //             descriptor offset, int32 width, int32 height }, up to the first descriptor;
 //             descriptor { int32 frame count, int32 average colour, int32 pixel offsets[frames] };
 //             texture pixels are stored with a 256-byte row stride. Car materials have 8
-//             frames picked by the object's animation bits (see Pose::frame).
+//             frames picked by the object's animation bits (see Pose::animation).
 //   MAPn.COL  768-byte palette (6-bit VGA values).
 //   MAPn.BCK  PCX, 512 x 256 sky/background panorama (render_draw_background).
 //   MAPn.SMG  16 KB translucency table (engine_load_shade_table): new = smg[texel * 256 + old]
@@ -43,11 +48,24 @@ struct Material {
     std::vector<uint32_t> frame_pixels;  // every frame's pixel offset
 };
 
+// Track centre-line point (MMP slot 2) and road cross-section (slot 3).
+struct TrackPoint {
+    float heading = 0;  // radians
+    int x = 0, z = 0;
+};
+struct TrackSection {
+    float heading = 0;
+    int x = 0, z = 0;              // centre
+    int left_x = 0, left_z = 0;
+    int right_x = 0, right_z = 0;
+};
+
 struct Placement {
     int object = 0;
     int flags = 0;
     int x = 0, y = 0, z = 0;
     int ax = 0, ay = 0, az = 0;  // 0..0x7ff per turn
+    int animation = -1;          // +0x20: texture animation word (-1 = global counter, see Pose)
     int slot = 0;
 };
 
@@ -67,6 +85,8 @@ private:
 struct Track {
     std::vector<Model> objects;
     std::vector<Placement> placements;
+    std::vector<TrackPoint> points;
+    std::vector<TrackSection> sections;
     std::optional<MaterialLibrary> materials;
     std::optional<PcxImage> background;
     Palette palette{};
@@ -86,5 +106,12 @@ std::optional<Model> load_object(const std::string& dat_path, const std::string&
 
 std::optional<std::vector<Model>> parse_unr(const std::vector<uint8_t>& unr);
 std::optional<std::vector<Placement>> parse_mmp(const std::vector<uint8_t>& mmp, size_t object_count);
+// Track points (slot 2) and cross-sections (slot 3) of every cell.
+void parse_mmp_track_lines(const std::vector<uint8_t>& mmp, std::vector<TrackPoint>& points,
+                           std::vector<TrackSection>& sections);
+
+// Height of the ground (the faces of the road objects, MMP slot 0) at x, z: the highest face
+// below `below_y` whose outline contains the point. Empty when there is no road there.
+std::optional<float> ground_height(const Track& track, float x, float z, float below_y = 1e9f);
 
 } // namespace scr
