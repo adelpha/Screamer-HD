@@ -41,6 +41,14 @@ struct Mat3 {
     float m[3][3];
 };
 
+// Scroll state of an object's environment-mapped glass (instance +0x24..+0x38 in the game):
+// the object's movement, turned into camera space, accumulates into a texture offset.
+struct EnvScroll {
+    float acc[3]{};
+    int prev[3]{};
+    bool started = false;
+};
+
 // An object placed in the world: position and angles (x = pitch, y = yaw, z = roll).
 struct Pose {
     float x = 0, y = 0, z = 0;
@@ -53,6 +61,12 @@ struct Pose {
     // placements: record +0x3c): picks the frame of material types 10/11, the car windows'
     // reflections (frames * value >> 16): 0 open sky, 0x8000 / 0xff00 tunnels and the like.
     int32_t reflection = 0;
+    // object_transform_float: parts flagged 0x2000 get reflection UVs every frame for their
+    // type 10/11 faces (the car glass). env keeps the scroll between frames; env_rate is how fast
+    // movement scrolls it (0.002 on the road, 0.03 off it, set by car_apply_surface; 0.008
+    // until the first car_apply_surface).
+    EnvScroll* env = nullptr;
+    float env_rate = 0.008f;
 };
 
 // Material frame shown by cell_begin + mat*_draw: frames * phase >> 14, where the phase is
@@ -106,6 +120,7 @@ private:
     std::vector<float> depth_;  // 1/z per pixel
     std::vector<Deferred> deferred_;
     std::vector<float> wx_, wy_, wz_;
+    std::vector<std::array<int, 2>> env_uv_;
     bool textures_ = true;
     int32_t anim_counter_ = 0;
 };
