@@ -93,6 +93,7 @@ struct Track {
     Palette palette{};
     std::vector<uint8_t> shade_table;          // MAPn.SMG, 64 x 256 (empty if missing)
     std::array<uint8_t, 256> darken{};        // build_darken_tables' x0.6 table (types 12/13)
+    std::array<uint8_t, 256> darken075{};     // build_darken_tables' x0.75 table (HUD radar)
 };
 
 // Palette remap to the nearest colour at `factor` brightness, as build_darken_tables does

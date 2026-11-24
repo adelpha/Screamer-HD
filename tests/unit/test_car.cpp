@@ -166,11 +166,23 @@ TEST_CASE("race: CPU cars on MAP1 leave the grid along their racing lines") {
     CHECK(race.player_position == 10);
     scr::SimClock clock;
     scr::CarInput in;
-    for (int i = 0; i < 200; ++i) {
-        clock.add_ticks(2);
-        clock.begin_frame();
-        race.update(*track, in, clock.frame_time(), clock.pow_table_row());
-    }
+    auto run = [&](int frames) {
+        for (int i = 0; i < frames; ++i) {
+            clock.add_ticks(2);
+            clock.begin_frame();
+            race.update(*track, in, clock.frame_time(), clock.pow_table_row());
+        }
+    };
+    // The 3-2-1 countdown: two seconds per light, the race starts with the third.
+    CHECK(!race.started);
+    CHECK(race.countdown_stage == 0);
+    run(250);
+    CHECK(race.countdown_stage == 2);
+    CHECK(!race.started);
+    CHECK(race.opponents[0].speed == 0.0f);
+    run(60);
+    CHECK(race.started);
+    run(200);
     for (const auto& o : race.opponents) {
         CHECK(o.speed > 1000.0f);
         CHECK(scr::ground_query(*track, o.pos_x, o.pos_z).has_value());

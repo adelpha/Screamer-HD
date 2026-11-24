@@ -42,8 +42,10 @@ struct RacingLine {
 
 struct TrackMarker {
     int radius = 0;
-    int flags = 0;
-    float speed_factor = 1.0f;
+    int flags = 0;               // +0x04 surface: 0 road, 1/2 picks dust, window reflections
+    float speed_factor = 1.0f;   // +0x08 CPU car speed factor
+    float grip = 1.0f;           // +0x0c the player's surface grip
+    int checkpoint = 0;          // +0x10 bit 1: checkpoint that adds time (and starts timing)
     int x = 0, z = 0;
 };
 
@@ -101,6 +103,8 @@ public:
     // Loads MAPnOPP.SPL, MAPn.MRK and OPPONENTS from DATA/MAPn.DAT (level letter 'A'..'E').
     // A new game plays level 'B' (DAT_0011d2b0 = 1).
     bool load(const std::string& data_dat, const std::string& track_name, char level = 'B');
+    int bonus_time = 0;          // TRACK_DATA.bonus_time: seconds added at a timed checkpoint
+    int laps = 3;                // DAT_0011d2ac + 1
 
     // Takes the state from copies of the game's g_player_car and g_opponents[count] (0x590 bytes
     // each), for comparing frames with recordings of the original.
@@ -114,6 +118,20 @@ public:
     void update(const Track& track, const CarInput& in, float frame_time, int pow_row);
 
     Car player;
+    // Race state for the player (car_update_race_timers, car_on_checkpoint, car_complete_lap).
+    bool started = true;         // g_race_flags & 1
+    bool finished = false;       // g_race_flags & 8
+    bool use_countdown = false;  // start() turns on the 3-2-1 countdown (race_countdown_update)
+    float countdown_timer = 0;
+    int countdown_stage = -1;    // start light shown, -1 when the countdown is over
+    bool timing_started = false;
+    float time_left = 15.0f;     // starts at 15 s, a timed checkpoint gives time_left / 5 + bonus
+    float total_time = 0;        // PlayerCar 0x78c
+    float lap_time = 0;          // PlayerCar 0x794
+    float best_lap = 10000.0f;
+    std::string best_lap_text = "00:00:00";
+    std::vector<int> checkpoints_seen;
+    int checkpoints_passed = 0;
     std::vector<Opponent> opponents;
     std::vector<RacingLine> lines;
     std::vector<TrackMarker> markers;
@@ -135,6 +153,7 @@ private:
     void collide_player(Opponent& o);
     void player_contacts(const Track& track);
     void update_positions();
+    void player_progress();
 
     float dt_ = 0.02f;
     int pow_row_ = 49;

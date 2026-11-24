@@ -13,6 +13,7 @@
 #include "core/opponent.h"
 #include "core/framebuffer.h"
 #include "core/gamedata.h"
+#include "core/hud.h"
 #include "core/image.h"
 #include "core/pcx.h"
 #include "core/render3d.h"
@@ -270,6 +271,7 @@ int main(int argc, char** argv) {
         std::vector<scr::EnvScroll> cpu_env;
     };
     std::optional<Player> player;
+    std::optional<scr::Hud> hud;  // the race HUD (--scene drive with CPU cars)
     if (drive) {
         auto gen = scr::resolve_game_file(*game_dir, "DATA/GEN.DAT");
         auto ga = gen ? scr::Archive::open(*gen) : std::nullopt;
@@ -317,6 +319,11 @@ int main(int argc, char** argv) {
             player->race.player.reset(setup, *track, sx, sz);
         }
         SDL_Log("driving %s (CARS_DATA %zu), %zu CPU cars", name.c_str(), idx, player->race.opponents.size());
+        if (player->cpu_cars) {
+            auto game = scr::resolve_game_file(*game_dir, "GFX/GAME.DAT");
+            hud.emplace();
+            if (!game || !hud->load(*game)) hud.reset();
+        }
     }
     SDL_Gamepad* pad = nullptr;
     scr::Renderer renderer3d;
@@ -462,6 +469,33 @@ int main(int argc, char** argv) {
                     renderer3d.draw_model(c.model, c.pose);
                 }
                 renderer3d.finish();
+                if (player && player->cpu_cars && hud) {
+                    const scr::Race& r = player->race;
+                    const scr::Car& c = r.player;
+                    scr::HudState hs;
+                    hs.lap = c.lap;
+                    hs.laps = r.laps;
+                    hs.position = r.player_position;
+                    hs.time_left = r.time_left;
+                    hs.total_time = r.total_time;
+                    hs.lap_time = r.lap_time;
+                    hs.best_lap = r.best_lap_text;
+                    hs.speed = c.speed;
+                    hs.maxspd = c.setup.maxspd;
+                    hs.rpm = c.engine_rpm;
+                    hs.maxrpm = c.setup.maxrpm;
+                    hs.gear = c.gear;
+                    hs.countdown_stage = r.countdown_stage;
+                    hs.player_x = c.pos_x;
+                    hs.player_z = c.pos_z;
+                    hs.player_yaw = c.yaw;
+                    for (const scr::Opponent& o : r.opponents) hs.cpu_cars.push_back({o.pos_x, o.pos_z});
+                    // draw_map_objects: the cross-sections of the 17 x 17 cells around the player.
+                    for (const scr::TrackSection& ts : track->sections)
+                        if (std::abs(ts.x - c.pos_x) < 8 * 8192 + 4096 && std::abs(ts.z - c.pos_z) < 8 * 8192 + 4096)
+                            hs.radar_lines.push_back({ts.left_x, ts.left_z, ts.right_x, ts.right_z});
+                    hud->draw(fb, hs, track->darken075, clock.frame_time(), clock.pow_table_row());
+                }
             } else if (title) {
                 scr::blit_pcx(*title, fb);
             } else {

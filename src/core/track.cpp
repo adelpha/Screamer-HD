@@ -307,6 +307,7 @@ std::optional<Track> load_track(const std::string& dat_path, const std::string& 
     if (!t.materials) return std::nullopt;
     t.palette = palette_from_vga(col->data());
     t.darken = build_darken_table(col->data(), 0.6f);
+    t.darken075 = build_darken_table(col->data(), 0.75f);
     if (auto smg = a->read(name + ".SMG"); smg && smg->size() >= 64 * 256) t.shade_table = std::move(*smg);
     if (auto bck = a->read(name + ".BCK")) t.background = decode_pcx(*bck);
     return t;
