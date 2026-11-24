@@ -351,6 +351,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     };
     std::vector<CarInstance> cars;
     std::optional<scr::Model> shadow;  // SHADOW.3DX, drawn under every car (translucent, MAPn.SMG)
+    std::optional<scr::Model> smoke_model;  // SMOKE.3DX, the player car's tyre smoke
     if (track && !opt.cars.empty()) {
         if (auto path = scr::resolve_game_file(*game_dir, "GFX/" + opt.track + opt.detail + ".DAT")) shadow = scr::load_object(*path, "SHADOW.3DX");
     }
@@ -423,6 +424,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             return 1;
         }
         if (!shadow) shadow = scr::load_object(*path, "SHADOW.3DX");
+        smoke_model = scr::load_object(*path, "SMOKE.3DX");
         player.emplace();
         player->model = std::move(*model);
         const scr::CarSetup setup = scr::car_setup(rec, player->model);
@@ -1007,6 +1009,18 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     sh.y = float(c.ground_y - 2);
                     sh.env = nullptr;
                     sh.depth_bias = kShadowBias;
+                    // the tyre smoke (car_sync_debris_objects: instance position and animation word)
+                    if (smoke_model)
+                        for (const scr::SmokePuff& sp : c.smoke) {
+                            if (!sp.on) continue;
+                            scr::Pose spose;
+                            spose.x = float(sp.x);
+                            spose.y = float(sp.y);
+                            spose.z = float(sp.z);
+                            spose.animation = sp.animation;
+                            spose.depth_bias = kShadowBias;  // on the road, not in it
+                            renderer3d.draw_model(*smoke_model, spose);
+                        }
                     if (player->camera.car_visible || freecam) {
                         if (shadow) renderer3d.draw_model(*shadow, sh);
                         renderer3d.draw_model(player->model, pose);

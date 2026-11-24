@@ -121,7 +121,10 @@ void Car::update(const Track& track, const CarInput& in, float frame_time, int p
     update_steering(in);
     wheel_loads();
     update_skid();
+    if (skid_sound && crash_state == 0) smoke_spawn();  // car_update_skid
     crash_update(track);
+    smoke_update();
+    ++frame_counter;
     // car_update_track_contact (progress and checkpoints are not ported)
     corner_probes(track);
     resolve_corner_probes(track);
@@ -376,6 +379,47 @@ void Car::update_skid() {
     skid_sound = skidding || 0.23 < std::fabs(double(drift_angle));
 }
 
+void Car::smoke_spawn() {
+    if (smoke_timer < 0.05f) {
+        smoke_timer = dt_ + smoke_timer;
+        return;
+    }
+    smoke_timer = 0;
+    // a puff for each rear wheel (wheel[1], wheel[3]), in the first free slots, scattered by
+    // the low bits of the position and the frame counter
+    size_t slot = 0;
+    for (int w = 0; w < 4; w += 2) {
+        while (slot < smoke.size() && smoke[slot].on) ++slot;
+        if (slot >= smoke.size()) break;
+        SmokePuff& p = smoke[slot];
+        p.on = true;
+        p.animation = 0;
+        const int sign = (frame_counter & uint32_t(w)) == 0 ? 1 : -1;
+        const int u = int(frame_counter & 0x3f);
+        p.local_x = wheel[size_t(w) + 1].local_x + (pos_x & 7) * u * sign;
+        p.local_z = wheel[size_t(w) + 1].local_z + (pos_z & 7) * u;
+    }
+}
+
+void Car::smoke_update() {
+    for (SmokePuff& p : smoke) {
+        if (!p.on) continue;
+        // turned with the car (yaw + drift, then pitch), at the car
+        int ox, oz;
+        rotate_xz(ox, oz, p.local_x, p.local_z, -(yaw + drift_angle));
+        const float c = float(std::cos(double(pitch))), s = float(std::sin(double(pitch)));
+        p.x = ox + pos_x;
+        p.y = chop(double(float(oz) * s)) + pos_y;
+        p.z = chop(double(float(oz) * c)) + pos_z;
+        // obj_animate_step(dt * 1.5): through the frames in 2/3 s, then gone
+        p.animation = chop(double(dt_ * 1.5f * 65535.0f) + double(p.animation));
+        if (0x10000 <= p.animation) {
+            p.animation -= 0x10000;
+            p.on = false;
+        }
+    }
+}
+
 void Car::corner_probes(const Track& track) {
     const double cr = std::fabs(std::cos(double(roll))), cp = std::fabs(std::cos(double(pitch)));
     wall_contact = false;
@@ -502,6 +546,7 @@ void Car::crash_update(const Track& track) {
         crash_roll_rate = pow_table(pow_row_, 0x184 / 4) * crash_roll_rate;
         body_roll_ofs = crash_roll_rate * dt_ + body_roll_ofs;
         if (body_ofs_y < 1) {
+            smoke_spawn();
             ++crash_bounce_count;
             body_ofs_y = 0;
             crash_bounce = float(-(double(crash_bounce) * 0.4));
@@ -516,6 +561,7 @@ void Car::crash_update(const Track& track) {
             skid_sound = true;
             cam_shake_x ^= 0x1f;
             yaw = float(double(steer) * 0.3 + double(yaw));
+            smoke_spawn();
         }
         break;
     case 6:
