@@ -361,7 +361,10 @@ int main(int argc, char** argv) {
                         const int lt = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
                         const int lx = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX);
                         if (rt > 1000) in.accel = std::max(in.accel, rt * 1023 / 32767);
-                        if (lt > 1000) in.brake = std::max(in.brake, lt * 1023 / 32767);
+                        if (lt > 1000 && !in.brake) {
+                            in.brake = lt * 1023 / 32767;
+                            in.analog_brake = true;
+                        }
                         if (std::abs(lx) > 4000 && !in.steer_left && !in.steer_right) {
                             in.analog_steer = true;
                             in.steer = lx * 1023 / 32767;

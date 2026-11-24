@@ -12,8 +12,10 @@
 // through the game's per-fps damping table (pow_table), indexed like lerp_toward's k.
 // Field offsets in the comments are PlayerCar's (reference/symbols/STARTL.types.h).
 //
-// Not ported yet: crashes (crash_state 1/2/5), spins, opponents and obstacles, checkpoints,
-// sounds, debris. Network catch-up (speed_factor at 0x300) stays 1.
+// crash_state: 0 driving, 2 just hit a wall too hard (car_set_state), 1 tumbling until the
+// fourth bounce, 5 wheelspin at the start, 6 wheelspin over.
+// Not ported yet: spins (spin_state), opponents and obstacles, checkpoints, sounds, debris.
+// Network catch-up (speed_factor at 0x300) stays 1.
 
 #include "core/track.h"
 
@@ -30,8 +32,10 @@ struct CarInput {
     int steer_right = 0;  // 0x119888
     int steer = 0;        // analog steering -1023 (left) .. 1023 (right); used when analog
     bool analog_steer = false;  // 0x119814 == 0 (joystick) instead of 1 (keyboard)
+    bool analog_brake = false;  // brake pedal on an axis: no ramp
     bool gear_up = false;       // manual gearbox only
     bool gear_down = false;
+    bool race_started = true;   // g_race_flags & 1: before the start only the revs move
 };
 
 // Per-car constants from CARS_DATA (CarData) and the wheel positions in the .3DX model.
@@ -80,6 +84,10 @@ public:
     // One frame of race_frame for the player car, in the game's order.
     void update(const Track& track, const CarInput& in, float frame_time, int pow_row);
 
+    // Takes the state from a copy of the game's g_player_car (at least 0x800 bytes), for
+    // comparing single frames with recordings of the original (tools/dosbox/record-race.ps1).
+    void load_player_car(const uint8_t* p);
+
     // State (PlayerCar offsets)
     int pos_x = 0, pos_y = 0, pos_z = 0;   // 0x4b0..0x4b8
     int ground_y = 0;                      // 0x4b4 region: average wheel ground
@@ -104,6 +112,13 @@ public:
     float skid_level = 0, slip_a = 0, slip_b = 0;
     float drift_angle = 0;                 // 0x128
     float surface_grip = 1.0f;
+    int crash_state = 0;                   // 0x148
+    float crash_bounce = 0;                // 0x14c
+    int crash_bounce_count = 0;            // 0x150
+    float crash_pitch_rate = 0, crash_roll_rate = 0;  // 0x154, 0x15c
+    float body_pitch_ofs = 0, body_roll_ofs = 0;      // 0x124, 0x12c (drawing only)
+    int body_ofs_y = 0;                    // 0x134
+    int cam_shake_x = 0;
     int body_lift = 0;
     bool wall_contact = false;
     int wall_push_x = 0, wall_push_z = 0;
@@ -137,6 +152,8 @@ private:
     void wheel_ground(const Track& track);
     void update_track_heading(const Track& track);
     void body_from_wheels();
+    void crash_update(const Track& track);
+    void set_state(int s) { if (crash_state == 0) crash_state = s; }  // car_set_state
 
     float dt_ = 0.02f;
     int pow_row_ = 49;

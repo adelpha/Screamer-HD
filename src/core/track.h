@@ -119,8 +119,9 @@ struct GroundHit {
     char surface = 0;    // 4th letter of the road part's name ('e' = bumpy)
 };
 // collision_query_cells: the ground under x, z, or empty off the road (the game treats that
-// as a wall).
-std::optional<GroundHit> ground_query(const Track& track, int x, int z);
+// as a wall). walls_only = the corner probes' variant (collision_test_object_faces_b), which
+// accepts any face, not only those with a vertical normal component.
+std::optional<GroundHit> ground_query(const Track& track, int x, int z, bool walls_only = false);
 
 // track_find_nearest_point: nearest centre-line point (slot 2) and cross-section (slot 3).
 const TrackPoint* nearest_track_point(const Track& track, int x, int z);

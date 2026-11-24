@@ -99,6 +99,15 @@ config (user's own DOSBox config is ignored), mounts `SCREAMER/` as C: and the C
 * **Debugger**: `-Debugger` uses `dosbox_with_debugger.exe` (Alt+Pause breaks in).
 * `-Cycles 'fixed 60000'` gives more repeatable timing than `max`. Audio is off unless `-Sound`.
 
+* **Recording the original's car physics**: `tools/dosbox/record-race.ps1 -Out artifacts/traces/x.trace
+  -Frames 450 -Script '170:accel,60:accel+left,40:brake' [-Skip N]` starts a new game (MAP1, default
+  name) headless, then patches a small hook over the game loop's `CALL race_frame`: every frame it
+  writes the scripted controls over `g_input_*` and copies the frame time, damping-table row, race
+  flags and `g_player_car` to a buffer at 15 MB, read back at the end (`step_race.py`). `-Skip N`
+  drives N frames before recording. Stepping through the web API instead (JMP $ traps) hangs
+  DOSBox after a frame or two. `tracecmp TRACE GFX/MAP1H.DAT MAP1` then starts every frame from
+  the recorded state, runs our `Car::update` and lists the fields that differ from the next record.
+
 Comparing our output with the original:
 
 ```powershell

@@ -191,7 +191,13 @@ code when they form tables (a lone fixup there is usually an instruction operand
   car_update_track_contact (corner probes, wheel ground heights, track heading, body pose)
   in that order. Walls are wherever the corner probes find no road face; the push comes from
   the nearest slot 3 cross-section. Smoothing goes through `lerp_toward` with the per-fps
-  `g_frame_pow_table`. Crashes, spins, opponents, checkpoints and sounds are not ported yet.
+  `g_frame_pow_table`. Checked frame by frame against recordings of the original (tracecmp):
+  acceleration, the start wheelspin (crash_state 5), steering, braking, wall hits and high-speed
+  cornering match exactly. The ground test is the game's own (integer edge functions in the
+  placement's frame, retried 10 and 20 units along +x/+z); heights on slopes can still be off by
+  one because the reference point of collision_test_object_faces' plane formula is unclear
+  (at run time it reads the part header). Spins, CPU cars, checkpoints and sounds are not
+  ported yet.
 * Ground and track lines: `collision_query_cells` tests the faces of slot 0 (road) objects in
   the 3x3 cells around a probe, and the 4th letter of the part name is the surface type.
   `track_find_nearest_point` uses slot 2 (centre-line points with heading) and slot 3 (road

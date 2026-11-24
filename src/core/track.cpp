@@ -3,6 +3,7 @@
 #include "core/archive.h"
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstring>
 
@@ -211,16 +212,56 @@ std::optional<float> ground_height(const Track& track, float x, float z, float b
     return best;
 }
 
-std::optional<GroundHit> ground_query(const Track& track, int x, int z) {
-    std::optional<GroundHit> best;
-    float best_y = 0;
-    for_each_ground_face(track, float(x), float(z), [&](float y, const Part& part) {
-        if (!best || y > best_y) {
-            best_y = y;
-            best = GroundHit{int(y), part.name.size() > 3 ? part.name[3] : char(0)};
+std::optional<GroundHit> ground_query(const Track& track, int x, int z, bool walls_only) {
+    // collision_query_cells / collision_query_cell_objects / collision_test_quad|triangle:
+    // the probe is turned into the placement's frame (rotate_xz, truncated to integers),
+    // then each face of the road object is tested in x/z with integer edge functions
+    // (inclusive, one winding). Missed points are tried again 10 and 20 units further along
+    // +x/+z.
+    for (const Placement& p : track.placements) {
+        if (p.slot != 0 || std::abs(p.x - x) > 12288 || std::abs(p.z - z) > 12288) continue;
+        const double a = double(float(p.ay) * 0.0009765625f * 3.1415927410125732f);
+        const double c = std::cos(a), s = std::sin(a);
+        const int dx = x - p.x, dz = z - p.z;
+        const int rx = int(double(dz) * s + double(dx) * c) + p.x;
+        const int rz = int(double(dz) * c - double(dx) * s) + p.z;
+        for (int t = 0; t < 3; ++t) {
+            const int px = rx + 10 * t, pz = rz + 10 * t;
+            for (const Part& part : track.objects[size_t(p.object)].parts) {
+                for (const Face& f : part.faces) {
+                    if (!walls_only && f.normal[1] == 0) continue;
+                    int vx[6], vz[6];
+                    int minx = INT32_MAX, maxx = INT32_MIN, minz = INT32_MAX, maxz = INT32_MIN;
+                    for (int i = 0; i < f.count; ++i) {
+                        const Vec3i16& v = part.vertices[f.vtx[size_t(i)]];
+                        vx[i] = v.x + p.x;
+                        vz[i] = v.z + p.z;
+                        minx = std::min(minx, vx[i]); maxx = std::max(maxx, vx[i]);
+                        minz = std::min(minz, vz[i]); maxz = std::max(maxz, vz[i]);
+                    }
+                    if (px > maxx || px < minx || pz > maxz || pz < minz) continue;
+                    bool inside = true;
+                    for (int i = 0; i < f.count && inside; ++i) {
+                        const int j = (i + 1) % f.count;
+                        const int64_t e = int64_t(vz[j] - vz[i]) * (px - vx[i]) + int64_t(vx[i] - vx[j]) * (pz - vz[i]);
+                        if (e < 0) inside = false;
+                    }
+                    if (!inside) continue;
+                    GroundHit hit;
+                    hit.surface = part.name.size() > 3 ? part.name[3] : char(0);
+                    if (f.normal[1] != 0) {
+                        const Vec3i16& v0 = part.vertices[f.vtx[0]];
+                        const int64_t num = int64_t(px - (v0.x + p.x)) * f.normal[0] + int64_t(pz - (v0.z + p.z)) * f.normal[2];
+                        hit.y = int(-num / f.normal[1]) + v0.y + p.y;
+                    } else {
+                        hit.y = p.y;
+                    }
+                    return hit;
+                }
+            }
         }
-    });
-    return best;
+    }
+    return std::nullopt;
 }
 
 const TrackPoint* nearest_track_point(const Track& track, int x, int z) {
