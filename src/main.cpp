@@ -240,9 +240,10 @@ struct Shared {
         bool finished = false, failed = false;
         int position = 0;
     };
-    std::optional<Outcome> outcome;     // how the race from the menu went
+    std::vector<Outcome> outcomes;      // the races since the menu (PLAY AGAIN repeats it)
     std::string choice_path;            // our copy of CONFIG/CHOICE.DAT
     bool back_to_menu = false;          // the race asks to return to the menu
+    bool restart_race = false;          // PLAY AGAIN? yes
     uint64_t frames_run = 0;
 };
 
@@ -335,6 +336,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     scr::Mixer mixer;
     scr::RaceAudio race_audio;
     scr::CdImage cd;
+    int cd_track = 0;  // the CD track playing (0: MIDI or none)
     SDL_AudioStream* audio_stream = nullptr;
     std::vector<float> recorded;  // --record-audio
     mixer.sfx_volume = float(opt.sfx_volume) / 100.0f;
@@ -407,6 +409,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     if (music->ok()) {
                         mixer.set_music(music);
                         playing = true;
+                        cd_track = scr::cd_track_for_race(map);
                     }
                 } else {
                     SDL_Log("no CD music (no CD image: SCREAM.cue/.bin or SCREAM.DAT/.gog)");
@@ -477,18 +480,18 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         }
         menu = &*shared.menu;
         menu->quit = false;
-        if (shared.outcome && shared.race) {
-            menu->race_result(shared.race->map, shared.outcome->best_lap, shared.outcome->total_time,
-                              shared.race->laps, shared.outcome->finished);
-            menu->after_race(shared.outcome->finished, shared.outcome->failed, shared.outcome->position,
-                             shared.outcome->total_time);
+        if (!shared.outcomes.empty() && shared.race) {
+            for (const auto& o : shared.outcomes)
+                menu->race_result(shared.race->map, o.best_lap, o.total_time, shared.race->laps, o.finished);
+            const auto& o = shared.outcomes.back();
+            menu->after_race(o.finished, o.failed, o.position, o.total_time);
         } else if (shared.race && shared.race->game_mode == 2) {
             // a championship race left with Esc: it counts as lost
             menu->after_race(false, true, 10, 0);
         } else {
             menu->show_title();
         }
-        shared.outcome.reset();
+        shared.outcomes.clear();
         shared.race.reset();
         if (!shared.choice_path.empty()) menu->save_choice().save(shared.choice_path);
         // frontend_load: MENU.DTR's SOUND_FX (menu1..menu9)
@@ -545,6 +548,30 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
 
     uint64_t frame = 0;
     float end_timer = 0;
+    // race_run's "PLAY AGAIN?" after a race from the menu (pause_menu_draw_scene): -1 not shown,
+    // else the highlighted answer (0 yes, 1 no)
+    int prompt = -1;
+    bool prompt_keys[4]{};
+    // P: the car-stereo panel (pause_menu); the race stands still and goes quiet meanwhile
+    bool paused = false;
+    scr::CdPanel panel;
+    bool panel_keys[3]{};
+    auto apply_volumes = [&]() {
+        mixer.sfx_volume = float(panel.volume[1]) / float(0x6000);
+        mixer.music_volume = float(cd_track ? panel.volume[0] : panel.volume[2]) / float(0x6000) * 0.7f;
+    };
+    panel.volume[0] = panel.volume[2] = int(float(opt.music_volume) / 100.0f * float(0x6000));
+    panel.volume[1] = int(float(opt.sfx_volume) / 100.0f * float(0x6000));
+    scr::Framebuffer frozen;
+    auto start_prompt = [&]() {
+        prompt = 0;
+        frozen = fb;
+        // three passes of draw_darkened_rect over the whole screen
+        if (track) {
+            scr::HudSurface hsurf(frozen);
+            for (int i = 0; i < 3; ++i) hsurf.darken(0, 0, 320, 200, track->darken075);
+        }
+    };
     int listener_x = player ? player->race.player.pos_x : 0, listener_z = player ? player->race.player.pos_z : 0;
     if (opt.audio_log)
         mixer.on_play = [&](int s) {
@@ -564,12 +591,40 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             case SDL_EVENT_QUIT: running = false; break;
             case SDL_EVENT_KEY_DOWN:
                 if (ev.key.key == SDLK_ESCAPE && !menu) {
-                    running = false;
-                    if (opt.from_menu && opt.scene == "drive") shared.back_to_menu = true;
+                    if (paused) {
+                        paused = false;  // Esc leaves the panel
+                        apply_volumes();
+                    } else if (opt.from_menu && player && opt.scene == "drive") {
+                        // Esc ends the race (g_race_flags 0x220); in the question it means no
+                        if (prompt < 0) {
+                            start_prompt();
+                        } else {
+                            shared.back_to_menu = true;
+                            running = false;
+                        }
+                    } else {
+                        running = false;
+                    }
                 }
                 else if (player && ev.key.key >= SDLK_F1 && ev.key.key <= SDLK_F4 && player->race.started)
                     player->camera.select(int(ev.key.key - SDLK_F1));
                 else if (ev.key.key == SDLK_M && !ev.key.repeat) radar = radar >= 3 ? 0 : radar + 1;
+                else if (ev.key.key == SDLK_P && !ev.key.repeat && player && hud && prompt < 0 && !paused) {
+                    paused = true;
+                    frozen = fb;
+                    if (track) {
+                        scr::HudSurface hsurf(frozen);
+                        hsurf.darken(0, 0, 320, 200, track->darken075);  // draw_darkened_rect
+                    }
+                    panel.button = 0;
+                    panel.track = cd_track ? cd_track : panel.track;
+                    if (cd.tracks.size() > 1) {
+                        panel.first_track = cd.tracks[1].number;
+                        panel.last_track = cd.tracks.back().number;
+                    }
+                    mixer.sfx_volume = 0;
+                    mixer.music_volume = 0;
+                }
                 else if (ev.key.key == SDLK_F12) {
                     scr::SurfacePtr s(SDL_RenderReadPixels(renderer, nullptr));
                     save_or_log(s.get(), "artifacts/screenshots/frame_" + std::to_string(frame) + ".png");
@@ -600,7 +655,81 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         }
         if (clock.frame_ready()) {
             clock.begin_frame();
-            if (track) {
+            if (player && hud && !paused && frame == 150 && opt.hold.find("pause") != std::string::npos) {
+                // --hold pause: open the P panel at frame 150 (headless checks)
+                paused = true;
+                frozen = fb;
+                scr::HudSurface hsurf(frozen);
+                hsurf.darken(0, 0, 320, 200, track->darken075);
+            }
+            if (prompt >= 0) {
+                fb = frozen;
+                const bool* keys = SDL_GetKeyboardState(nullptr);
+                const bool now[4] = {keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_LEFT],
+                                     keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_RIGHT],
+                                     keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER], false};
+                if (now[0] && !prompt_keys[0] && prompt != 0) {
+                    prompt = 0;
+                    mixer.play(6);
+                }
+                if (now[1] && !prompt_keys[1] && prompt != 1) {
+                    prompt = 1;
+                    mixer.play(6);
+                }
+                if (now[2] && !prompt_keys[2]) {
+                    if (prompt == 0) shared.restart_race = true;  // the same race again
+                    else shared.back_to_menu = true;
+                    running = false;
+                }
+                std::copy(now, now + 4, prompt_keys);
+                if (hud && hud->texts.size() > 21) {
+                    scr::HudSurface hsurf(fb);
+                    auto centre = [&](const std::string& t, int y, int m) {
+                        hsurf.text(hud->fonts, (320 - hsurf.measure(hud->fonts, t, 0)) >> 1, y, t, 0, m);
+                    };
+                    const bool blink = (frame & 8) != 0;
+                    centre(hud->texts[19], 0x34, 2);
+                    centre(hud->texts[20], 0x5c, prompt == 0 && blink ? 2 : 0xe);
+                    centre(hud->texts[21], 0x7a, prompt == 1 && blink ? 2 : 0xe);
+                }
+            } else if (paused) {
+                fb = frozen;
+                if (opt.hold.find("pause") != std::string::npos) panel.button = 4;  // headless look at the volume bar
+                const bool* keys = SDL_GetKeyboardState(nullptr);
+                const bool now[3] = {bool(keys[SDL_SCANCODE_LEFT]), bool(keys[SDL_SCANCODE_RIGHT]),
+                                     keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER]};
+                if (now[0] && !panel_keys[0] && panel.button > 0) --panel.button;
+                if (now[1] && !panel_keys[1] && panel.button < 6) ++panel.button;
+                panel.pressed = now[2];
+                if (now[2]) {
+                    const float dt = clock.frame_time();
+                    int& v = panel.volume[panel.mode];
+                    if (panel.button == 4) v = std::max(0, int(float(v) - dt * 48000.0f));
+                    if (panel.button == 5) v = std::min(0x7fff, int(dt * 48000.0f + float(v)));
+                }
+                if (now[2] && !panel_keys[2]) {
+                    if (panel.button == 0) {
+                        paused = false;  // play: back to the race
+                        apply_volumes();
+                    } else if ((panel.button == 2 || panel.button == 3) && cd_track) {
+                        // previous / next CD track
+                        const int t = std::clamp(cd_track + (panel.button == 3 ? 1 : -1), panel.first_track, panel.last_track);
+                        if (t != cd_track) {
+                            auto music = std::make_shared<scr::CdAudioPlayer>(cd, t);
+                            if (music->ok()) {
+                                mixer.set_music(music);
+                                cd_track = t;
+                                panel.track = t;
+                            }
+                        }
+                    } else if (panel.button == 6) {
+                        panel.mode = (panel.mode + 1) % 3;
+                    }
+                }
+                std::copy(now, now + 3, panel_keys);
+                panel.blink = (frame & 0x10) != 0;
+                if (paused) hud->draw_cd_panel(fb, panel);
+            } else if (track) {
                 fb.palette() = track->palette;
                 renderer3d.set_anim_counter(clock.anim_counter());
                 if (player) {
@@ -736,10 +865,16 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     if (hs.end && opt.from_menu) {
                         // race_end_screen: back to the menu five seconds after the end
                         end_timer += clock.frame_time();
-                        if (5.0f <= end_timer && race_audio.speech_current() == -1) {
-                            shared.back_to_menu = true;
-                            shared.outcome = Shared::Outcome{r.best_lap, r.total_time, r.finished, r.failed, r.player_position};
-                            running = false;
+                        if (5.0f <= end_timer && race_audio.speech_current() == -1 && prompt < 0) {
+                            shared.outcomes.push_back(
+                                Shared::Outcome{r.best_lap, r.total_time, r.finished, r.failed, r.player_position});
+                            if (shared.race && shared.race->game_mode == 2) {
+                                // the championship goes on in the menu
+                                shared.back_to_menu = true;
+                                running = false;
+                            } else {
+                                start_prompt();
+                            }
                         }
                     }
                     hs.won = r.finished && r.player_position == 1;
@@ -922,6 +1057,7 @@ int main(int argc, char** argv) {
     int exit_code = 0;
     for (;;) {
         shared.back_to_menu = false;
+        shared.restart_race = false;
         exit_code = run_scene(opt, window, renderer, game_dir, title, shared);
         if (exit_code != 0) break;
         if (opt.frames) {

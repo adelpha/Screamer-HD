@@ -98,6 +98,18 @@ struct HudState {
     bool won = false;
 };
 
+// The P-key panel (pause_menu): a car stereo (CDFRONTL.PKC) over the frozen race, with the
+// CD's track numbers, one highlighted button (play, eject, previous, next, volume -, volume +,
+// mode) and, on the volume buttons, a bar for the volume the mode selects (CD, FX, MU).
+struct CdPanel {
+    int button = 0;          // 0..6
+    bool pressed = false;    // the button is being held / was just used
+    int mode = 0;            // 0 CD, 1 FX (effects), 2 MU (MIDI music)
+    int volume[3] = {0x6000, 0x6000, 0x6000};
+    int first_track = 2, last_track = 8, track = 3;
+    bool blink = false;      // the current track flashes
+};
+
 class Hud {
 public:
     bool load(const std::string& game_dat);  // GFX/GAME.DAT
@@ -112,6 +124,9 @@ public:
     // view: 1 dashboard (COCKnn), 2 compact gauges (IMPRES, the default); radar 0 (off) .. 3.
     void draw(Framebuffer& fb, const HudState& s, const std::array<uint8_t, 256>& darken075, float frame_time,
               int pow_row, int view = 2, int radar = 1);
+
+    void draw_cd_panel(Framebuffer& fb, const CdPanel& p);
+    std::vector<uint8_t> cdfront;  // CDFRONTL.PKC
 
     HudFonts fonts;
     HudSprites sprites;

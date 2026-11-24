@@ -200,7 +200,41 @@ bool Hud::load(const std::string& game_dat) {
     sprites = std::move(*s);
     labels = std::move(*let);
     gauges = std::move(*res);
+    if (auto cd = a->read("CDFRONTL.PKC")) cdfront = std::move(*cd);
     return true;
+}
+
+void Hud::draw_cd_panel(Framebuffer& fb, const CdPanel& p) {
+    // pause_menu
+    HudSurface s(fb);
+    s.rle(cdfront);
+    // the CD's tracks (font 5, mode 9); the playing one flashes; a second row after ten
+    int x = 0, y = 0;
+    for (int i = 0; i <= p.last_track - p.first_track; ++i) {
+        if (i == 10 && y == 0) {
+            y = 7;
+            x = 0;
+        }
+        const int n = p.first_track + i;
+        if (n != p.track || !p.blink) s.text(fonts, x + 0x40, y + 0x4e, "" + std::to_string(n), 5, 9);
+        x += 0xd;
+    }
+    // the selected button (x, sprite, sprite when pressed: table 0x101f1c)
+    static constexpr int kButtons[7][3] = {{59, 7, 11},    {83, 8, 12},    {113, 9, 13}, {137, 10, 14},
+                                           {167, 57, 59},  {167, 58, 60},  {217, 61, 62}};
+    const int b = std::clamp(p.button, 0, 6);
+    s.sprite(sprites, p.pressed ? kButtons[b][2] : kButtons[b][1], kButtons[b][0], 0x61);
+    if (3 < b) {
+        // hud_draw_message_box: the volume as a bar of lines, 3 pixels per 1024
+        static const char* kLabels[3] = {"CD", "FX", "MU"};
+        static constexpr uint8_t kColours[4] = {0x16, 0xd6, 0xd0, 0xd0};  // 0x101fa0
+        const int m = std::clamp(p.mode, 0, 2);
+        s.text(fonts, 0x40, 0x45, kLabels[m], 5, 3);
+        for (int i = 0; i < p.volume[m] / 0x400; ++i) {
+            const int lx = i * 3 + 0x55;
+            s.line(lx, 0x45, lx, 0x4a, kColours[std::min(i / 10, 3)]);
+        }
+    }
 }
 
 bool Hud::load_texts(const std::string& local_dat) {
