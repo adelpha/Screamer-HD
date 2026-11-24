@@ -95,7 +95,7 @@ private:
     std::array<int, 9> voice_note_{}, voice_channel_{}, voice_velocity_{};
     std::array<bool, 9> voice_additive_{};
     std::array<int, 9> a0_{}, b0_{};
-    std::array<int, 22> reg40_{};  // the patches' KSL/level bytes by operator slot
+    std::array<int, 22> reg40_{}, reg80_{};  // the patches' KSL/level and SL/RR bytes by slot
     std::array<int, 16> ch_volume_{}, ch_pan_{}, ch_program_{}, ch_bend_{}, ch_range_{}, ch_sustain_{};
     std::array<bool, 16> ch_bending_{};
     std::array<std::vector<int>, 16> held_;  // note offs held back by the sustain pedal

@@ -268,6 +268,7 @@ void FmMidiSynth::load_patch(int v, const FmPatch& p) {
         const int r20 = (op.am ? 0x80 : 0) | (op.vib ? 0x40 : 0) | (op.sustain ? 0x20 : 0) | (op.ksr ? 0x10 : 0) | (op.mult & 15);
         const int r40 = (op.ksl & 3) << 6 | (op.tl & 63);
         reg40_[size_t(slot)] = r40;
+        reg80_[size_t(slot)] = (op.sl & 15) << 4 | (op.rr & 15);
         for (int bank = 0; bank < 2; ++bank) {
             write(bank, 0x20 + slot, r20);
             write(bank, 0x40 + slot, r40);
@@ -368,6 +369,15 @@ void FmMidiSynth::note_on(int ch, int note, int vel) {
     const int v = pick_voice(ch);
     key_off(v);
     voice_channel_[size_t(v)] = ch;
+    // Before the new patch, both operators get the fastest release (sustain level kept), five
+    // times over: with the write spacing that lets the old sound die away in about a
+    // millisecond instead of being cut.
+    for (int n = 0; n < 5; ++n)
+        for (int k = 1; k >= 0; --k) {
+            const int slot = kVoiceSlots[v][k];
+            write(0, 0x80 + slot, reg80_[size_t(slot)] | 0x0f);
+            write(1, 0x80 + slot, reg80_[size_t(slot)] | 0x0f);
+        }
     load_patch(v, *patch);
     voice_velocity_[size_t(v)] = vel;
     const int u = int(((uint64_t(ch_volume_[size_t(ch)]) << 7) / 0x7f) * uint64_t(vel) >> 7);
