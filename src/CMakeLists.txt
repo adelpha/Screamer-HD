@@ -8,6 +8,7 @@ add_library(screamer_core STATIC
   core/hud.cpp
   core/gamedata.cpp
   core/image.cpp
+  core/menu.cpp
   core/model3d.cpp
   core/opponent.cpp
   core/race_audio.cpp

@@ -17,6 +17,7 @@
 #include "core/framebuffer.h"
 #include "core/gamedata.h"
 #include "core/hud.h"
+#include "core/menu.h"
 #include "core/image.h"
 #include "core/pcx.h"
 #include "core/race_audio.h"
@@ -67,6 +68,10 @@ struct Options {
     bool music = true, speech = true;
     std::string music_source = "auto";  // cd | midi | auto (CD audio when the image is there)
     bool audio_smooth = true;       // linear interpolation (false: the driver's nearest sample)
+    std::string menu_keys;
+    int laps = 3;                   // a race from the menu: laps, opponent level ('A' + level)
+    int level = 1;
+    bool from_menu = false;         // Esc and the end of the race go back to the menu          // --scene menu: scripted keys "frame:key,..." (headless runs)
     std::string record_audio;       // write the mix to a .wav (frame-locked, works headless)
     bool audio_log = false;         // log every sample that starts
 };
@@ -78,7 +83,8 @@ void print_usage() {
         "  --data DIR           original game directory (default: $SCREAMER_DATA or build-time path)\n"
         "  --headless           no visible window, software renderer, dummy audio\n"
         "  --frames N           exit after N simulation frames (2 ticks of the game's 100 Hz clock each)\n"
-        "  --scene NAME         title (default when the game files are found), track, drive or testpattern\n"
+        "  --scene NAME         menu (default when the game files are found), title, track, drive or testpattern\n"
+        "  --menu-keys LIST     --scene menu: keys pressed at frames, e.g. 40:down,60:enter (headless runs)\n"
         "  --track NAME         track for --scene track / drive (MAP1..MAP6, default MAP2)\n"
         "  --car-index N        --scene drive: car from CARS_DATA (0..12, default 0)\n"
         "  --start X,Z          --scene drive: start position (default: the intro demo's grid)\n"
@@ -173,6 +179,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--no-speech") o.speech = false;
         else if (a == "--music-source") o.music_source = next("--music-source");
         else if (a == "--record-audio") o.record_audio = next("--record-audio");
+        else if (a == "--menu-keys") o.menu_keys = next("--menu-keys");
         else if (a == "--audio-log") o.audio_log = true;
         else if (a == "--audio-filter") o.audio_smooth = std::string(next("--audio-filter")) != "nearest";
         else if (a == "--detail") o.detail = std::string(next("--detail")) == "low" ? "L" : "H";
@@ -223,52 +230,19 @@ SDL_FRect present_rect(int out_w, int out_h, const std::string& aspect, int fb_w
 
 } // namespace
 
-int main(int argc, char** argv) {
-    Options opt;
-    if (!parse_args(argc, argv, opt)) return 2;
+// State that outlives one scene: the menu (it keeps its selections) and what it asked for.
+struct Shared {
+    std::optional<scr::MenuAssets> menu_assets;
+    std::optional<scr::Menu> menu;
+    std::optional<scr::MenuRace> race;  // the menu chose a race
+    bool back_to_menu = false;          // the race asks to return to the menu
+    uint64_t frames_run = 0;
+};
 
-    if (opt.headless) {
-        SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
-        SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
-        if (opt.renderer.empty()) opt.renderer = "software";
-    }
-
-    SDL_InitFlags flags = SDL_INIT_VIDEO | SDL_INIT_AUDIO;
-    if (!opt.headless) flags |= SDL_INIT_GAMEPAD;
-    if (!SDL_Init(flags)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SDL_Init failed: %s", SDL_GetError());
-        return 1;
-    }
-
-    const auto game_dir = scr::find_game_dir(opt.data_dir);
-    if (game_dir) SDL_Log("game data: %s", game_dir->c_str());
-    else SDL_Log("game data: not found (pass --data or set SCREAMER_DATA)");
-
-    // The title screen as frontend_show_title draws it: menu1l.pcx from gfx\graf.dat.
-    std::optional<scr::PcxImage> title;
-    if (opt.scene.empty() || opt.scene == "title") {
-        if (game_dir) {
-            if (auto path = scr::resolve_game_file(*game_dir, "GFX/GRAF.DAT")) {
-                if (auto archive = scr::Archive::open(*path)) {
-                    if (auto file = archive->read("menu1l.pcx")) title = scr::decode_pcx(*file);
-                }
-            }
-        }
-        if (!title && opt.scene == "title") {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "--scene title needs the original game files");
-            return 1;
-        }
-    }
-
-    SDL_WindowFlags wflags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    if (opt.fullscreen) wflags |= SDL_WINDOW_FULLSCREEN;
-    SDL_Window* window = SDL_CreateWindow("Screamer", opt.width, opt.height, wflags);
-    if (!window) { SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "window: %s", SDL_GetError()); return 1; }
-    SDL_Renderer* renderer = SDL_CreateRenderer(window, opt.renderer.empty() ? nullptr : opt.renderer.c_str());
-    if (!renderer) { SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "renderer: %s", SDL_GetError()); return 1; }
-    SDL_SetRenderVSync(renderer, opt.headless ? 0 : 1);
-    SDL_Log("video driver: %s, renderer: %s", SDL_GetCurrentVideoDriver(), SDL_GetRendererName(renderer));
-
+// One scene (--scene ...): loads it and runs its loop until it ends.
+int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const std::optional<std::string>& game_dir,
+              std::optional<scr::PcxImage>& title, Shared& shared) {
+    (void)window;
     // A track viewed from a fixed camera (the first step of the 3D renderer).
     std::optional<scr::Track> track;
     scr::Camera cam;
@@ -387,7 +361,8 @@ int main(int argc, char** argv) {
         // CPU cars: the racing lines and OPPONENTS of DATA/<track>.DAT; each takes the next
         // CARS_DATA record, skipping the player's (opponent_car_load).
         auto data = scr::resolve_game_file(*game_dir, "DATA/" + opt.track + ".DAT");
-        player->cpu_cars = opt.start.empty() && data && player->race.load(*data, opt.track);
+        player->cpu_cars = opt.start.empty() && data && player->race.load(*data, opt.track, char('A' + opt.level));
+        player->race.laps = opt.laps;
         std::vector<scr::CarSetup> cpu_setups;
         if (player->cpu_cars) {
             size_t next = 0;
@@ -473,11 +448,78 @@ int main(int argc, char** argv) {
     scr::Renderer renderer3d;
     renderer3d.set_textures(!opt.flat);
 
-    scr::Framebuffer fb = track ? scr::Framebuffer(opt.fb_width, opt.fb_height) : scr::Framebuffer();
+    // --scene menu: the front end (kept by main across races)
+    scr::Menu* menu = nullptr;
+    scr::SoundBank menu_sounds;
+    if (opt.scene == "menu") {
+        if (!shared.menu_assets) {
+            auto md = scr::resolve_game_file(*game_dir, "GFX/MENU.DAT");
+            auto gd = scr::resolve_game_file(*game_dir, "GFX/GRAF.DAT");
+            auto ld = scr::resolve_game_file(*game_dir, "DATA/LOCAL.DAT");
+            shared.menu_assets.emplace();
+            if (!md || !gd || !ld || !shared.menu_assets->load(*md, *gd, *ld)) {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "cannot load the menu from GFX/MENU.DAT and GFX/GRAF.DAT");
+                return 1;
+            }
+            shared.menu.emplace(*shared.menu_assets);
+        }
+        menu = &*shared.menu;
+        menu->quit = false;
+        menu->show_title();
+        // frontend_load: MENU.DTR's SOUND_FX (menu1..menu9)
+        auto gen = scr::resolve_game_file(*game_dir, "DATA/GEN.DAT");
+        auto snd = scr::resolve_game_file(*game_dir, "DATA/SOUND.DAT");
+        if (gen && snd) {
+            if (auto ga = scr::Archive::open(*gen)) {
+                if (auto dtr = ga->read("MENU.DTR")) {
+                    menu_sounds.fx = scr::parse_sound_fx(std::string(dtr->begin(), dtr->end()));
+                    if (auto sa = scr::Archive::open(*snd))
+                        for (auto& f : menu_sounds.fx)
+                            if (auto d = sa->read(f.name + ".RAW")) f.data = std::move(*d);
+                    menu_sounds.num_base = int(menu_sounds.fx.size());
+                    mixer.set_bank(&menu_sounds);
+                }
+            }
+        }
+        if (opt.music && ((!opt.headless && !opt.mute) || !opt.record_audio.empty())) {
+            // the menu tune: CD track 4 or MUSIC3
+            bool playing = false;
+            if (opt.music_source != "midi") {
+                if (auto cue = scr::find_cd_cue(*game_dir); cue && cd.open(*cue)) {
+                    auto music = std::make_shared<scr::CdAudioPlayer>(cd, scr::kCdTrackMenu);
+                    if (music->ok()) {
+                        mixer.set_music(music);
+                        playing = true;
+                    }
+                }
+            }
+            if (!playing && opt.music_source != "cd")
+                if (auto md2 = scr::resolve_game_file(*game_dir, "DATA/MUSIC.DAT"))
+                    if (auto song = scr::load_hmp_music(*md2, scr::kMusicMenu)) mixer.set_music(song);
+        }
+        if (!opt.headless && !opt.mute) {
+            const SDL_AudioSpec spec{SDL_AUDIO_F32, 2, 44100};
+            audio_stream = SDL_OpenAudioDeviceStream(
+                SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec,
+                [](void* user, SDL_AudioStream* stream, int additional, int) {
+                    auto* m = static_cast<scr::Mixer*>(user);
+                    static std::vector<float> buf;
+                    const int frames = additional / int(sizeof(float) * 2);
+                    if (frames <= 0) return;
+                    buf.resize(size_t(frames) * 2);
+                    m->mix(buf.data(), frames, 44100);
+                    SDL_PutAudioStreamData(stream, buf.data(), frames * int(sizeof(float) * 2));
+                },
+                &mixer);
+            if (audio_stream) SDL_ResumeAudioStreamDevice(audio_stream);
+        }
+    }
+    scr::Framebuffer fb = (track || menu) ? scr::Framebuffer(opt.fb_width, opt.fb_height) : scr::Framebuffer();
     SDL_Texture* tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, fb.width(), fb.height());
     SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
 
     uint64_t frame = 0;
+    float end_timer = 0;
     int listener_x = player ? player->race.player.pos_x : 0, listener_z = player ? player->race.player.pos_z : 0;
     if (opt.audio_log)
         mixer.on_play = [&](int s) {
@@ -496,7 +538,10 @@ int main(int argc, char** argv) {
             switch (ev.type) {
             case SDL_EVENT_QUIT: running = false; break;
             case SDL_EVENT_KEY_DOWN:
-                if (ev.key.key == SDLK_ESCAPE) running = false;
+                if (ev.key.key == SDLK_ESCAPE && !menu) {
+                    running = false;
+                    if (opt.from_menu && opt.scene == "drive") shared.back_to_menu = true;
+                }
                 else if (player && ev.key.key >= SDLK_F1 && ev.key.key <= SDLK_F4 && player->race.started)
                     player->camera.select(int(ev.key.key - SDLK_F1));
                 else if (ev.key.key == SDLK_M && !ev.key.repeat) radar = radar >= 3 ? 0 : radar + 1;
@@ -663,6 +708,14 @@ int main(int argc, char** argv) {
                     hs.gear = c.gear;
                     hs.countdown_stage = r.countdown_stage;
                     hs.end = r.finished ? 1 : r.failed ? 2 : 0;
+                    if (hs.end && opt.from_menu) {
+                        // race_end_screen: back to the menu five seconds after the end
+                        end_timer += clock.frame_time();
+                        if (5.0f <= end_timer && race_audio.speech_current() == -1) {
+                            shared.back_to_menu = true;
+                            running = false;
+                        }
+                    }
                     hs.won = r.finished && r.player_position == 1;
                     hs.player_x = c.pos_x;
                     hs.player_z = c.pos_z;
@@ -674,6 +727,43 @@ int main(int argc, char** argv) {
                             hs.radar_lines.push_back({ts.left_x, ts.left_z, ts.right_x, ts.right_z});
                     hud->draw(fb, hs, track->darken075, clock.frame_time(), clock.pow_table_row(), player->camera.hud_view,
                               radar);
+                }
+            } else if (menu) {
+                scr::MenuKeys mk;
+                const bool* keys = SDL_GetKeyboardState(nullptr);
+                mk.esc = keys[SDL_SCANCODE_ESCAPE];
+                mk.enter = keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER];
+                mk.up = keys[SDL_SCANCODE_UP];
+                mk.down = keys[SDL_SCANCODE_DOWN];
+                mk.left = keys[SDL_SCANCODE_LEFT];
+                mk.right = keys[SDL_SCANCODE_RIGHT];
+                // scripted keys: "frame:key" held for that one frame
+                for (size_t pos = 0; pos < opt.menu_keys.size();) {
+                    size_t end = opt.menu_keys.find(',', pos);
+                    if (end == std::string::npos) end = opt.menu_keys.size();
+                    const std::string item = opt.menu_keys.substr(pos, end - pos);
+                    pos = end + 1;
+                    const size_t colon = item.find(':');
+                    if (colon == std::string::npos || std::strtoull(item.c_str(), nullptr, 10) != frame) continue;
+                    const std::string k = item.substr(colon + 1);
+                    mk.esc |= k == "esc";
+                    mk.enter |= k == "enter";
+                    mk.up |= k == "up";
+                    mk.down |= k == "down";
+                    mk.left |= k == "left";
+                    mk.right |= k == "right";
+                }
+                menu->update(mk, clock.frame_time());
+                for (int sfx : menu->sounds) mixer.play(sfx);
+                menu->draw(fb, renderer3d);
+                if (menu->quit) running = false;
+                if (menu->race) {
+                    SDL_Log("menu: race on MAP%d%s, car %d, %d laps, level %d, driver %s", menu->race->map,
+                            menu->race->mirrored ? " (reversed)" : "", menu->race->car, menu->race->laps,
+                            menu->race->level, menu->race->name.c_str());
+                    shared.race = *menu->race;
+                    menu->race.reset();
+                    running = false;
                 }
             } else if (title) {
                 scr::blit_pcx(*title, fb);
@@ -733,11 +823,97 @@ int main(int argc, char** argv) {
     }
 
     SDL_Log("frames=%llu", static_cast<unsigned long long>(frame));
+    shared.frames_run = frame;
     if (!opt.record_audio.empty() && !write_wav(opt.record_audio, recorded, 44100)) exit_code = 1;
     if (audio_stream) SDL_DestroyAudioStream(audio_stream);
     race_audio.stop();
     mixer.set_music(nullptr);
     SDL_DestroyTexture(tex);
+    return exit_code;
+}
+
+int main(int argc, char** argv) {
+    Options opt;
+    if (!parse_args(argc, argv, opt)) return 2;
+
+    if (opt.headless) {
+        SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
+        SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
+        if (opt.renderer.empty()) opt.renderer = "software";
+    }
+
+    SDL_InitFlags flags = SDL_INIT_VIDEO | SDL_INIT_AUDIO;
+    if (!opt.headless) flags |= SDL_INIT_GAMEPAD;
+    if (!SDL_Init(flags)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SDL_Init failed: %s", SDL_GetError());
+        return 1;
+    }
+
+    const auto game_dir = scr::find_game_dir(opt.data_dir);
+    if (game_dir) SDL_Log("game data: %s", game_dir->c_str());
+    else SDL_Log("game data: not found (pass --data or set SCREAMER_DATA)");
+
+    // Without --scene the game starts in the menu (when the game files are there).
+    if (opt.scene.empty() && game_dir) opt.scene = "menu";
+    // The title screen as frontend_show_title draws it: menu1l.pcx from gfx\graf.dat.
+    std::optional<scr::PcxImage> title;
+    if (opt.scene.empty() || opt.scene == "title") {
+        if (game_dir) {
+            if (auto path = scr::resolve_game_file(*game_dir, "GFX/GRAF.DAT")) {
+                if (auto archive = scr::Archive::open(*path)) {
+                    if (auto file = archive->read("menu1l.pcx")) title = scr::decode_pcx(*file);
+                }
+            }
+        }
+        if (!title && opt.scene == "title") {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "--scene title needs the original game files");
+            return 1;
+        }
+    }
+
+    SDL_WindowFlags wflags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    if (opt.fullscreen) wflags |= SDL_WINDOW_FULLSCREEN;
+    SDL_Window* window = SDL_CreateWindow("Screamer", opt.width, opt.height, wflags);
+    if (!window) { SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "window: %s", SDL_GetError()); return 1; }
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, opt.renderer.empty() ? nullptr : opt.renderer.c_str());
+    if (!renderer) { SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "renderer: %s", SDL_GetError()); return 1; }
+    SDL_SetRenderVSync(renderer, opt.headless ? 0 : 1);
+    SDL_Log("video driver: %s, renderer: %s", SDL_GetCurrentVideoDriver(), SDL_GetRendererName(renderer));
+
+    Shared shared;
+    int exit_code = 0;
+    for (;;) {
+        shared.race.reset();
+        shared.back_to_menu = false;
+        exit_code = run_scene(opt, window, renderer, game_dir, title, shared);
+        if (exit_code != 0) break;
+        if (opt.frames) {
+            // --frames counts over all the scenes of the run
+            if (shared.frames_run >= opt.frames) break;
+            opt.frames -= shared.frames_run;
+        }
+        if (shared.race) {
+            // frontend_start_race: the race the menu chose, then back to the menu
+            opt.scene = "drive";
+            opt.track = "MAP" + std::to_string(shared.race->map);
+            opt.car_index = shared.race->car;
+            opt.laps = shared.race->laps;
+            opt.level = shared.race->level;
+            opt.detail = shared.race->high_detail ? "H" : "L";
+            opt.speech = shared.race->speech;
+            opt.music = shared.race->music;
+            opt.from_menu = true;
+            opt.start.clear();
+            opt.menu_keys.clear();
+            continue;
+        }
+        if (shared.back_to_menu) {
+            opt.scene = "menu";
+            opt.hold.clear();
+            continue;
+        }
+        break;
+    }
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
