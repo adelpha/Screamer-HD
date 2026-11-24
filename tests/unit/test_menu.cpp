@@ -3,6 +3,7 @@
 #include "core/gamedata.h"
 #include "core/menu.h"
 
+#include <cstdio>
 #include <optional>
 #include <string>
 
@@ -114,4 +115,57 @@ TEST_CASE("menu: main page letters, options and the normal game flow") {
     CHECK(m.race->laps == 3);
     CHECK(!m.race->high_detail);
     CHECK(m.race->name == "BAA");
+}
+
+TEST_CASE("menu: championship steps, standings and qualifying") {
+    if (!scr::find_game_dir()) SKIP("original game data not present");
+    auto a = load_menu();
+    REQUIRE(a.has_value());
+    REQUIRE(a->champ_text.size() >= 20);
+    CHECK(a->champ_text[10].size() == 2);  // WELCOME TO / ROOKIE LEAGUE
+    scr::Menu m(*a);
+    m.show_title();
+    run(m, 100);
+    scr::MenuKeys down, enter;
+    down.down = true;
+    enter.enter = true;
+    run(m, 1, down);
+    run(m, 1);
+    run(m, 1, enter);  // CHAMPIONSHIP
+    run(m, 60);
+    CHECK(m.page == 5);
+    run(m, 1, enter);  // NEW
+    run(m, 100);
+    CHECK(m.mode == 4);
+    run(m, 1, enter);  // name
+    run(m, 100);
+    CHECK(m.mode == 5);
+    CHECK(m.champ_step == 0);
+    run(m, 1, enter);  // the welcome text -> car selection
+    run(m, 100);
+    CHECK(m.mode == 2);
+    run(m, 1, enter);
+    REQUIRE(m.race.has_value());
+    CHECK(m.race->map == 1);
+    CHECK(m.race->laps == 3);
+    CHECK(m.race->level == 0);
+    m.race.reset();
+    run(m, 1);
+    // won the first race: the standings, then the next race (MAP2)
+    m.after_race(true, false, 1, 120.0f);
+    CHECK(m.mode == 5);
+    CHECK(m.champ_step == 1);
+    CHECK(m.champ_points[0] == 9);
+    scr::Framebuffer fb(320, 200);
+    scr::Renderer r;
+    m.draw(fb, r);
+    run(m, 1, enter);
+    run(m, 100);
+    CHECK(m.champ_step == 2);
+    // fourth place: out of the championship
+    m.champ_step = 2;  // the second race
+    m.after_race(true, false, 4, 130.0f);
+    run(m, 1, enter);
+    run(m, 100);
+    CHECK(m.champ_step == 52);  // LOSER!!
 }
