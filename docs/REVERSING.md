@@ -241,6 +241,12 @@ code when they form tables (a lone fixup there is usually an instruction operand
   (tables at 0x102de4: text, action, value, max), 1 transition, 2 cars (AAUTO, 4000 apart),
   3 tracks (AMAP, 40000 apart), 4 name ring (26 letters, radius 3500, bouncing in). Normal game:
   name, track, car. STARTH.EXE's 640x400 assets (*H.PCX/SPR/FNT in GRAF.DAT) exist for all of it.
+* Obstacles and special modes (`src/core/obstacles.cpp`, Race::mode): OSTACLES in MAPnDAT.DTR,
+  placed by the knots of MAPnOST.SPL (races: scenery only), MAPnCNG.SPL (Cone Carnage, 0x20:
+  +1 s per hit) or MAPnSLA.SPL (Slalom, 0x40: the gates of MAPnSLA.MRK add their +0x10
+  seconds). Only the special modes collide (car_collide_obstacles: either bumper within the
+  car's radius + 200). Special modes race alone from the first grid place for one lap; time
+  attack (4) records a ghost every frame and races the best lap's ghost on RESUME.
 * Ground and track lines: `collision_query_cells` tests the faces of slot 0 (road) objects in
   the 3x3 cells around a probe, and the 4th letter of the part name is the surface type.
   `track_find_nearest_point` uses slot 2 (centre-line points with heading) and slot 3 (road

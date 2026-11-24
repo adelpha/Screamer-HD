@@ -137,6 +137,7 @@ bool Race::load(const std::string& data_dat, const std::string& track_name, char
     if (auto td = dtr_file.pack_section("TRACK_DATA", 0x10, 0x10); td && td->size() >= 0x10) {
         camera_hi = rd32(*td, 4);
         bonus_time = rd32(*td, 8);
+        carnage_time = rd32(*td, 12);
     }
     auto packed = dtr_file.pack_section("OPPONENTS", 0x14, 0x14, &n);
     defs.clear();
@@ -145,6 +146,16 @@ bool Race::load(const std::string& data_dat, const std::string& track_name, char
             defs.push_back({rdf(*packed, i * 0x14), rdf(*packed, i * 0x14 + 4), rdf(*packed, i * 0x14 + 8),
                             rdf(*packed, i * 0x14 + 12), rdf(*packed, i * 0x14 + 16)});
     return !lines.empty();
+}
+
+bool Race::loads_gates(const std::string& data_dat, const std::string& track_name) {
+    auto a = Archive::open(data_dat);
+    auto m = a ? a->read(track_name + "SLA.MRK") : std::nullopt;
+    if (!m) return false;
+    gates = parse_markers(*m);
+    gates_passed.assign(gates.size(), 0);
+    markers_passed = 0;
+    return !gates.empty();
 }
 
 float Race::lerp(float value, float target, int k) const {
@@ -577,13 +588,13 @@ void Race::player_progress() {
                 speech_cues.push_back({4, time_left < 3.0f ? 2 : time_left <= 15.0f ? 0 : 1, 0.0f});
             }
             if (laps != p.lap + 1) {
-                time_left = time_left / 5.0f + float(bonus_time);
+                time_left = time_left / 5.0f + float((mode & 0x60) ? carnage_time : bonus_time);
                 speech_cues.push_back({-0x16, 0, 0.0f});  // speech_once_reset(0x16): "hurry" again
             }
         }
     } else if (event == 2 && checkpoint_marker == 0 && checkpoints_passed == n) {
         if (laps != p.lap + 1) {
-            time_left = time_left / 5.0f + float(bonus_time);
+            time_left = time_left / 5.0f + float((mode & 0x60) ? carnage_time : bonus_time);
             speech_cues.push_back({-0x16, 0, 0.0f});
         }
         checkpoints_passed = 1;
@@ -642,6 +653,24 @@ void Race::update(const Track& track, const CarInput& in_raw, float frame_time, 
     for (Opponent& o : opponents) update_position(o);
     // camera_set_listener ran at the end of the last frame: the player's position then.
     const int listener_x = player.pos_x, listener_z = player.pos_z;
+    gate_sound = false;
+    if (mode == 0x40 && started && !finished && !failed) {
+        // car_check_markers: the first gate the car is inside, once each
+        for (size_t i = 0; i < gates.size(); ++i) {
+            const TrackMarker& g = gates[i];
+            const double dx = double(player.pos_x - g.x), dz = double(player.pos_z - g.z);
+            if (std::abs(player.pos_x - g.x) < g.radius && std::abs(player.pos_z - g.z) < g.radius &&
+                std::sqrt(dx * dx + dz * dz) <= double(g.radius)) {
+                if (gates_passed[i] == 0) {
+                    gates_passed[i] = 1;
+                    ++markers_passed;
+                    time_left += float(g.checkpoint);
+                    gate_sound = true;
+                }
+                break;
+            }
+        }
+    }
     player.update(track, in, frame_time, pow_row);
     // car_apply_surface (in car_update_dynamics) still sees last frame's marker; the track
     // progress comes later in the frame (car_update_track_contact).
