@@ -49,6 +49,7 @@ struct CarSetup {
     // Wheel centres in the model (x, z): front left, rear left, front right, rear right
     // (part placements of flx/fli, blx/rli, frx/fri, brx/rri).
     std::array<std::array<int, 2>, 4> wheel_pos{};
+    int wheel_y = 0;    // height of the wheel parts (bumper camera)
 };
 
 // CarData fields from a packed CARS_DATA record (0x40 bytes, see DtrFile::pack_section) and the
@@ -178,6 +179,36 @@ struct ChaseCamera {
     int x = 0, y = 0, z = 0;
     bool snap = true;                    // first frame: no smoothing
     void update(const Car& car, float frame_time, int pow_row, int view = 1);
+};
+
+// The player's views (camera_handle_view_keys and its table at 0x101da0), F1..F4:
+//   0 F1 bumper: camera_mode_chase (on the car, camera_hi up), full screen, compact gauges
+//   1 F2 cockpit: the same camera over a 132-line view and the car's dashboard (COCKnn)
+//   2 F3 chase: camera_mode_car 1 (1300 behind, 300 up), compact gauges - the default
+//   3 F4 far chase: camera_mode_car 0 (1700 behind)
+// Switching blends from the old camera to the new one (camera_interpolate); the view size and
+// the HUD change once the blend has settled.
+class ViewCamera {
+public:
+    void select(int view);  // starts a blend
+    void set(int view);     // no blend (the start of a race)
+    void update(const Car& car, int camera_hi, float frame_time, int pow_row);
+
+    int view = 2;
+    int hud_view = 2;        // 1 dashboard, 2 compact gauges (applied when the blend ends)
+    int viewport = 200;      // rows of 3D view at 320x200 (132 behind the dashboard)
+    bool car_visible = true;
+    float pitch = 0, yaw = 0, roll = 0;  // render camera (blend included)
+    int x = 0, y = 0, z = 0;
+
+private:
+    void base(const Car& car, int camera_hi, float frame_time, int pow_row, float& p, float& yw, float& r,
+              int& cx, int& cy, int& cz);
+    ChaseCamera chase_;
+    bool blending_ = false, start_blend_ = false;
+    float off_angle_[3]{};
+    int off_pos_[3]{};
+    int pending_viewport_ = 200, pending_hud_ = 2;
 };
 
 } // namespace scr

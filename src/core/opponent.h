@@ -104,6 +104,7 @@ public:
     // A new game plays level 'B' (DAT_0011d2b0 = 1).
     bool load(const std::string& data_dat, const std::string& track_name, char level = 'B');
     int bonus_time = 0;          // TRACK_DATA.bonus_time: seconds added at a timed checkpoint
+    int camera_hi = 300;         // TRACK_DATA.camera_hi: bumper camera height
     int laps = 3;                // DAT_0011d2ac + 1
 
     // Takes the state from copies of the game's g_player_car and g_opponents[count] (0x590 bytes
@@ -121,6 +122,7 @@ public:
     // Race state for the player (car_update_race_timers, car_on_checkpoint, car_complete_lap).
     bool started = true;         // g_race_flags & 1
     bool finished = false;       // g_race_flags & 8
+    bool failed = false;         // g_race_flags & 0x10: out of time and stopped
     bool use_countdown = false;  // start() turns on the 3-2-1 countdown (race_countdown_update)
     float countdown_timer = 0;
     int countdown_stage = -1;    // start light shown, -1 when the countdown is over

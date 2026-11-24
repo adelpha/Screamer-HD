@@ -2,6 +2,7 @@
 
 #include "core/framebuffer.h"
 #include "core/gamedata.h"
+#include "core/car.h"
 #include "core/hud.h"
 
 #include <array>
@@ -41,4 +42,39 @@ TEST_CASE("hud: fonts, sprites and overlays from GAME.DAT") {
         }
     CHECK(drawn > 3000);
     CHECK(same > 320 * 200 - 400);  // lines are drawn per pixel at both sizes
+}
+
+TEST_CASE("hud: GAME.TXT strings for the end of the race") {
+    auto dir = scr::find_game_dir();
+    if (!dir) SKIP("original game data not present");
+    auto path = scr::resolve_game_file(*dir, "DATA/LOCAL.DAT");
+    REQUIRE(path.has_value());
+    scr::Hud hud;
+    REQUIRE(hud.load_texts(*path));
+    REQUIRE(hud.texts.size() > 22);
+    CHECK(hud.texts[0] == "POSITION");
+    CHECK(hud.texts[1] == "1ST");
+    CHECK(hud.texts[11] == "GREAT!");
+    CHECK(hud.texts[22] == "TIME OVER");
+}
+
+TEST_CASE("views: the cockpit view and the blend between views") {
+    scr::Car car;  // a car at rest at the origin is enough for the cameras
+    car.setup.maxspd = 21000;
+    scr::ViewCamera v;
+    v.set(1);
+    CHECK(v.viewport == 132);
+    CHECK(v.hud_view == 1);
+    v.update(car, 300, 0.02f, 49);
+    CHECK(!v.car_visible);
+    CHECK(v.y == 300);
+    v.select(2);  // chase: full view and the gauges at once, the camera blends over
+    CHECK(v.viewport == 200);
+    CHECK(v.hud_view == 2);
+    v.update(car, 300, 0.02f, 49);
+    CHECK(v.car_visible);
+    const int first_y = v.y;
+    for (int i = 0; i < 200; ++i) v.update(car, 300, 0.02f, 49);
+    CHECK(v.y != first_y);  // the blend moved the camera to the chase position
+    CHECK(v.z > 1000);      // 1300 behind the car (facing -z at yaw 0)
 }
