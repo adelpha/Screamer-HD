@@ -97,6 +97,32 @@ TEST_CASE("fm synth: HMI's velocity, volume and pan curves") {
     CHECK(std::fabs(db(hard[1], full[1]) - 0.75) < 0.2);
 }
 
+TEST_CASE("fm synth: a note retriggered in the same tick starts again") {
+    // A decaying patch: after a second it is quiet; off + on at the same moment must restart it
+    // (on the card the driver's port delays put samples between the two writes).
+    scr::FmPatch p = sine_patch();
+    p.op[1].sustain = false;
+    p.op[1].dr = 5;
+    scr::FmMidiSynth synth({p}, {});
+    std::vector<float> buf(44100 * 2, 0.0f);
+    synth.message(0x90, 69, 127);
+    synth.render(buf.data(), 2205, 44100, 1.0f);
+    float start = 0;
+    for (size_t i = 0; i < 2205 * 2; ++i) start = std::max(start, std::fabs(buf[i]));
+    std::fill(buf.begin(), buf.end(), 0.0f);
+    synth.render(buf.data(), 44100, 44100, 1.0f);
+    float late = 0;
+    for (size_t i = 40000 * 2; i < 44100 * 2; ++i) late = std::max(late, std::fabs(buf[i]));
+    CHECK(late < start * 0.5f);
+    synth.message(0x80, 69, 0);
+    synth.message(0x90, 69, 127);
+    std::fill(buf.begin(), buf.end(), 0.0f);
+    synth.render(buf.data(), 2205, 44100, 1.0f);
+    float again = 0;
+    for (size_t i = 0; i < 2205 * 2; ++i) again = std::max(again, std::fabs(buf[i]));
+    CHECK(again > start * 0.8f);
+}
+
 TEST_CASE("fm synth: the game's banks and songs") {
     auto dir = scr::find_game_dir();
     if (!dir) SKIP("original game data not present");

@@ -196,7 +196,10 @@ FmMidiSynth::FmMidiSynth(std::vector<FmPatch> melodic, std::vector<FmPatch> drum
 FmMidiSynth::~FmMidiSynth() = default;
 
 void FmMidiSynth::write(int bank, int reg, int value) {
-    OPL3_WriteReg(chip_.get(), uint16_t((bank ? 0x100 : 0) + reg), uint8_t(value));
+    // Spaced out in time like on the card: the driver's port delays make each write take about
+    // two of the chip's samples, so a key off followed by a key on is seen as both (without
+    // this a note retriggered on the same channel never restarts its envelope).
+    OPL3_WriteRegBuffered(chip_.get(), uint16_t((bank ? 0x100 : 0) + reg), uint8_t(value));
 }
 
 void FmMidiSynth::chip_reset(int rate) {
