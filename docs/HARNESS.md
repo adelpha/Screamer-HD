@@ -37,6 +37,7 @@ no manual steps.
 | `--render-size WxH` | Framebuffer size for the 3D scene (default 320x200), e.g. `1280x800`. |
 | `--flat` | Draw faces with each material's average colour instead of textures. |
 | `--scene drive` | Drive a car on the track with the ported physics and the chase camera: arrow keys (up accelerate, down brake, left/right steer) or a gamepad (triggers, left stick). `--car-index N` picks the car from `CARS_DATA`, `--start X,Z` the start position, `--hold accel,left` holds controls in every frame for headless runs; the last frame logs the car's state. With CPU cars (tracks with racing lines, e.g. `--track MAP1`) the race starts with the countdown and shows the HUD; F1-F4 switch the view (bumper, cockpit, chase, far chase; `--view N` starts in one), M cycles the radar size. |
+| `--scene menu` | The front end (the default when the game files are found): main menu, options, then NORMAL GAME goes name, track and car selection into a race and back. `--menu-keys 200:enter,300:down` presses keys at given frames for headless runs. |
 | `--detail high\|low` | Track files: `GFX/MAPnH.DAT` (default; what the game loads) or `MAPnL.DAT`. |
 | `--car NAME[,X,Y,Z,YAW[,ANIM]]` | Add a car object (`AUTO00`..`AUTO06`) with its shadow; repeatable. `ANIM` is the object's animation word in hex (`8000` = second paint scheme). Without a position the car stands in front of the camera. |
 | `--dump-fb FILE` | After the last frame, save the native 320x200 framebuffer (palette applied). Directly comparable with DOSBox raw captures. |

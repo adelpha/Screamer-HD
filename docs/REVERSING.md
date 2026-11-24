@@ -234,6 +234,13 @@ code when they form tables (a lone fixup there is usually an instruction operand
   +0xc; within 52000 units of the player they advance speed * frame time, heading from acos of
   the direction. Their looping sounds play within 40000 units with a doppler pitch
   `(last d - d) * 9 + 65536`, volume `((40000 - d) / 40000)^2 * 32767` (sfx_update_positional).
+* Menus (`src/core/menu.cpp`, frontend_* / menu_*): a 3D scene over a PCX backdrop. Text is
+  ALETTER.3DX blocks (one per character, the letter is the texture frame 0x35e * (c - 0x20) +
+  0x226) that spiral in from one of 8 start variants, flip to show the selected line and bob on
+  a sine wave; the camera blends between two positions with t^4 (or t). Modes: 0 text pages
+  (tables at 0x102de4: text, action, value, max), 1 transition, 2 cars (AAUTO, 4000 apart),
+  3 tracks (AMAP, 40000 apart), 4 name ring (26 letters, radius 3500, bouncing in). Normal game:
+  name, track, car. STARTH.EXE's 640x400 assets (*H.PCX/SPR/FNT in GRAF.DAT) exist for all of it.
 * Ground and track lines: `collision_query_cells` tests the faces of slot 0 (road) objects in
   the 3x3 cells around a probe, and the 4th letter of the part name is the surface type.
   `track_find_nearest_point` uses slot 2 (centre-line points with heading) and slot 3 (road
