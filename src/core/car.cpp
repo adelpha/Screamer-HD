@@ -498,7 +498,8 @@ void Car::update_track_heading(const Track& track) {
     while (kPi < diff) diff += -kPi;
     if (kHalfPi < diff) diff = kPi - diff;
     diff = diff / kHalfPi;
-    if (slide_threshold < speed * diff) set_state(2);  // too fast into the wall: crash
+    // too fast into the wall: crash (not tunnels and the like, surface_render_flag != 0)
+    if (slide_threshold < speed * diff && surface_render_flag == 0) set_state(2);
     else wall_sound = true;
     const float len = float(safe_sqrt(double(wall_push_x) * wall_push_x + double(wall_push_z) * wall_push_z));
     if (len > 0.0f) {

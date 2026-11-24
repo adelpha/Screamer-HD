@@ -390,6 +390,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         scr::EnvScroll env;                // glass reflection scroll of the player car
         std::vector<scr::EnvScroll> cpu_env;
         std::vector<std::array<float, 2>> cpu_shadow;  // shadow pitch and roll of each CPU car
+        std::array<float, 2> shadow_angles{};           // the player's (kept while it tumbles)
     };
     std::optional<Player> player;
     std::optional<scr::Hud> hud;  // the race HUD (--scene drive with CPU cars)
@@ -925,8 +926,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         if (rr.gate_sound) mixer.play(9);
                         if (rr.mode == 4 && rr.timing_started && !rr.finished) {
                             const scr::Car& pc = rr.player;
-                            ghost.recording.push_back({pc.pos_x, pc.pos_y + pc.body_lift, pc.pos_z, pc.pitch + pc.lean_pitch,
-                                                       pc.yaw + pc.drift_angle, pc.roll + pc.lean_roll,
+                            ghost.recording.push_back({pc.pos_x, pc.pos_y + pc.body_ofs_y, pc.pos_z, pc.pitch + pc.body_pitch_ofs,
+                                                       pc.yaw + pc.drift_angle, pc.roll + pc.body_roll_ofs,
                                                        int32_t(pc.render_animation()), pc.surface_render_flag, rr.lap_time});
                         }
                         if (rr.finished && !rr.failed && rr.mode == 4 && !ghost.recording.empty() &&
@@ -992,11 +993,13 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     constexpr float kToUnits = 1024.0f / 3.1415927410125732f;
                     scr::Pose pose;
                     pose.x = float(c.pos_x);
-                    pose.y = float(c.pos_y + c.body_lift);
+                    // car_sync_render_object: the crash bounce and tumble (body_ofs_y, body_*_ofs) on
+                    // top of the car's own position and angles
+                    pose.y = float(c.pos_y + c.body_ofs_y);
                     pose.z = float(c.pos_z);
-                    pose.ax = float(int((c.pitch + c.lean_pitch) * kToUnits) & 0x7ff);
+                    pose.ax = float(int((c.pitch + c.body_pitch_ofs) * kToUnits) & 0x7ff);
                     pose.ay = float(int((c.yaw + c.drift_angle) * kToUnits) & 0x7ff);
-                    pose.az = float(int((c.roll + c.lean_roll) * kToUnits) & 0x7ff);
+                    pose.az = float(int((c.roll + c.body_roll_ofs) * kToUnits) & 0x7ff);
                     pose.animation = int32_t(c.render_animation());
                     pose.reflection = c.surface_render_flag;
                     // car_apply_surface sets the (global) scroll rate from the player's surface.
@@ -1015,6 +1018,10 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         }
                     }
                     sh.y = float(c.ground_y - 2);
+                    // the shadow keeps its angles while the car tumbles (crash state 1)
+                    if (c.crash_state != 1) player->shadow_angles = {pose.ax, pose.az};
+                    sh.ax = player->shadow_angles[0];
+                    sh.az = player->shadow_angles[1];
                     sh.env = nullptr;
                     sh.depth_bias = kShadowBias;
                     // the tyre smoke (car_sync_debris_objects: instance position and animation word)
