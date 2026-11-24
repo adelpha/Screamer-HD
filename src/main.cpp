@@ -7,11 +7,13 @@
 // video driver, software renderer, dummy audio) and --frames/--screenshot/
 // --dump-fb produce reproducible images the test harness compares.
 
+#include "core/animations.h"
 #include "core/archive.h"
 #include "core/car.h"
 #include "core/cd_audio.h"
 #include "core/dtr.h"
 #include "core/opponent.h"
+#include "core/fm_synth.h"
 #include "core/framebuffer.h"
 #include "core/gamedata.h"
 #include "core/hud.h"
@@ -63,6 +65,7 @@ struct Options {
     bool mute = false;              // no audio device
     int sfx_volume = 100, music_volume = 70;  // 0..100
     bool music = true, speech = true;
+    std::string music_source = "auto";  // cd | midi | auto (CD audio when the image is there)
     bool audio_smooth = true;       // linear interpolation (false: the driver's nearest sample)
     std::string record_audio;       // write the mix to a .wav (frame-locked, works headless)
     bool audio_log = false;         // log every sample that starts
@@ -100,6 +103,7 @@ void print_usage() {
         "  --music-volume N     CD music volume 0..100 (default 70)\n"
         "  --no-music           no CD music (from the CD image: SCREAM.cue/.bin, or SCREAM.DAT/.gog as Steam and GOG ship it)\n"
         "  --no-speech          no announcer\n"
+        "  --music-source SRC   cd, midi (the FM synth versions in DATA/MUSIC.DAT) or auto (default: CD if found)\n"
         "  --record-audio FILE  write the sound of the run to a 44.1 kHz .wav (also headless)\n"
         "  --audio-filter MODE  linear (default) or nearest (the original driver's crunchier resampling)\n"
         "  --version, --help\n",
@@ -167,6 +171,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--music-volume") o.music_volume = std::clamp(std::atoi(next("--music-volume")), 0, 100);
         else if (a == "--no-music") o.music = false;
         else if (a == "--no-speech") o.speech = false;
+        else if (a == "--music-source") o.music_source = next("--music-source");
         else if (a == "--record-audio") o.record_audio = next("--record-audio");
         else if (a == "--audio-log") o.audio_log = true;
         else if (a == "--audio-filter") o.audio_smooth = std::string(next("--audio-filter")) != "nearest";
@@ -267,6 +272,8 @@ int main(int argc, char** argv) {
     // A track viewed from a fixed camera (the first step of the 3D renderer).
     std::optional<scr::Track> track;
     scr::Camera cam;
+    scr::TrackAnimations anims;           // trucks, jets, trams... on their splines
+    std::vector<scr::Model> anim_models;  // per animation (an empty model draws nothing)
     const bool drive = opt.scene == "drive";
     if (opt.scene == "track" || drive) {
         if (game_dir) {
@@ -277,6 +284,20 @@ int main(int argc, char** argv) {
             return 1;
         }
         SDL_Log("track %s: %zu objects, %zu placements", opt.track.c_str(), track->objects.size(), track->placements.size());
+        // Moving scenery (track_load_animations).
+        auto data = scr::resolve_game_file(*game_dir, "DATA/" + opt.track + ".DAT");
+        auto gfx = scr::resolve_game_file(*game_dir, "GFX/" + opt.track + opt.detail + ".DAT");
+        if (data && gfx && anims.load(*data, opt.track)) {
+            for (const scr::TrackAnimation& an : anims.list) {
+                std::string obj = an.name;
+                for (char& ch : obj) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+                auto m = scr::load_object(*gfx, obj + ".3DX");
+                anim_models.push_back(m ? std::move(*m) : scr::Model{});
+            }
+            anims.start(0.02f);  // the first frame's time at 50 fps
+            for (const scr::TrackAnimation& an : anims.list)
+                SDL_Log("animation %s at %d,%d,%d speed %.0f", an.name.c_str(), an.x, an.y, an.z, double(an.speed));
+        }
         if (!opt.camera.empty()) {
             std::sscanf(opt.camera.c_str(), "%f,%f,%f,%f,%f,%f", &cam.x, &cam.y, &cam.z, &cam.yaw, &cam.pitch, &cam.roll);
         } else if (!track->placements.empty()) {
@@ -395,13 +416,26 @@ int main(int argc, char** argv) {
             SDL_Log("no sound effects (DATA/SOUND.DAT not found)");
         }
         if (opt.music && ((!opt.headless && !opt.mute) || !opt.record_audio.empty())) {
-            auto cue = scr::find_cd_cue(*game_dir);
             const int map = opt.track.size() >= 4 ? std::atoi(opt.track.c_str() + 3) - 1 : 0;
-            if (cue && cd.open(*cue)) {
-                auto music = std::make_shared<scr::CdAudioPlayer>(cd, scr::cd_track_for_race(map));
-                if (music->ok()) mixer.set_music(music);
-            } else {
-                SDL_Log("no CD music (no CD image: SCREAM.cue/.bin or SCREAM.DAT/.gog)");
+            bool playing = false;
+            if (opt.music_source != "midi") {
+                auto cue = scr::find_cd_cue(*game_dir);
+                if (cue && cd.open(*cue)) {
+                    auto music = std::make_shared<scr::CdAudioPlayer>(cd, scr::cd_track_for_race(map));
+                    if (music->ok()) {
+                        mixer.set_music(music);
+                        playing = true;
+                    }
+                } else {
+                    SDL_Log("no CD music (no CD image: SCREAM.cue/.bin or SCREAM.DAT/.gog)");
+                }
+            }
+            if (!playing && opt.music_source != "cd") {
+                // The game's MIDI music on the FM synth, as it plays without the CD.
+                auto music_dat = scr::resolve_game_file(*game_dir, "DATA/MUSIC.DAT");
+                auto song = music_dat ? scr::load_hmp_music(*music_dat, scr::music_for_race(map)) : nullptr;
+                if (song) mixer.set_music(song);
+                else SDL_Log("no MIDI music (DATA/MUSIC.DAT)");
             }
         }
         if (!opt.headless && !opt.mute) {
@@ -444,6 +478,7 @@ int main(int argc, char** argv) {
     SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
 
     uint64_t frame = 0;
+    int listener_x = player ? player->race.player.pos_x : 0, listener_z = player ? player->race.player.pos_z : 0;
     if (opt.audio_log)
         mixer.on_play = [&](int s) {
             SDL_Log("frame %llu: sound %d %s", static_cast<unsigned long long>(frame), s,
@@ -525,6 +560,11 @@ int main(int argc, char** argv) {
                     else
                         player->race.player.update(*track, in, clock.frame_time(), clock.pow_table_row());
                     race_audio.update(player->race, clock.frame_time());
+                    // animations_update, heard from where the player was last frame.
+                    anims.update(listener_x, listener_z, clock.frame_time());
+                    race_audio.animations(anims);
+                    listener_x = player->race.player.pos_x;
+                    listener_z = player->race.player.pos_z;
                     player->camera.update(player->race.player, player->race.camera_hi, clock.frame_time(),
                                           clock.pow_table_row());
                     // engine_set_viewport(320, h, h * 0.65): the projection centre follows the view size.
@@ -539,6 +579,18 @@ int main(int argc, char** argv) {
                 }
                 renderer3d.begin(*track, cam, fb);
                 renderer3d.draw_placements();
+                // The moving scenery (instance angles: yaw only).
+                if (!player) anims.update(int(cam.x), int(cam.z), clock.frame_time());
+                constexpr float kAnimToUnits = 1024.0f / 3.1415927410125732f;
+                for (size_t i = 0; i < anims.list.size() && i < anim_models.size(); ++i) {
+                    const scr::TrackAnimation& an = anims.list[i];
+                    scr::Pose ap;
+                    ap.x = float(an.x);
+                    ap.y = float(an.y);
+                    ap.z = float(an.z);
+                    ap.ay = float(int(an.yaw * kAnimToUnits) & 0x7ff);
+                    renderer3d.draw_model(anim_models[i], ap);
+                }
                 if (player) {
                     // car_sync_render_object: body at the car, angles in 2048 units; the
                     // shadow sits on the ground just below.

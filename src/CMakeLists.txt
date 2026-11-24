@@ -1,5 +1,6 @@
 # Engine-side code that is independent of the window/frontend. Unit tests link this.
 add_library(screamer_core STATIC
+  core/animations.cpp
   core/archive.cpp
   core/car.cpp
   core/dtr.cpp
@@ -12,6 +13,7 @@ add_library(screamer_core STATIC
   core/race_audio.cpp
   core/sound.cpp
   core/cd_audio.cpp
+  core/fm_synth.cpp
   core/pcx.cpp
   core/render3d.cpp
   core/sim_clock.cpp
