@@ -12,6 +12,7 @@
 #include "core/car.h"
 #include "core/cd_audio.h"
 #include "core/dtr.h"
+#include "core/obstacles.h"
 #include "core/opponent.h"
 #include "core/fm_synth.h"
 #include "core/framebuffer.h"
@@ -255,6 +256,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     std::optional<scr::Track> track;
     scr::Camera cam;
     scr::TrackAnimations anims;           // trucks, jets, trams... on their splines
+    scr::Obstacles obstacles;             // cones and the like (MAPnOST.SPL in races)
     std::vector<scr::Model> anim_models;  // per animation (an empty model draws nothing)
     const bool drive = opt.scene == "drive";
     if (opt.scene == "track" || drive) {
@@ -269,6 +271,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         // Moving scenery (track_load_animations).
         auto data = scr::resolve_game_file(*game_dir, "DATA/" + opt.track + ".DAT");
         auto gfx = scr::resolve_game_file(*game_dir, "GFX/" + opt.track + opt.detail + ".DAT");
+        if (data && gfx) obstacles.load(*data, *gfx, opt.track, "OST", *track);
         if (data && gfx && anims.load(*data, opt.track)) {
             for (const scr::TrackAnimation& an : anims.list) {
                 std::string obj = an.name;
@@ -778,6 +781,20 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 }
                 renderer3d.begin(*track, cam, fb);
                 renderer3d.draw_placements();
+                // obstacles_update and the obstacles
+                obstacles.update(*track, clock.frame_time());
+                for (const scr::Obstacle& o : obstacles.list) {
+                    if (o.y == -20000 || size_t(o.model) >= obstacles.models.size()) continue;
+                    constexpr float kObsUnits = 1024.0f / 3.1415927410125732f;
+                    scr::Pose op;
+                    op.x = float(o.x);
+                    op.y = float(o.y);
+                    op.z = float(o.z);
+                    op.ax = float(int(o.ax * kObsUnits) & 0x7ff);
+                    op.ay = float(int(o.ay * kObsUnits) & 0x7ff);
+                    op.az = float(int(o.az * kObsUnits) & 0x7ff);
+                    renderer3d.draw_model(obstacles.models[size_t(o.model)], op);
+                }
                 // The moving scenery (instance angles: yaw only).
                 if (!player) anims.update(int(cam.x), int(cam.z), clock.frame_time());
                 constexpr float kAnimToUnits = 1024.0f / 3.1415927410125732f;
