@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace scr {
@@ -116,7 +117,8 @@ std::vector<TrackMarker> parse_markers(const std::vector<uint8_t>& d) {
     const int32_t n = rd32(d, 0);
     for (int32_t i = 0; i < n && 4 + size_t(i + 1) * 32 <= d.size(); ++i) {
         const size_t o = 4 + size_t(i) * 32;
-        out.push_back({rd32(d, o), rd32(d, o + 4), rdf(d, o + 8), rd32(d, o + 0x14), rd32(d, o + 0x1c)});
+        out.push_back({rd32(d, o), rd32(d, o + 4), rdf(d, o + 8), rdf(d, o + 0xc), rd32(d, o + 0x10), rd32(d, o + 0x14),
+                       rd32(d, o + 0x1c)});
     }
     return out;
 }
@@ -131,7 +133,9 @@ bool Race::load(const std::string& data_dat, const std::string& track_name, char
     lines = parse_splines(*spl);
     if (mrk) markers = parse_markers(*mrk);
     size_t n = 0;
-    auto packed = DtrFile(std::string(dtr->begin(), dtr->end())).pack_section("OPPONENTS", 0x14, 0x14, &n);
+    const DtrFile dtr_file(std::string(dtr->begin(), dtr->end()));
+    if (auto td = dtr_file.pack_section("TRACK_DATA", 0x10, 0x10); td && td->size() >= 0x10) bonus_time = rd32(*td, 8);
+    auto packed = dtr_file.pack_section("OPPONENTS", 0x14, 0x14, &n);
     defs.clear();
     if (packed)
         for (size_t i = 0; i < n; ++i)
@@ -172,6 +176,11 @@ void Race::start(const Track& track, const CarSetup& player_setup, const std::ve
     player.reset(player_setup, track, s.x, s.z);
     for (Opponent& o : opponents) o.race_position = o.index + 1;
     player_position = int(opponents.size()) + 1;
+    use_countdown = true;
+    started = false;
+    countdown_timer = 0;
+    countdown_stage = 0;
+    checkpoints_seen.assign(markers.size(), 0);
 }
 
 void Race::next_spline_segment(Opponent& o) {
@@ -530,9 +539,78 @@ void Race::load_state(const uint8_t* pc, const uint8_t* cpu, size_t count) {
     }
 }
 
-void Race::update(const Track& track, const CarInput& in, float frame_time, int pow_row) {
+void Race::player_progress() {
+    // car_update_track_progress + car_on_checkpoint (+ car_add_checkpoint_time, car_complete_lap)
+    Car& p = player;
+    const int n = int(markers.size());
+    if (n == 0) return;
+    if (checkpoints_seen.size() != size_t(n)) checkpoints_seen.assign(size_t(n), 0);
+    int event = 0, checkpoint_marker = -1;
+    for (int d = -1; d < 2; ++d) {
+        int k = p.track_marker + d;
+        if (n <= k) k -= n;
+        if (k < 0) k += n;
+        const TrackMarker& mk = markers[size_t(k)];
+        if (std::abs(p.pos_x - mk.x) < mk.radius && std::abs(p.pos_z - mk.z) < mk.radius &&
+            chop(safe_sqrt(double(p.pos_x - mk.x) * (p.pos_x - mk.x) + double(p.pos_z - mk.z) * (p.pos_z - mk.z))) <= mk.radius) {
+            p.track_marker = k;
+            checkpoint_marker = k;
+            p.marker_flags = mk.flags;  // surface
+            p.surface_grip = mk.grip;
+            const bool seen_prev = k > 0 && checkpoints_seen[size_t(k - 1)] != 0;
+            event = ((!seen_prev || k == 0) && k != 0) || checkpoints_seen[size_t(k)] != 0 ? 2 : 1;
+        }
+    }
+    if (event == 1) {
+        checkpoints_seen[size_t(checkpoint_marker)] = 1;
+        ++checkpoints_passed;
+        if (markers[size_t(checkpoint_marker)].checkpoint & 2) {
+            if (!timing_started) timing_started = true;
+            if (laps != p.lap + 1) time_left = time_left / 5.0f + float(bonus_time);
+        }
+    } else if (event == 2 && checkpoint_marker == 0 && checkpoints_passed == n) {
+        if (laps != p.lap + 1) time_left = time_left / 5.0f + float(bonus_time);
+        checkpoints_passed = 1;
+        for (int k = 1; k < n; ++k) checkpoints_seen[size_t(k)] = 0;
+        ++p.lap;
+        if (lap_time < best_lap) {
+            best_lap = lap_time;
+            const int s = int(best_lap);
+            char buf[32];
+            std::snprintf(buf, sizeof buf, "%02d:%02d:%02d", s / 60, s % 60, int((best_lap - float(s)) * 100.0f));
+            best_lap_text = buf;
+        }
+        lap_time = 0;
+        if (laps == p.lap) finished = true;
+    }
+    const TrackMarker& a = markers[size_t(p.track_marker)];
+    const TrackMarker& b = markers[size_t((p.track_marker + 1) % n)];
+    const double sx = double(b.x - a.x) * 0.05, sz = double(b.z - a.z) * 0.05;
+    const int span = std::max(1, chop(safe_sqrt(sx * sx + sz * sz)));
+    const double cx = double(p.pos_x - a.x) * 0.05, cz = double(p.pos_z - a.z) * 0.05;
+    const float fraction = float(chop(safe_sqrt(cx * cx + cz * cz))) / float(span);
+    if (checkpoints_seen[size_t(p.track_marker)] != 0)
+        p.track_progress = float(int(fraction + float(p.track_marker) + float(p.lap * 100)));
+}
+
+void Race::update(const Track& track, const CarInput& in_raw, float frame_time, int pow_row) {
     dt_ = frame_time;
     pow_row_ = pow_row;
+    CarInput in = in_raw;
+    if (use_countdown) {
+        in.race_started = started;
+        in.cpu_cars_go = started;
+        // car_update_race_timers (in car_update_driving)
+        if (started && !finished) {
+            if (timing_started) {
+                total_time += frame_time;
+                lap_time += frame_time;
+            }
+            time_left -= frame_time;
+            if (time_left < 0.0f) time_left = 0.0f;
+        }
+        if (finished || time_left <= 0.0f) in.accel = 0;  // out of time: no throttle
+    }
     positions_running_ = in.race_started;
     update_positions();  // race_update_positions runs before the cars move
     for (Opponent& o : opponents) update_position(o);
@@ -543,8 +621,10 @@ void Race::update(const Track& track, const CarInput& in, float frame_time, int 
     // progress comes later in the frame (car_update_track_contact).
     if (player.crash_state == 0)
         player.surface_render_flag = player.marker_flags == 1 ? 0x8000 : player.marker_flags == 2 ? 0xff00 : 0;
-    update_progress(markers, player.track_marker, player.lap, player.track_progress, player.marker_flags, nullptr,
-                    player.pos_x, player.pos_z);
+    if (use_countdown) player_progress();
+    else
+        update_progress(markers, player.track_marker, player.lap, player.track_progress, player.marker_flags, nullptr,
+                        player.pos_x, player.pos_z);
     for (Opponent& o : opponents) {
         // opponent_update_driving: only cars near the player are simulated in full.
         const double dx = double(chop(double(o.pos_x - listener_x) * 0.1)), dz = double(chop(double(o.pos_z - listener_z) * 0.1));
@@ -577,6 +657,12 @@ void Race::update(const Track& track, const CarInput& in, float frame_time, int 
             cpu_contacts(o);
             collide_player(o);
         }
+    if (use_countdown && countdown_stage >= 0) {
+        countdown_timer += frame_time;
+        const int stage = int(countdown_timer) / 2;
+        if (stage > 2 && stage < 4) started = true;
+        countdown_stage = stage >= 4 ? -1 : stage;
+    }
 }
 
 } // namespace scr

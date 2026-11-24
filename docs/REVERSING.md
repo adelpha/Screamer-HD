@@ -206,6 +206,13 @@ code when they form tables (a lone fixup there is usually an instruction operand
   than 35000 units from the listener (the player) are frozen. Race positions only change by
   swapping the player with one CPU car per frame. Checked frame by frame against recordings of
   the original (start, mid-race with a bump from the player, far from the player): exact.
+* Race HUD (`src/core/hud.cpp`): hud_draw / hud_draw_cockpit / hud_draw_for_view with the
+  GAMEL.FNT fonts (4-bit glyphs, colour = pixel | mode << 4), GAMEL.SPR sprites and the
+  run-length PKC overlays (IMPLET_L labels, IMPRES_L gauges); formats in `src/core/hud.h`.
+  The radar draws a line per track cross-section of the 17 x 17 cells around the player and a
+  dot per CPU car; the race starts after race_countdown_update's 3-2-1 lights (two seconds
+  each). Checkpoints (marker +0x10 bit 1) start the clock and add time_left / 5 + bonus_time;
+  a lap counts when marker 0 is reached with every marker passed.
 * Ground and track lines: `collision_query_cells` tests the faces of slot 0 (road) objects in
   the 3x3 cells around a probe, and the 4th letter of the part name is the surface type.
   `track_find_nearest_point` uses slot 2 (centre-line points with heading) and slot 3 (road

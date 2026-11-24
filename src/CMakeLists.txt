@@ -4,6 +4,7 @@ add_library(screamer_core STATIC
   core/car.cpp
   core/dtr.cpp
   core/framebuffer.cpp
+  core/hud.cpp
   core/gamedata.cpp
   core/image.cpp
   core/model3d.cpp
