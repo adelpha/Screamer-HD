@@ -112,6 +112,7 @@ uint32_t Car::render_animation() const {
 void Car::update(const Track& track, const CarInput& in, float frame_time, int pow_row) {
     dt_ = frame_time;
     pow_row_ = pow_row;
+    crash_sound = wall_sound = false;
     // race_frame order for the player: integrate, driving, dynamics, track contact.
     integrate_motion();
     engine_gearbox(in);
@@ -329,6 +330,9 @@ void Car::update_skid() {
     if (crash_state != 0) {
         skid_level = lerp(skid_level, skid, 0x50);
         if (skid_level < 10.0f) skid_level = 0.0f;
+        // The skid noise keeps going while drifting; crash states from 3 up do not stop it.
+        if (0.23 < std::fabs(double(drift_angle))) skid_sound = true;
+        else if (crash_state < 3) skid_sound = false;
         return;
     }
     if (braking == 0.0f) {
@@ -369,7 +373,7 @@ void Car::update_skid() {
         drift_angle = (drift_angle - target) * pow_table(pow_row_, 0x5a) + target;
     skid_level = lerp(skid_level, skid, 0x50);
     if (skid_level < 10.0f) skid_level = 0.0f;
-    (void)skidding;
+    skid_sound = skidding || 0.23 < std::fabs(double(drift_angle));
 }
 
 void Car::corner_probes(const Track& track) {
@@ -451,6 +455,7 @@ void Car::update_track_heading(const Track& track) {
     if (kHalfPi < diff) diff = kPi - diff;
     diff = diff / kHalfPi;
     if (slide_threshold < speed * diff) set_state(2);  // too fast into the wall: crash
+    else wall_sound = true;
     const float len = float(safe_sqrt(double(wall_push_x) * wall_push_x + double(wall_push_z) * wall_push_z));
     if (len > 0.0f) {
         impact_vel_x = float(wall_push_x) / len;
@@ -480,6 +485,7 @@ void Car::crash_update(const Track& track) {
     switch (crash_state) {
     case 2:
         crash_state = 1;
+        crash_sound = true;
         speed = float(double(speed) * 0.6);
         if (const TrackPoint* p = nearest_track_point(track, pos_x, pos_z)) yaw = p->heading;
         crash_bounce = 3000.0f;
@@ -507,6 +513,7 @@ void Car::crash_update(const Track& track) {
         break;
     case 5:
         if (gear != 0) {
+            skid_sound = true;
             cam_shake_x ^= 0x1f;
             yaw = float(double(steer) * 0.3 + double(yaw));
         }

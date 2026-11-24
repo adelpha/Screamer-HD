@@ -9,6 +9,7 @@
 
 #include "core/archive.h"
 #include "core/car.h"
+#include "core/cd_audio.h"
 #include "core/dtr.h"
 #include "core/opponent.h"
 #include "core/framebuffer.h"
@@ -16,6 +17,8 @@
 #include "core/hud.h"
 #include "core/image.h"
 #include "core/pcx.h"
+#include "core/race_audio.h"
+#include "core/sound.h"
 #include "core/render3d.h"
 #include "core/track.h"
 #include "core/sim_clock.h"
@@ -56,7 +59,13 @@ struct Options {
     int car_index = 0;              // --scene drive: CARS_DATA record (0..12)
     std::string start;              // --scene drive: X,Z start position
     std::string hold;
-    int view = 2;                   // --scene drive: starting view 0..3 (F1..F4)               // --scene drive: keys held in every frame (accel,brake,left,right)       // --detail: H (high, GFX/MAPnH.DAT) or L (low, MAPnL.DAT)
+    int view = 2;                   // --scene drive: starting view 0..3 (F1..F4)
+    bool mute = false;              // no audio device
+    int sfx_volume = 100, music_volume = 70;  // 0..100
+    bool music = true, speech = true;
+    bool audio_smooth = true;       // linear interpolation (false: the driver's nearest sample)
+    std::string record_audio;       // write the mix to a .wav (frame-locked, works headless)
+    bool audio_log = false;         // log every sample that starts
 };
 
 void print_usage() {
@@ -86,8 +95,45 @@ void print_usage() {
         "  --fullscreen         borderless fullscreen\n"
         "  --renderer NAME      SDL renderer (direct3d11, direct3d12, vulkan, opengl, software, gpu)\n"
         "  --aspect MODE        4:3 (default), stretch, square\n"
+        "  --mute               no sound\n"
+        "  --sfx-volume N       sound effects volume 0..100 (default 100)\n"
+        "  --music-volume N     CD music volume 0..100 (default 70)\n"
+        "  --no-music           no CD music (from the CD image: SCREAM.cue/.bin, or SCREAM.DAT/.gog as Steam and GOG ship it)\n"
+        "  --no-speech          no announcer\n"
+        "  --record-audio FILE  write the sound of the run to a 44.1 kHz .wav (also headless)\n"
+        "  --audio-filter MODE  linear (default) or nearest (the original driver's crunchier resampling)\n"
         "  --version, --help\n",
         SCREAMER_VERSION);
+}
+
+// 16-bit stereo PCM .wav
+bool write_wav(const std::string& path, const std::vector<float>& stereo, int rate) {
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "cannot write %s", path.c_str());
+        return false;
+    }
+    auto u32 = [&](uint32_t v) { std::fwrite(&v, 4, 1, f); };
+    auto u16 = [&](uint16_t v) { std::fwrite(&v, 2, 1, f); };
+    const uint32_t bytes = uint32_t(stereo.size() * 2);
+    std::fwrite("RIFF", 1, 4, f);
+    u32(36 + bytes);
+    std::fwrite("WAVEfmt ", 1, 8, f);
+    u32(16);
+    u16(1);
+    u16(2);
+    u32(uint32_t(rate));
+    u32(uint32_t(rate) * 4);
+    u16(4);
+    u16(16);
+    std::fwrite("data", 1, 4, f);
+    u32(bytes);
+    for (float v : stereo) {
+        const int16_t s = int16_t(std::lround(std::clamp(v, -1.0f, 1.0f) * 32767.0f));
+        std::fwrite(&s, 2, 1, f);
+    }
+    std::fclose(f);
+    return true;
 }
 
 bool parse_args(int argc, char** argv, Options& o) {
@@ -116,6 +162,14 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--start") o.start = next("--start");
         else if (a == "--hold") o.hold = next("--hold");
         else if (a == "--view") o.view = std::atoi(next("--view"));
+        else if (a == "--mute") o.mute = true;
+        else if (a == "--sfx-volume") o.sfx_volume = std::clamp(std::atoi(next("--sfx-volume")), 0, 100);
+        else if (a == "--music-volume") o.music_volume = std::clamp(std::atoi(next("--music-volume")), 0, 100);
+        else if (a == "--no-music") o.music = false;
+        else if (a == "--no-speech") o.speech = false;
+        else if (a == "--record-audio") o.record_audio = next("--record-audio");
+        else if (a == "--audio-log") o.audio_log = true;
+        else if (a == "--audio-filter") o.audio_smooth = std::string(next("--audio-filter")) != "nearest";
         else if (a == "--detail") o.detail = std::string(next("--detail")) == "low" ? "L" : "H";
         else if (a == "--render-size") {
             if (std::sscanf(next("--render-size"), "%dx%d", &o.fb_width, &o.fb_height) != 2 || o.fb_width <= 0 || o.fb_height <= 0) {
@@ -274,6 +328,16 @@ int main(int argc, char** argv) {
     };
     std::optional<Player> player;
     std::optional<scr::Hud> hud;  // the race HUD (--scene drive with CPU cars)
+    // Sound: the mixer always runs (deterministic, testable); the device only in a window.
+    scr::SoundBank sound_bank;
+    scr::Mixer mixer;
+    scr::RaceAudio race_audio;
+    scr::CdImage cd;
+    SDL_AudioStream* audio_stream = nullptr;
+    std::vector<float> recorded;  // --record-audio
+    mixer.sfx_volume = float(opt.sfx_volume) / 100.0f;
+    mixer.music_volume = float(opt.music_volume) / 100.0f;
+    mixer.smooth = opt.audio_smooth;
     int radar = 1;                // M cycles 0 (off) .. 3 (DAT_0011d2a0)
     if (drive) {
         auto gen = scr::resolve_game_file(*game_dir, "DATA/GEN.DAT");
@@ -322,6 +386,41 @@ int main(int argc, char** argv) {
             player->race.player.reset(setup, *track, sx, sz);
         }
         SDL_Log("driving %s (CARS_DATA %zu), %zu CPU cars", name.c_str(), idx, player->race.opponents.size());
+        // Sounds: SOUND.DAT samples with the SFXSBASE, track and announcer tables (sfx_load_tables).
+        auto sound_dat = scr::resolve_game_file(*game_dir, "DATA/SOUND.DAT");
+        if (gen && sound_dat && sound_bank.load(*gen, *sound_dat, data ? *data : std::string(), opt.track, opt.speech)) {
+            mixer.set_bank(&sound_bank);
+            race_audio.start(mixer, sound_bank, player->race, int(idx), 0, opt.speech);
+        } else {
+            SDL_Log("no sound effects (DATA/SOUND.DAT not found)");
+        }
+        if (opt.music && ((!opt.headless && !opt.mute) || !opt.record_audio.empty())) {
+            auto cue = scr::find_cd_cue(*game_dir);
+            const int map = opt.track.size() >= 4 ? std::atoi(opt.track.c_str() + 3) - 1 : 0;
+            if (cue && cd.open(*cue)) {
+                auto music = std::make_shared<scr::CdAudioPlayer>(cd, scr::cd_track_for_race(map));
+                if (music->ok()) mixer.set_music(music);
+            } else {
+                SDL_Log("no CD music (no CD image: SCREAM.cue/.bin or SCREAM.DAT/.gog)");
+            }
+        }
+        if (!opt.headless && !opt.mute) {
+            const SDL_AudioSpec spec{SDL_AUDIO_F32, 2, 44100};
+            audio_stream = SDL_OpenAudioDeviceStream(
+                SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec,
+                [](void* user, SDL_AudioStream* stream, int additional, int) {
+                    auto* m = static_cast<scr::Mixer*>(user);
+                    static std::vector<float> buf;
+                    const int frames = additional / int(sizeof(float) * 2);
+                    if (frames <= 0) return;
+                    buf.resize(size_t(frames) * 2);
+                    m->mix(buf.data(), frames, 44100);
+                    SDL_PutAudioStreamData(stream, buf.data(), frames * int(sizeof(float) * 2));
+                },
+                &mixer);
+            if (audio_stream) SDL_ResumeAudioStreamDevice(audio_stream);
+            else SDL_Log("no audio device: %s", SDL_GetError());
+        }
         player->camera.set(opt.view);
         if (player->cpu_cars) {
             auto game = scr::resolve_game_file(*game_dir, "GFX/GAME.DAT");
@@ -345,6 +444,11 @@ int main(int argc, char** argv) {
     SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
 
     uint64_t frame = 0;
+    if (opt.audio_log)
+        mixer.on_play = [&](int s) {
+            SDL_Log("frame %llu: sound %d %s", static_cast<unsigned long long>(frame), s,
+                    size_t(s) < sound_bank.fx.size() ? sound_bank.fx[size_t(s)].name.c_str() : "?");
+        };
     bool running = true;
     scr::SimClock clock;  // the original's frame clock: 100 Hz ticks, at least 2 per frame
     uint64_t last = SDL_GetTicksNS(), tick_acc = 0;
@@ -420,6 +524,7 @@ int main(int argc, char** argv) {
                         player->race.update(*track, in, clock.frame_time(), clock.pow_table_row());
                     else
                         player->race.player.update(*track, in, clock.frame_time(), clock.pow_table_row());
+                    race_audio.update(player->race, clock.frame_time());
                     player->camera.update(player->race.player, player->race.camera_hi, clock.frame_time(),
                                           clock.pow_table_row());
                     // engine_set_viewport(320, h, h * 0.65): the projection centre follows the view size.
@@ -524,6 +629,13 @@ int main(int argc, char** argv) {
                 scr::draw_test_pattern(fb, frame);
             }
             stepped = true;
+            if (!opt.record_audio.empty()) {
+                // One frame of sound per simulated frame (2 ticks = 1/50 s at 44.1 kHz).
+                const int n = int(44100 * 2 / 100);
+                const size_t at = recorded.size();
+                recorded.resize(at + size_t(n) * 2);
+                mixer.mix(recorded.data() + at, n, 44100);
+            }
             if (opt.capture_every && frame % opt.capture_every == 0) {
                 scr::SurfacePtr s = scr::framebuffer_to_surface(fb);
                 char name[64];
@@ -569,6 +681,10 @@ int main(int argc, char** argv) {
     }
 
     SDL_Log("frames=%llu", static_cast<unsigned long long>(frame));
+    if (!opt.record_audio.empty() && !write_wav(opt.record_audio, recorded, 44100)) exit_code = 1;
+    if (audio_stream) SDL_DestroyAudioStream(audio_stream);
+    race_audio.stop();
+    mixer.set_music(nullptr);
     SDL_DestroyTexture(tex);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);

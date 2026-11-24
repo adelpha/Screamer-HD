@@ -14,6 +14,7 @@ add_executable(unit_tests
   unit/test_track.cpp
   unit/test_car.cpp
   unit/test_hud.cpp
+  unit/test_sound.cpp
 )
 target_include_directories(unit_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(unit_tests PRIVATE screamer_core)

@@ -14,7 +14,7 @@
 //
 // crash_state: 0 driving, 2 just hit a wall too hard (car_set_state), 1 tumbling until the
 // fourth bounce, 5 wheelspin at the start, 6 wheelspin over.
-// Not ported yet: spins (spin_state), opponents and obstacles, checkpoints, sounds, debris.
+// Not ported yet: spins (spin_state), obstacles, debris. Sounds are cues for RaceAudio.
 // Network catch-up (speed_factor at 0x300) stays 1.
 
 #include "core/track.h"
@@ -138,6 +138,10 @@ public:
     // 0xff00), which picks the window reflection frame (Pose::reflection).
     int surface_render_flag = 0;
     float track_progress = 0;
+    // Sound cues from this frame, played by RaceAudio (the original calls sfx_* inline):
+    bool crash_sound = false;  // car_update_crash_state 2: sfx 8 (dentone) and the "crash" line
+    bool wall_sound = false;   // car_update_track_heading, a wall without a crash: sfx 4 (wallh1)
+    bool skid_sound = false;   // car_update_skid / crash state 5: the skid noise (sfx 0) plays
     void update_bumpers();
     std::array<CarProbe, 4> probe{};
 
