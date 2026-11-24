@@ -9,6 +9,9 @@ add_library(screamer_core STATIC
   core/image.cpp
   core/model3d.cpp
   core/opponent.cpp
+  core/race_audio.cpp
+  core/sound.cpp
+  core/cd_audio.cpp
   core/pcx.cpp
   core/render3d.cpp
   core/sim_clock.cpp

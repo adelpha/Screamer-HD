@@ -453,6 +453,7 @@ void Race::player_contacts(const Track& track) {
                 int dist = chop(safe_sqrt(double(dx) * dx + double(dz) * dz));
                 if (dist >= limit) continue;
                 // car_resolve_cpu_collision
+                cpu_hit_sound = true;
                 if (dist == 0) dist = 1;
                 const float nx = float(dx) / float(dist), nz = float(dz) / float(dist);
                 const double ox = double(float(limit) * nx) - double(dx), oz = double(float(limit) * nz) - double(dz);
@@ -560,6 +561,7 @@ void Race::player_progress() {
             checkpoint_marker = k;
             p.marker_flags = mk.flags;  // surface
             p.surface_grip = mk.grip;
+            player_cue = mk.checkpoint;
             const bool seen_prev = k > 0 && checkpoints_seen[size_t(k - 1)] != 0;
             event = ((!seen_prev || k == 0) && k != 0) || checkpoints_seen[size_t(k)] != 0 ? 2 : 1;
         }
@@ -568,11 +570,22 @@ void Race::player_progress() {
         checkpoints_seen[size_t(checkpoint_marker)] = 1;
         ++checkpoints_passed;
         if (markers[size_t(checkpoint_marker)].checkpoint & 2) {
-            if (!timing_started) timing_started = true;
-            if (laps != p.lap + 1) time_left = time_left / 5.0f + float(bonus_time);
+            if (!timing_started) {
+                timing_started = true;
+            } else {
+                // "checkpoint": how close it was (below 3 s, up to 15 s, more)
+                speech_cues.push_back({4, time_left < 3.0f ? 2 : time_left <= 15.0f ? 0 : 1, 0.0f});
+            }
+            if (laps != p.lap + 1) {
+                time_left = time_left / 5.0f + float(bonus_time);
+                speech_cues.push_back({-0x16, 0, 0.0f});  // speech_once_reset(0x16): "hurry" again
+            }
         }
     } else if (event == 2 && checkpoint_marker == 0 && checkpoints_passed == n) {
-        if (laps != p.lap + 1) time_left = time_left / 5.0f + float(bonus_time);
+        if (laps != p.lap + 1) {
+            time_left = time_left / 5.0f + float(bonus_time);
+            speech_cues.push_back({-0x16, 0, 0.0f});
+        }
         checkpoints_passed = 1;
         for (int k = 1; k < n; ++k) checkpoints_seen[size_t(k)] = 0;
         ++p.lap;
@@ -583,8 +596,15 @@ void Race::player_progress() {
             std::snprintf(buf, sizeof buf, "%02d:%02d:%02d", s / 60, s % 60, int((best_lap - float(s)) * 100.0f));
             best_lap_text = buf;
         }
+        // car_complete_lap: "new lap record", then "lap" (1 after a record, 2 the last lap).
+        const bool record = lap_time < track_record;
+        if (record) {
+            track_record = lap_time;
+            speech_cues.push_back({7, 3, 0.2f});
+        }
         lap_time = 0;
         if (laps == p.lap) finished = true;
+        else speech_cues.push_back({5, laps - 1 == p.lap ? 2 : int(record), 0.0f});
     }
     const TrackMarker& a = markers[size_t(p.track_marker)];
     const TrackMarker& b = markers[size_t((p.track_marker + 1) % n)];
@@ -600,6 +620,8 @@ void Race::update(const Track& track, const CarInput& in_raw, float frame_time, 
     dt_ = frame_time;
     pow_row_ = pow_row;
     CarInput in = in_raw;
+    speech_cues.clear();
+    cpu_hit_sound = false;
     if (use_countdown) {
         in.race_started = started;
         in.cpu_cars_go = started;

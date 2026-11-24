@@ -139,6 +139,16 @@ public:
     std::vector<TrackMarker> markers;
     std::vector<OpponentDef> defs;
     int player_position = 1;
+    float track_record = 0;      // DAT_0011d268: the lap record ("new lap record" below it); 0 none
+    int player_cue = 0;          // PlayerCar 0x678: the current marker's +0x10 flags (4: a bend ahead)
+
+    // Announcer lines and sounds from this frame, for RaceAudio (cleared by update()).
+    struct SpeechCue {
+        int event, variant;  // speech_queue_add(event, variant, delay); variant 3 cycles
+        float delay;
+    };
+    std::vector<SpeechCue> speech_cues;
+    bool cpu_hit_sound = false;  // car_resolve_cpu_collision: sfx 1 (crash)
 
 private:
     float lerp(float value, float target, int k) const;
