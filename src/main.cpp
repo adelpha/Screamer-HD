@@ -655,6 +655,35 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         };
     bool running = true;
     scr::SimClock clock;  // the original's frame clock: 100 Hz ticks, at least 2 per frame
+    // F8: photo mode - the race stands still and goes quiet, the HUD goes away and a free
+    // camera flies about (WASD, Q/E or Space/C up and down, mouse or arrow keys to look,
+    // Shift faster, Ctrl slower). F8 or Esc puts everything back.
+    bool freecam = false;
+    float fc_x = 0, fc_y = 0, fc_z = 0, fc_yaw = 0, fc_pitch = 0;  // angles in 2048 units
+    float fc_saved_sfx = 0, fc_saved_music = 0;
+    int32_t fc_anim = 0;
+    auto set_freecam = [&](bool on) {
+        if (on == freecam) return;
+        freecam = on;
+        if (on) {
+            fc_x = cam.x;
+            fc_y = cam.y;
+            fc_z = cam.z;
+            fc_yaw = cam.yaw;
+            fc_pitch = cam.pitch > 1024 ? cam.pitch - 2048 : cam.pitch;
+            fc_anim = clock.anim_counter();
+            fc_saved_sfx = mixer.sfx_volume;
+            fc_saved_music = mixer.music_volume;
+            mixer.sfx_volume = 0;
+            mixer.music_volume = 0;
+        } else {
+            mixer.sfx_volume = fc_saved_sfx;
+            mixer.music_volume = fc_saved_music;
+        }
+        if (window && !opt.headless) SDL_SetWindowRelativeMouseMode(window, on);
+        float ignore_x, ignore_y;
+        SDL_GetRelativeMouseState(&ignore_x, &ignore_y);  // movement from before
+    };
     uint64_t last = SDL_GetTicksNS(), tick_acc = 0;
     clock.add_ticks(scr::SimClock::kMinTicksPerFrame);  // draw frame 0 immediately
     int exit_code = 0;
@@ -665,6 +694,12 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             switch (ev.type) {
             case SDL_EVENT_QUIT: running = false; break;
             case SDL_EVENT_KEY_DOWN:
+                if (track && !menu && !paused && prompt < 0 && !ev.key.repeat &&
+                    (ev.key.key == SDLK_F8 || (freecam && ev.key.key == SDLK_ESCAPE))) {
+                    set_freecam(!freecam);
+                    break;
+                }
+                if (freecam && ev.key.key != SDLK_F12) break;  // the race keys wait
                 if (ev.key.key == SDLK_ESCAPE && !menu) {
                     if (paused) {
                         paused = false;  // Esc leaves the panel
@@ -805,8 +840,47 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 if (paused) hud->draw_cd_panel(fb, panel);
             } else if (track) {
                 fb.palette() = track->palette;
-                renderer3d.set_anim_counter(clock.anim_counter());
-                if (player) {
+                renderer3d.set_anim_counter(freecam ? fc_anim : clock.anim_counter());
+                if (!freecam && player && frame == 150 && opt.hold.find("freecam") != std::string::npos)
+                    set_freecam(true);  // --hold freecam: photo mode at frame 150, flying forward (headless checks)
+                if (freecam) {
+                    // photo mode: move the free camera, nothing else moves
+                    const bool* keys = SDL_GetKeyboardState(nullptr);
+                    const float dt = clock.frame_time();
+                    float mx = 0, my = 0;
+                    SDL_GetRelativeMouseState(&mx, &my);
+                    if (opt.headless) mx = my = 0;
+                    const float turn = 600.0f * dt;  // 2048 units per turn
+                    fc_yaw -= mx * 1.5f;
+                    fc_pitch -= my * 1.5f;
+                    if (keys[SDL_SCANCODE_LEFT]) fc_yaw += turn;
+                    if (keys[SDL_SCANCODE_RIGHT]) fc_yaw -= turn;
+                    if (keys[SDL_SCANCODE_UP]) fc_pitch += turn;
+                    if (keys[SDL_SCANCODE_DOWN]) fc_pitch -= turn;
+                    fc_pitch = std::clamp(fc_pitch, -500.0f, 500.0f);
+                    fc_yaw = std::fmod(fc_yaw + 2048.0f, 2048.0f);
+                    float speed = 4000.0f * dt;
+                    if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) speed *= 5.0f;
+                    if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL]) speed *= 0.2f;
+                    const float a = fc_yaw * 3.1415927f / 1024.0f, p = fc_pitch * 3.1415927f / 1024.0f;
+                    // camera space looks down -z, +x is screen left (Renderer::begin)
+                    const float fx = std::cos(p) * std::sin(a), fy = std::sin(p), fz = -std::cos(a) * std::cos(p);
+                    const float rx = -std::cos(a), rz = -std::sin(a);
+                    const float f = float(keys[SDL_SCANCODE_W] || opt.hold.find("freecam") != std::string::npos) -
+                                    float(keys[SDL_SCANCODE_S]);
+                    const float r = float(keys[SDL_SCANCODE_D]) - float(keys[SDL_SCANCODE_A]);
+                    const float u = float(keys[SDL_SCANCODE_E] || keys[SDL_SCANCODE_SPACE]) -
+                                    float(keys[SDL_SCANCODE_Q] || keys[SDL_SCANCODE_C]);
+                    fc_x += (fx * f + rx * r) * speed;
+                    fc_y += (fy * f + u) * speed;
+                    fc_z += (fz * f + rz * r) * speed;
+                    cam.x = fc_x;
+                    cam.y = fc_y;
+                    cam.z = fc_z;
+                    cam.yaw = fc_yaw;
+                    cam.pitch = fc_pitch < 0 ? fc_pitch + 2048.0f : fc_pitch;
+                    cam.roll = 0;
+                } else if (player) {
                     scr::CarInput in;
                     const bool* keys = SDL_GetKeyboardState(nullptr);
                     auto held = [&](const char* k) { return opt.hold.find(k) != std::string::npos; };
@@ -876,7 +950,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 renderer3d.begin(*track, cam, fb);
                 renderer3d.draw_placements();
                 // obstacles_update and the obstacles
-                obstacles.update(*track, clock.frame_time());
+                if (!freecam) obstacles.update(*track, clock.frame_time());
                 for (const scr::Obstacle& o : obstacles.list) {
                     if (o.y == -20000 || size_t(o.model) >= obstacles.models.size()) continue;
                     constexpr float kObsUnits = 1024.0f / 3.1415927410125732f;
@@ -890,7 +964,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     renderer3d.draw_model(obstacles.models[size_t(o.model)], op);
                 }
                 // The moving scenery (instance angles: yaw only).
-                if (!player) anims.update(int(cam.x), int(cam.z), clock.frame_time());
+                if (!player && !freecam) anims.update(int(cam.x), int(cam.z), clock.frame_time());
                 constexpr float kAnimToUnits = 1024.0f / 3.1415927410125732f;
                 for (size_t i = 0; i < anims.list.size() && i < anim_models.size(); ++i) {
                     const scr::TrackAnimation& an = anims.list[i];
@@ -933,7 +1007,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     sh.y = float(c.ground_y - 2);
                     sh.env = nullptr;
                     sh.depth_bias = kShadowBias;
-                    if (player->camera.car_visible) {
+                    if (player->camera.car_visible || freecam) {
                         if (shadow) renderer3d.draw_model(*shadow, sh);
                         renderer3d.draw_model(player->model, pose);
                     }
@@ -996,7 +1070,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     perf_max = std::max(perf_max, ms);
                     ++perf_frames;
                 }
-                if (player && player->cpu_cars && hud) {
+                if (player && player->cpu_cars && hud && !freecam) {
                     const scr::Race& r = player->race;
                     const scr::Car& c = r.player;
                     scr::HudState hs;
