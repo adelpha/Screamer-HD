@@ -36,6 +36,8 @@ no manual steps.
 | `--camera X,Y,Z,YAW,PITCH[,ROLL]` | Camera for `--scene track` in game units (angles 0..2047). Default: the first placement. `48459,196,7124,472,2005,0` is the intro race at the start gate. |
 | `--render-size WxH` | Framebuffer size for the 3D scene (default 320x200), e.g. `1280x800`. |
 | `--flat` | Draw faces with each material's average colour instead of textures. |
+| `--detail high\|low` | Track files: `GFX/MAPnH.DAT` (default; what the game loads) or `MAPnL.DAT`. |
+| `--car NAME[,X,Y,Z,YAW[,ANIM]]` | Add a car object (`AUTO00`..`AUTO06`) with its shadow; repeatable. `ANIM` is the object's animation word in hex (`8000` = second paint scheme). Without a position the car stands in front of the camera. |
 | `--dump-fb FILE` | After the last frame, save the native 320x200 framebuffer (palette applied). Directly comparable with DOSBox raw captures. |
 | `--screenshot FILE` | After the last frame, save the presented output (scaled, letterboxed) at `--size`. |
 | `--capture-every N` / `--capture-dir` | Dump the framebuffer every N frames. |
@@ -86,6 +88,13 @@ config (user's own DOSBox config is ignored), mounts `SCREAMER/` as C: and the C
   runs DOSBox headless, reads VGA memory and the game's own `g_palette`, and writes
   `artifacts/dosbox/x/vga.bmp`. The palette is the full-brightness one, so capture screens
   that have finished fading in.
+  `-Freeze` (races and the intro demo) patches `JMP $` in after `render_race_scene`, so the game
+  stops with the finished 3D scene in its back buffer; that buffer is captured instead of VGA,
+  together with the memory it was drawn from. `-KeepMemory` keeps the dump (`mem_00.bin` holds
+  the first MB, where the 3D object instances live). With both, camera (`g_camera`), car
+  instances (`g_objects[].instance`: x, y, z, angles, animation word) and screen are from the
+  same frame, so `screamer.exe --scene track --camera ... --car ...` can be compared with
+  `imgcmp` directly.
 * **Debugger**: `-Debugger` uses `dosbox_with_debugger.exe` (Alt+Pause breaks in).
 * `-Cycles 'fixed 60000'` gives more repeatable timing than `max`. Audio is off unless `-Sound`.
 

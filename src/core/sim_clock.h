@@ -42,6 +42,9 @@ public:
     void reset() { frame_time_ = 0.0f; raw_ = 0.0f; ticks_ = 0; }
 
     float frame_time() const { return frame_time_; }      // g_frame_time
+    // Texture animation counter (0..65535, one turn every 1 / 0.3 s at any frame rate): animated
+    // track materials show frame frames * (counter & 0x3fff) >> 14 (cell_begin, mat*_draw).
+    int32_t anim_counter() const { return anim_counter_; }
     float frame_time_raw() const { return raw_; }         // g_frame_time_raw
     int pow_table_row() const { return pow_row_; }        // index into the per-fps damping table
     uint32_t pending_ticks() const { return ticks_; }
@@ -49,6 +52,8 @@ public:
 private:
     uint32_t ticks_ = 0;
     float frame_time_ = 0.0f;
+    float anim_phase_ = 0.0f;
+    int32_t anim_counter_ = 0;
     float raw_ = 0.0f;
     int pow_row_ = 0;
 };

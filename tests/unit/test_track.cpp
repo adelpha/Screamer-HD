@@ -6,6 +6,8 @@
 #include "core/render3d.h"
 #include "core/track.h"
 
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 namespace {
@@ -101,4 +103,51 @@ TEST_CASE("track: MAP2 loads and renders") {
     auto stats = r.draw_track(*t, cam, fb);
     CHECK(stats.objects > 20);
     CHECK(stats.faces > 500);
+}
+
+TEST_CASE("track: MAP2 high detail, track lines and ground height") {
+    auto dir = scr::find_game_dir();
+    if (!dir) SKIP("original game data not present");
+    auto path = scr::resolve_game_file(*dir, "GFX/MAP2H.DAT");
+    REQUIRE(path.has_value());
+    auto t = scr::load_track(*path, "MAP2");
+    REQUIRE(t.has_value());
+    CHECK(t->shade_table.size() == 64 * 256);
+    CHECK(t->points.size() > 100);
+    REQUIRE(t->sections.size() > 50);
+    // Cross-sections: the centre lies between the two edges.
+    for (const auto& s : t->sections) {
+        CHECK(std::abs(2 * s.x - s.left_x - s.right_x) < 64);
+        CHECK(std::abs(2 * s.z - s.left_z - s.right_z) < 64);
+    }
+    // The start straight of the intro race is flat at y = 0 (cars sit at y = 0 there).
+    auto y = scr::ground_height(*t, 52039.0f, 6947.0f);
+    REQUIRE(y.has_value());
+    CHECK(std::abs(*y) < 4.0f);
+    CHECK(!scr::ground_height(*t, -900000.0f, -900000.0f).has_value());
+}
+
+TEST_CASE("track: car objects, part placements and paint frames") {
+    auto dir = scr::find_game_dir();
+    if (!dir) SKIP("original game data not present");
+    auto path = scr::resolve_game_file(*dir, "GFX/MAP2H.DAT");
+    REQUIRE(path.has_value());
+    auto car = scr::load_object(*path, "AUTO00.3DX");
+    REQUIRE(car.has_value());
+    REQUIRE(car->parts.size() == 12);
+    // Wheels sit at their part placement (226, 109, 490 for the rear left).
+    bool found = false;
+    for (const auto& p : car->parts)
+        if (p.name == "rli") {
+            found = true;
+            CHECK(p.offset[0] == 226);
+            CHECK(p.offset[1] == 109);
+            CHECK(p.offset[2] == 490);
+        }
+    CHECK(found);
+    // Car paint frames (8 per material) from the animation word, as in the intro demo.
+    CHECK(scr::material_frame(8, 0xe000, 0) == 7);
+    CHECK(scr::material_frame(8, 0x4000, 0) == 2);
+    // Track placements (-1) follow the global counter; 16 frames over 0x4000.
+    CHECK(scr::material_frame(16, -1, 0x4000 + 0x2000) == 8);
 }

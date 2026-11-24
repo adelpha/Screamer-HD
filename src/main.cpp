@@ -21,10 +21,12 @@
 #include <SDL3/SDL_main.h>
 
 #include <cstdio>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -45,6 +47,8 @@ struct Options {
     std::string camera;             // --scene track: x,y,z,yaw,pitch[,roll]
     int fb_width = 320, fb_height = 200;  // internal render size (--render-size)
     bool flat = false;              // --scene track: no textures
+    std::vector<std::string> cars;  // --scene track: NAME[,X,Y,Z,YAW] per car
+    std::string detail = "H";       // --detail: H (high, GFX/MAPnH.DAT) or L (low, MAPnL.DAT)
 };
 
 void print_usage() {
@@ -56,9 +60,13 @@ void print_usage() {
         "  --frames N           exit after N simulation frames (2 ticks of the game's 100 Hz clock each)\n"
         "  --scene NAME         title (default when the game files are found), track or testpattern\n"
         "  --track NAME         track for --scene track (MAP1..MAP6, default MAP2)\n"
+        "  --detail high|low    track detail: GFX/MAPnH.DAT (default, as the game's high detail) or MAPnL.DAT\n"
         "  --camera X,Y,Z,YAW,PITCH[,ROLL]  camera for --scene track (game units, angles 0..2047)\n"
         "  --render-size WxH    internal resolution for 3D scenes (default 320x200)\n"
         "  --flat               --scene track without textures\n"
+        "  --car NAME[,X,Y,Z,YAW[,ANIM]]  add a car (e.g. AUTO00) to --scene track; repeatable; ANIM\n"
+        "                       is its animation bits in hex (8000 = second paint scheme); without a\n"
+        "                       position it stands 900 units in front of the camera\n"
         "  --screenshot FILE    save the rendered window output after the last frame (.png/.bmp)\n"
         "  --dump-fb FILE       save the native 320x200 framebuffer after the last frame\n"
         "  --capture-every N    save the framebuffer every N frames\n"
@@ -92,6 +100,8 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--track") o.track = next("--track");
         else if (a == "--camera") o.camera = next("--camera");
         else if (a == "--flat") o.flat = true;
+        else if (a == "--car") o.cars.push_back(next("--car"));
+        else if (a == "--detail") o.detail = std::string(next("--detail")) == "low" ? "L" : "H";
         else if (a == "--render-size") {
             if (std::sscanf(next("--render-size"), "%dx%d", &o.fb_width, &o.fb_height) != 2 || o.fb_width <= 0 || o.fb_height <= 0) {
                 std::fprintf(stderr, "--render-size expects WxH\n");
@@ -190,7 +200,7 @@ int main(int argc, char** argv) {
     scr::Camera cam;
     if (opt.scene == "track") {
         if (game_dir) {
-            if (auto path = scr::resolve_game_file(*game_dir, "GFX/" + opt.track + "L.DAT")) track = scr::load_track(*path, opt.track);
+            if (auto path = scr::resolve_game_file(*game_dir, "GFX/" + opt.track + opt.detail + ".DAT")) track = scr::load_track(*path, opt.track);
         }
         if (!track) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "cannot load track %s from the game files", opt.track.c_str());
@@ -203,6 +213,38 @@ int main(int argc, char** argv) {
             const auto& p = track->placements.front();
             cam.x = float(p.x); cam.y = float(p.y) - 400.0f; cam.z = float(p.z); cam.yaw = float(p.ay);
         }
+    }
+    struct CarInstance {
+        scr::Model model;
+        scr::Pose pose;
+    };
+    std::vector<CarInstance> cars;
+    std::optional<scr::Model> shadow;  // SHADOW.3DX, drawn under every car (translucent, MAPn.SMG)
+    if (track && !opt.cars.empty()) {
+        if (auto path = scr::resolve_game_file(*game_dir, "GFX/" + opt.track + opt.detail + ".DAT")) shadow = scr::load_object(*path, "SHADOW.3DX");
+    }
+    for (const std::string& spec : opt.cars) {
+        if (!track) break;
+        const auto comma = spec.find(',');
+        const std::string name = spec.substr(0, comma);
+        auto path = scr::resolve_game_file(*game_dir, "GFX/" + opt.track + opt.detail + ".DAT");
+        auto model = path ? scr::load_object(*path, name + ".3DX") : std::nullopt;
+        if (!model) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "cannot load car %s", name.c_str());
+            return 1;
+        }
+        scr::Pose pose;
+        unsigned animation = 0;
+        if (comma == std::string::npos || std::sscanf(spec.c_str() + comma + 1, "%f,%f,%f,%f,%x", &pose.x, &pose.y, &pose.z, &pose.ay, &animation) < 4) {
+            // In front of the camera, facing it, on the camera's ground level minus its height.
+            const float a = cam.yaw * 6.28318530718f / 2048.0f;
+            pose.x = cam.x + 900.0f * std::sin(a);
+            pose.z = cam.z - 900.0f * std::cos(a);
+            pose.y = cam.y - 196.0f;
+            pose.ay = cam.yaw + 1024.0f - 256.0f;
+        }
+        pose.animation = int32_t(animation);
+        cars.push_back({std::move(*model), pose});
     }
     scr::Renderer renderer3d;
     renderer3d.set_textures(!opt.flat);
@@ -254,7 +296,14 @@ int main(int argc, char** argv) {
             clock.begin_frame();
             if (track) {
                 fb.palette() = track->palette;
-                renderer3d.draw_track(*track, cam, fb);
+                renderer3d.set_anim_counter(clock.anim_counter());
+                renderer3d.begin(*track, cam, fb);
+                renderer3d.draw_placements();
+                for (const auto& c : cars) {
+                    if (shadow) renderer3d.draw_model(*shadow, c.pose);
+                    renderer3d.draw_model(c.model, c.pose);
+                }
+                renderer3d.finish();
             } else if (title) {
                 scr::blit_pcx(*title, fb);
             } else {

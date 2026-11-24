@@ -16,7 +16,10 @@ param(
     [double]$Delay = 9,
     [string]$Autotype = '',
     [string]$Program = 'STARTL.EXE',
-    [switch]$KeepMemory   # keep the 15 MB memory dump (mem_*.bin) for runtime_probe.py
+    [switch]$KeepMemory,  # keep the 15 MB memory dump (mem_*.bin) for runtime_probe.py
+    [switch]$Freeze       # STARTL races (and the intro demo) only: stop the game right after it
+                          # renders the 3D scene and capture its back buffer (no HUD) instead of
+                          # VGA, so screen and memory (camera, object instances) match exactly
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -33,13 +36,39 @@ while (((Get-Date) - $t0).TotalSeconds -lt $Delay) { Start-Sleep -Milliseconds 2
 for ($i = 0; $i -lt 40; $i++) {
     try { Invoke-RestMethod "$api/cpu/state" | Out-Null; break } catch { Start-Sleep -Milliseconds 250 }
 }
-# VGA memory first (the moment that matters), then 15 MB of extended memory to find the palette.
-Invoke-WebRequest "$api/memory/655360/64000" -UseBasicParsing -OutFile (Join-Path $out 'vga.raw')
+if ($Freeze) {
+    # race_frame calls render_race_scene at 0x1FFE7 and attract_mode_update_cars (the intro
+    # demo) at 0x27930; the car physics runs after it and the frame reaches VGA even later.
+    # JMP $ (EB FE) at the instruction after each call hangs the game with the scene in the back
+    # buffer and the state it was drawn from in memory. Code runs at +0x1C2000 and data at
+    # +0x1AE000 under the harness config (pointers are linear addresses).
+    foreach ($at in 0x1FFEC, 0x27935) {
+        Invoke-WebRequest "$api/memory/$($at + 0x1C2000)" -Method Put -ContentType 'application/octet-stream' `
+            -Body ([byte[]](0xEB, 0xFE)) -UseBasicParsing | Out-Null
+    }
+    Start-Sleep -Milliseconds 300
+    $tmp = Join-Path $out 'back_ptr.bin'
+    Invoke-WebRequest "$api/memory/$(0x121524 + 0x1AE000)/4" -UseBasicParsing -OutFile $tmp  # g_back_buffer
+    $back = [BitConverter]::ToUInt32([System.IO.File]::ReadAllBytes($tmp), 0)
+    Remove-Item $tmp
+    Invoke-WebRequest "$api/memory/$back/64000" -UseBasicParsing -OutFile (Join-Path $out 'vga.raw')
+} else {
+    # VGA memory first (the moment that matters), then 15 MB of extended memory to find the palette.
+    Invoke-WebRequest "$api/memory/655360/64000" -UseBasicParsing -OutFile (Join-Path $out 'vga.raw')
+}
 # The game's data object lands at 0x2AE000 under the harness config, so read that MB right
-# after the screen to keep camera and screen in step; the rest only serves the palette search.
-$order = @(2) + (1..15 | Where-Object { $_ -ne 2 })
+# after the screen to keep camera and screen in step, then the first MB (the 3D object
+# instances live in conventional memory); the rest only serves the palette search.
+$order = @(2, 0) + (1..15 | Where-Object { $_ -ne 2 })
 foreach ($mb in $order) {
     Invoke-WebRequest ("$api/memory/{0}/1048576" -f ($mb * 0x100000)) -UseBasicParsing -OutFile (Join-Path $out ('mem_{0:d2}.bin' -f $mb))
+}
+if ($Freeze) {
+    $after = Join-Path $out 'vga_after.raw'
+    Invoke-WebRequest "$api/memory/$back/64000" -UseBasicParsing -OutFile $after
+    $same = [System.Linq.Enumerable]::SequenceEqual([System.IO.File]::ReadAllBytes((Join-Path $out 'vga.raw')), [System.IO.File]::ReadAllBytes($after))
+    Remove-Item $after
+    if (-not $same) { Write-Warning 'the back buffer changed during the capture: the game did not freeze (not in a race?)' }
 }
 Stop-Job $job -ErrorAction SilentlyContinue
 Remove-Job $job -Force

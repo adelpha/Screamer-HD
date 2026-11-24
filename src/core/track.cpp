@@ -2,6 +2,8 @@
 
 #include "core/archive.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace scr {
@@ -31,6 +33,8 @@ std::optional<MaterialLibrary> MaterialLibrary::parse(std::vector<uint8_t> mlb) 
             m.frames = le32(mlb, size_t(desc));
             m.color = uint8_t(le32(mlb, size_t(desc) + 4));
             m.pixels = uint32_t(le32(mlb, size_t(desc) + 8));
+            for (int f = 0; f < m.frames && f < 64 && size_t(desc) + 12 + 4 * size_t(f) <= mlb.size(); ++f)
+                m.frame_pixels.push_back(uint32_t(le32(mlb, size_t(desc) + 8 + 4 * size_t(f))));
         }
         lib.materials_.push_back(m);
     }
@@ -43,13 +47,14 @@ const Material* MaterialLibrary::find(uint16_t offset) const {
     return i < materials_.size() ? &materials_[i] : nullptr;
 }
 
-uint8_t MaterialLibrary::texel(const Material& m, int u, int v) const {
+uint8_t MaterialLibrary::texel(const Material& m, int u, int v, int frame) const {
     if (m.width <= 0 || m.height <= 0) return m.color;
     u %= m.width;
     if (u < 0) u += m.width;
     v %= m.height;
     if (v < 0) v += m.height;
-    const size_t o = size_t(m.pixels) + size_t(v) * 256 + size_t(u);
+    const uint32_t base = m.frame_pixels.empty() ? m.pixels : m.frame_pixels[size_t(frame) % m.frame_pixels.size()];
+    const size_t o = size_t(base) + size_t(v) * 256 + size_t(u);
     return o < data_.size() ? data_[o] : m.color;
 }
 
@@ -96,6 +101,7 @@ std::optional<std::vector<Placement>> parse_mmp(const std::vector<uint8_t>& mmp,
                     p.ax = le32(mmp, e + 20);
                     p.ay = le32(mmp, e + 24);
                     p.az = le32(mmp, e + 28);
+                    p.animation = le32(mmp, e + 32);
                     p.slot = slot;
                     if (p.object >= 0 && size_t(p.object) < object_count) out.push_back(p);
                 }
@@ -103,6 +109,95 @@ std::optional<std::vector<Placement>> parse_mmp(const std::vector<uint8_t>& mmp,
         }
     }
     return out;
+}
+
+std::array<uint8_t, 256> build_darken_table(const uint8_t* rgb6, float factor) {
+    std::array<uint8_t, 256> out{};
+    for (int i = 0; i < 256; ++i) {
+        float t[3];
+        for (int c = 0; c < 3; ++c) t[c] = std::min(255.0f, float(rgb6[3 * i + c]) * factor);
+        float best = 2.21e7f;
+        int best_j = 0;
+        for (int j = 0; j < 256; ++j) {
+            float d = 0;
+            for (int c = 0; c < 3; ++c) {
+                const float e = float(rgb6[3 * j + c]) - t[c];
+                d += e * e;
+            }
+            if (d < best) { best = d; best_j = j; }
+        }
+        out[size_t(i)] = uint8_t(best_j);
+    }
+    return out;
+}
+
+std::optional<Model> load_object(const std::string& dat_path, const std::string& file_name) {
+    auto a = Archive::open(dat_path);
+    if (!a) return std::nullopt;
+    auto bytes = a->read(file_name);
+    if (!bytes) return std::nullopt;
+    return parse_model(bytes->data(), bytes->size());
+}
+
+void parse_mmp_track_lines(const std::vector<uint8_t>& mmp, std::vector<TrackPoint>& points,
+                           std::vector<TrackSection>& sections) {
+    auto f32 = [&](size_t o) {
+        float v = 0;
+        if (o + 4 <= mmp.size()) std::memcpy(&v, mmp.data() + o, 4);
+        return v;
+    };
+    if (mmp.size() < 1024) return;
+    for (int r = 0; r < 256; ++r) {
+        const int32_t ro = le32(mmp, size_t(r) * 4);
+        if (ro < 0 || size_t(ro) + 1024 > mmp.size()) continue;
+        for (int c = 0; c < 256; ++c) {
+            const int32_t co = le32(mmp, size_t(ro) + size_t(c) * 4);
+            if (co < 0 || size_t(co) + 40 > mmp.size()) continue;
+            const size_t p2 = size_t(le32(mmp, size_t(co) + 8)), p3 = size_t(le32(mmp, size_t(co) + 12));
+            const int32_t n2 = le32(mmp, size_t(co) + 28), n3 = le32(mmp, size_t(co) + 32);
+            for (int32_t k = 0; k < n2 && p2 + 12 * size_t(k + 1) <= mmp.size(); ++k) {
+                const size_t e = p2 + 12 * size_t(k);
+                points.push_back({f32(e), le32(mmp, e + 4), le32(mmp, e + 8)});
+            }
+            for (int32_t k = 0; k < n3 && p3 + 28 * size_t(k + 1) <= mmp.size(); ++k) {
+                const size_t e = p3 + 28 * size_t(k);
+                sections.push_back({f32(e), le32(mmp, e + 4), le32(mmp, e + 8), le32(mmp, e + 12),
+                                    le32(mmp, e + 16), le32(mmp, e + 20), le32(mmp, e + 24)});
+            }
+        }
+    }
+}
+
+std::optional<float> ground_height(const Track& track, float x, float z, float below_y) {
+    constexpr float kAngle = 6.28318530718f / 2048.0f;
+    std::optional<float> best;
+    for (const Placement& p : track.placements) {
+        if (p.slot != 0 || std::fabs(float(p.x) - x) > 12288 || std::fabs(float(p.z) - z) > 12288) continue;
+        // Into object space: undo the yaw (objects turn by -ay, see render3d.cpp).
+        const float a = float(p.ay) * kAngle, c = std::cos(a), s = std::sin(a);
+        const float dx = x - float(p.x), dz = z - float(p.z);
+        const float lx = c * dx + s * dz, lz = -s * dx + c * dz;
+        for (const Part& part : track.objects[size_t(p.object)].parts) {
+            for (const Face& f : part.faces) {
+                if (f.normal[1] == 0) continue;  // walls
+                bool inside = false;
+                for (int i = 0, j = f.count - 1; i < f.count; j = i++) {
+                    const Vec3i16& vi = part.vertices[f.vtx[size_t(i)]];
+                    const Vec3i16& vj = part.vertices[f.vtx[size_t(j)]];
+                    if ((vi.z > lz) != (vj.z > lz) &&
+                        lx < float(vj.x - vi.x) * (lz - float(vi.z)) / float(vj.z - vi.z) + float(vi.x))
+                        inside = !inside;
+                }
+                if (!inside) continue;
+                // Plane through the first vertex with the face normal.
+                const Vec3i16& v0 = part.vertices[f.vtx[0]];
+                const float nx = float(f.normal[0]), ny = float(f.normal[1]), nz = float(f.normal[2]);
+                const float y = float(v0.y) - (nx * (lx - float(v0.x)) + nz * (lz - float(v0.z))) / ny + float(p.y);
+                if (y <= below_y && (!best || y > *best)) best = y;
+            }
+        }
+    }
+    return best;
 }
 
 std::optional<Track> load_track(const std::string& dat_path, const std::string& name) {
@@ -120,9 +215,12 @@ std::optional<Track> load_track(const std::string& dat_path, const std::string& 
     auto placements = parse_mmp(*mmp, t.objects.size());
     if (!placements) return std::nullopt;
     t.placements = std::move(*placements);
+    parse_mmp_track_lines(*mmp, t.points, t.sections);
     t.materials = MaterialLibrary::parse(std::move(*mlb));
     if (!t.materials) return std::nullopt;
     t.palette = palette_from_vga(col->data());
+    t.darken = build_darken_table(col->data(), 0.6f);
+    if (auto smg = a->read(name + ".SMG"); smg && smg->size() >= 64 * 256) t.shade_table = std::move(*smg);
     if (auto bck = a->read(name + ".BCK")) t.background = decode_pcx(*bck);
     return t;
 }

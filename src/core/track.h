@@ -8,19 +8,29 @@
 //             int32 row offsets[256] (-1 = empty) -> int32 cell offsets[256] (-1 = empty) ->
 //             cell { int32 slot offsets[5]; int32 slot counts[5] }.
 //             Slots 0 and 1 hold 64-byte placements { int32 object, flags, x, y, z,
-//             angle x, angle y, angle z, ... } (slot 0: road pieces, slot 1: scenery);
-//             slots 2-4 hold other data (collision and so on, not decoded yet).
+//             angle x, angle y, angle z, animation (-1), ... } (slot 0: road pieces, slot 1: scenery).
+//             The game finds the ground under a car by testing the faces of the cell's slot 0
+//             objects (collision_query_cells); the 4th character of the part name is the
+//             surface type. Slot 2: 12-byte track points { float heading (radians), int32 x, z }
+//             (track_find_nearest_point). Slot 3: 28-byte road cross-sections { float heading,
+//             int32 centre x, z, left x, z, right x, z }. Slot 4: one 36+ byte record per cell
+//             (bounds and a copy of the slot table; unused here).
 //   MAPn.MLB  materials: 16 bytes each { int32 handler offset (type * 16), int32 texture
 //             descriptor offset, int32 width, int32 height }, up to the first descriptor;
-//             descriptor { int32 frame count, int32 average colour, int32 pixel offset, ... };
-//             texture pixels are stored with a 256-byte row stride.
+//             descriptor { int32 frame count, int32 average colour, int32 pixel offsets[frames] };
+//             texture pixels are stored with a 256-byte row stride. Car materials have 8
+//             frames picked by the object's animation bits (see Pose::animation).
 //   MAPn.COL  768-byte palette (6-bit VGA values).
 //   MAPn.BCK  PCX, 512 x 256 sky/background panorama (render_draw_background).
+//   MAPn.SMG  16 KB translucency table (engine_load_shade_table): new = smg[texel * 256 + old]
+//             for material types 14/15 (shadows, smoke, glass); texel 0..63. Rows 0-31 lighten,
+//             32-47 darken, 48-63 tint.
 
 #include "core/framebuffer.h"
 #include "core/model3d.h"
 #include "core/pcx.h"
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -35,6 +45,19 @@ struct Material {
     uint8_t color = 0;   // average colour, used when not texturing
     int frames = 0;
     uint32_t pixels = 0; // offset of the first frame's pixels in the material data
+    std::vector<uint32_t> frame_pixels;  // every frame's pixel offset
+};
+
+// Track centre-line point (MMP slot 2) and road cross-section (slot 3).
+struct TrackPoint {
+    float heading = 0;  // radians
+    int x = 0, z = 0;
+};
+struct TrackSection {
+    float heading = 0;
+    int x = 0, z = 0;              // centre
+    int left_x = 0, left_z = 0;
+    int right_x = 0, right_z = 0;
 };
 
 struct Placement {
@@ -42,6 +65,7 @@ struct Placement {
     int flags = 0;
     int x = 0, y = 0, z = 0;
     int ax = 0, ay = 0, az = 0;  // 0..0x7ff per turn
+    int animation = -1;          // +0x20: texture animation word (-1 = global counter, see Pose)
     int slot = 0;
 };
 
@@ -50,8 +74,8 @@ public:
     static std::optional<MaterialLibrary> parse(std::vector<uint8_t> mlb);
     const Material* find(uint16_t offset) const;  // by face material offset
     const std::vector<Material>& materials() const { return materials_; }
-    // Texel of frame 0, coordinates wrapped to the material size.
-    uint8_t texel(const Material& m, int u, int v) const;
+    // Texel of the given frame (wrapped to the frame count), coordinates wrapped to the material size.
+    uint8_t texel(const Material& m, int u, int v, int frame = 0) const;
 
 private:
     std::vector<uint8_t> data_;
@@ -61,15 +85,33 @@ private:
 struct Track {
     std::vector<Model> objects;
     std::vector<Placement> placements;
+    std::vector<TrackPoint> points;
+    std::vector<TrackSection> sections;
     std::optional<MaterialLibrary> materials;
     std::optional<PcxImage> background;
     Palette palette{};
+    std::vector<uint8_t> shade_table;          // MAPn.SMG, 64 x 256 (empty if missing)
+    std::array<uint8_t, 256> darken{};        // build_darken_tables' x0.6 table (types 12/13)
 };
+
+// Palette remap to the nearest colour at `factor` brightness, as build_darken_tables does
+// with the 6-bit VGA palette (first match wins).
+std::array<uint8_t, 256> build_darken_table(const uint8_t* rgb6, float factor);
 
 // Loads MAPn.UNR/.MMP/.MLB/.COL from the given graphics archive (e.g. GFX/MAP2L.DAT).
 std::optional<Track> load_track(const std::string& dat_path, const std::string& name);
 
+// Loads one .3DX object (e.g. "AUTO00.3DX", "SHADOW.3DX") from an archive.
+std::optional<Model> load_object(const std::string& dat_path, const std::string& file_name);
+
 std::optional<std::vector<Model>> parse_unr(const std::vector<uint8_t>& unr);
 std::optional<std::vector<Placement>> parse_mmp(const std::vector<uint8_t>& mmp, size_t object_count);
+// Track points (slot 2) and cross-sections (slot 3) of every cell.
+void parse_mmp_track_lines(const std::vector<uint8_t>& mmp, std::vector<TrackPoint>& points,
+                           std::vector<TrackSection>& sections);
+
+// Height of the ground (the faces of the road objects, MMP slot 0) at x, z: the highest face
+// below `below_y` whose outline contains the point. Empty when there is no road there.
+std::optional<float> ground_height(const Track& track, float x, float z, float below_y = 1e9f);
 
 } // namespace scr

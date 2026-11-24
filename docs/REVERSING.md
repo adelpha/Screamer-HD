@@ -161,10 +161,30 @@ code when they form tables (a lone fixup there is usually an instruction operand
 * Running original (intro): view 320x200, `g_material_handlers` relocated by the code delta,
   222 visible cells, 84 drawn in depth order.
 
-* The track and object file formats (`.UNR`, `.MMP`, `.MLB`, `.COL`, `.BCK`, `.3DX`) are
-  documented in `src/core/track.h` and `src/core/model3d.h`; `src/core/render3d.cpp` reproduces
-  the camera and projection (`PERSP01.TAB`: screen = centre - 128 * x / (128 - z)) and was checked
-  against a capture of the intro race.
+* The track and object file formats (`.UNR`, `.MMP`, `.MLB`, `.COL`, `.BCK`, `.SMG`, `.3DX`)
+  are documented in `src/core/track.h` and `src/core/model3d.h`; `src/core/render3d.cpp`
+  reproduces the camera and projection (`PERSP01.TAB`: screen = centre - 128 * x / (128 - z)).
+  Checked against frozen frames of the intro demo (`capture-vga.ps1 -Freeze`):
+  * the game loads `GFX/MAPnH.DAT` (high detail), not `MAPnL.DAT`;
+  * the projection centre is (160, 130) at 320x200 (`g_render_camera` +0x2c/+0x30), and the
+    background's horizon row is that centre + 128 * sin(pitch); the sky then matches exactly;
+  * objects turn by -yaw relative to the camera's convention;
+  * material types (`g_material_handlers`): 0-2 textured, 3-7 textured with texel 0
+    transparent, 8-9 flat (face +0x02 colour), 10-11 textured (span filler), 12-13 darken
+    through `build_darken_tables`' x0.6 remap, 14-15 translucent through `MAPn.SMG`
+    (new = smg[texel * 256 + old]);
+  * material frames: cell_begin sets the phase from the instance's animation word (>> 2) or,
+    for -1, from the global counter `0x121538` (0.3 turns per second, `frame_timing_update`);
+    a material shows frame `frames * phase >> 14`. Car materials have 8 frames: 0x8000 picks
+    the second paint scheme;
+  * object depth (`object_compute_depth`): distance of the bounding centre, with a bias for
+    names not starting with 'A'/'a'; it also picks one of three entries of the object by
+    distance (probably detail levels, not used here);
+  * no distance fog anywhere in the renderer.
+* Ground and track lines: `collision_query_cells` tests the faces of slot 0 (road) objects in
+  the 3x3 cells around a probe, and the 4th letter of the part name is the surface type.
+  `track_find_nearest_point` uses slot 2 (centre-line points with heading) and slot 3 (road
+  cross-sections: centre, left and right edge).
 
 ## Checking against the running original
 
