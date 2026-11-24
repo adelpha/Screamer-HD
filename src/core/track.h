@@ -66,6 +66,7 @@ struct Placement {
     int x = 0, y = 0, z = 0;
     int ax = 0, ay = 0, az = 0;  // 0..0x7ff per turn
     int animation = -1;          // +0x20: texture animation word (-1 = global counter, see Pose)
+    int reflection = 0;          // +0x3c: see Pose::reflection
     int slot = 0;
 };
 

@@ -421,6 +421,7 @@ int main(int argc, char** argv) {
                     pose.ay = float(int((c.yaw + c.drift_angle) * kToUnits) & 0x7ff);
                     pose.az = float(int((c.roll + c.lean_roll) * kToUnits) & 0x7ff);
                     pose.animation = int32_t(c.render_animation());
+                    pose.reflection = c.surface_render_flag;
                     scr::Pose sh = pose;
                     sh.y = float(c.ground_y - 2);
                     if (shadow) renderer3d.draw_model(*shadow, sh);
@@ -437,6 +438,7 @@ int main(int argc, char** argv) {
                         op.az = float(int(o.roll * kToUnits) & 0x7ff);
                         op.animation = int32_t(uint32_t(o.setup.animation) | (o.catching_up ? 0u : 0x4000u) |
                                                (o.speed <= 4000.0f ? 0x2000u : 0u));
+                        op.reflection = int32_t(o.render_flags);
                         scr::Pose osh = op;
                         osh.y = float(o.ground_y - 2);
                         osh.ax = 0;

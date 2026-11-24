@@ -49,6 +49,10 @@ struct Pose {
     // or negative (track placements) to follow the global animation counter. Cars use 0x8000
     // for the second paint scheme (CarData.animation), 0x4000 and 0x2000 for game state.
     int32_t animation = -1;
+    // Instance +0x3c (car_sync_render_object: surface_render_flag, opponents: render_flags,
+    // placements: record +0x3c): picks the frame of material types 10/11, the car windows'
+    // reflections (frames * value >> 16): 0 open sky, 0x8000 / 0xff00 tunnels and the like.
+    int32_t reflection = 0;
 };
 
 // Material frame shown by cell_begin + mat*_draw: frames * phase >> 14, where the phase is
@@ -88,10 +92,11 @@ private:
         std::vector<ClipVert> poly;
         const Material* mat;
         uint8_t color;
-        int32_t animation;
+        int32_t animation, reflection;
         float depth;
     };
-    void draw_polygon(const std::vector<ClipVert>& poly, const Material* mat, uint8_t face_color, int32_t animation);
+    void draw_polygon(const std::vector<ClipVert>& poly, const Material* mat, uint8_t face_color, int32_t animation,
+                      int32_t reflection);
 
     const Track* track_ = nullptr;
     const Camera* cam_ = nullptr;

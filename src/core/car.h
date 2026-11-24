@@ -133,6 +133,9 @@ public:
     int front_x = 0, front_z = 0, rear_x = 0, rear_z = 0;
     // Track markers (car_update_track_progress, simplified to marker, lap and progress).
     int track_marker = 0, lap = 0, marker_flags = 0;
+    // car_apply_surface: the current marker's flags as the body's +0x3c word (0, 0x8000,
+    // 0xff00), which picks the window reflection frame (Pose::reflection).
+    int surface_render_flag = 0;
     float track_progress = 0;
     void update_bumpers();
     std::array<CarProbe, 4> probe{};

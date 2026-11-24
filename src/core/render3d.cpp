@@ -79,7 +79,7 @@ void Renderer::draw_placements() {
         const float dx = float(p.x) - cam_->x, dz = float(p.z) - cam_->z;
         if (std::fabs(dx) > cam_->far_distance || std::fabs(dz) > cam_->far_distance) continue;
         draw_model(track_->objects[size_t(p.object)],
-                   Pose{float(p.x), float(p.y), float(p.z), float(p.ax), float(p.ay), float(p.az), p.animation});
+                   Pose{float(p.x), float(p.y), float(p.z), float(p.ax), float(p.ay), float(p.az), p.animation, p.reflection});
     }
 }
 
@@ -140,10 +140,10 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
             ++stats_.faces;
             const Mode mode = material_mode(mat);
             if (mode == Mode::Translucent || mode == Mode::Darken) {
-                deferred_.push_back({poly, mat, f.color, pose.animation, depth});
+                deferred_.push_back({poly, mat, f.color, pose.animation, pose.reflection, depth});
                 continue;
             }
-            draw_polygon(poly, mat, f.color, pose.animation);
+            draw_polygon(poly, mat, f.color, pose.animation, pose.reflection);
         }
     }
 }
@@ -152,7 +152,7 @@ RenderStats Renderer::finish() {
     // Translucent polygons do not write depth; draw them far to near over the opaque scene.
     std::stable_sort(deferred_.begin(), deferred_.end(),
                      [](const Deferred& a, const Deferred& b) { return a.depth > b.depth; });
-    for (const Deferred& d : deferred_) draw_polygon(d.poly, d.mat, d.color, d.animation);
+    for (const Deferred& d : deferred_) draw_polygon(d.poly, d.mat, d.color, d.animation, d.reflection);
     deferred_.clear();
     return stats_;
 }
@@ -176,7 +176,8 @@ void Renderer::draw_background(const PcxImage& bck, const Camera& cam, Framebuff
     }
 }
 
-void Renderer::draw_polygon(const std::vector<ClipVert>& in, const Material* mat, uint8_t face_color, int32_t animation) {
+void Renderer::draw_polygon(const std::vector<ClipVert>& in, const Material* mat, uint8_t face_color, int32_t animation,
+                            int32_t reflection) {
     Framebuffer& fb = *fb_;
     const MaterialLibrary* lib = track_->materials ? &*track_->materials : nullptr;
     // Clip against the near plane.
@@ -215,7 +216,11 @@ void Renderer::draw_polygon(const std::vector<ClipVert>& in, const Material* mat
     const bool use_texels = textures_ || mode == Mode::Translucent;
     const uint8_t flat = mode == Mode::Flat && mat && (mat->type >> 1) == 4 ? face_color : (mat ? mat->color : 15);
     const bool writes_depth = mode != Mode::Translucent && mode != Mode::Darken;
-    const int frame = mat ? material_frame(mat->frames, animation, anim_counter_) : 0;
+    // mat10_draw takes its frame from the instance's +0x3c word, the others from the
+    // animation phase (cell_begin).
+    const int frame = !mat ? 0
+                      : (mat->type >> 1) == 5 ? int((int64_t(mat->frames) * reflection) >> 16)
+                                              : material_frame(mat->frames, animation, anim_counter_);
 
     // Fan triangulation, edge-function rasteriser with perspective-correct interpolation.
     for (size_t t = 1; t + 1 < s.size(); ++t) {

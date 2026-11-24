@@ -350,8 +350,6 @@ void Race::crash_update(Opponent& o) {
 
 void Race::track_progress(Opponent& o) {
     update_progress(markers, o.track_marker, o.lap, o.track_progress, o.marker_flags, &o.speed_factor, o.pos_x, o.pos_z);
-    // opponent_update_steer_anim: dust from the marker flags.
-    o.render_flags = o.marker_flags == 1 ? 0x8000u : o.marker_flags == 2 ? 0xff00u : 0u;
 }
 
 void Race::bumpers(Opponent& o) {
@@ -495,6 +493,8 @@ void Race::load_state(const uint8_t* pc, const uint8_t* cpu, size_t count) {
     player.track_progress = f(pc, 0x680);
     player.lap = i(pc, 0x684);
     player_position = i(pc, 0x688);
+    player.marker_flags = i(pc, 0x66c);  // surface
+    player.surface_render_flag = i(pc, 0x7b0);
     opponents.assign(count, Opponent{});
     for (size_t k = 0; k < count; ++k) {
         const uint8_t* c = cpu + k * 0x590;
@@ -526,6 +526,7 @@ void Race::load_state(const uint8_t* pc, const uint8_t* cpu, size_t count) {
         o.pitch = f(c, 0x4a4); o.yaw = f(c, 0x4a8); o.roll = f(c, 0x4ac);
         o.pitch_ofs = f(c, 0x4b0); o.roll_ofs = f(c, 0x4b8); o.draw_yaw = f(c, 0x4bc); o.yaw_wobble = f(c, 0x4c8);
         o.viewer_distance = f(c, 0x4e4);
+        o.render_flags = uint32_t(i(c, 0x4e8));
     }
 }
 
@@ -538,6 +539,10 @@ void Race::update(const Track& track, const CarInput& in, float frame_time, int 
     // camera_set_listener ran at the end of the last frame: the player's position then.
     const int listener_x = player.pos_x, listener_z = player.pos_z;
     player.update(track, in, frame_time, pow_row);
+    // car_apply_surface (in car_update_dynamics) still sees last frame's marker; the track
+    // progress comes later in the frame (car_update_track_contact).
+    if (player.crash_state == 0)
+        player.surface_render_flag = player.marker_flags == 1 ? 0x8000 : player.marker_flags == 2 ? 0xff00 : 0;
     update_progress(markers, player.track_marker, player.lap, player.track_progress, player.marker_flags, nullptr,
                     player.pos_x, player.pos_z);
     for (Opponent& o : opponents) {
@@ -553,7 +558,12 @@ void Race::update(const Track& track, const CarInput& in, float frame_time, int 
         advance_on_spline(o);
     }
     for (Opponent& o : opponents) {
-        if (o.active) smooth_angles(o);
+        if (o.active) {
+            smooth_angles(o);
+            // opponent_update_steer_anim: the marker's flags as the body's +0x3c word (window
+            // reflections: 0 open, 0x8000 / 0xff00 e.g. in tunnels).
+            o.render_flags = o.marker_flags == 1 ? 0x8000u : o.marker_flags == 2 ? 0xff00u : 0u;
+        }
         crash_update(o);
     }
     for (Opponent& o : opponents) {

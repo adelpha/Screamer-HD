@@ -128,6 +128,7 @@ int main(int argc, char** argv) {
                     {"active", double(a.active), double(g.active), 0},
                     {"speed_factor", a.speed_factor, g.speed_factor, 1e-6},
                     {"race_position", double(a.race_position), double(g.race_position), 0},
+                    {"render_flags", double(a.render_flags), double(g.render_flags), 0},
                 };
                 bool cbad = false;
                 for (const Field& fl : fields)
@@ -150,6 +151,7 @@ int main(int argc, char** argv) {
                     {"player yaw_rate", a.yaw_rate, g.yaw_rate, 1e-4},
                     {"player impact_timer", a.impact_timer, g.impact_timer, 0.5},
                     {"player position", double(race.player_position), double(next.player_position), 0},
+                    {"player surface flag", double(a.surface_render_flag), double(g.surface_render_flag), 0},
                 };
                 bool pbad = false;
                 for (const Field& fl : fields)
