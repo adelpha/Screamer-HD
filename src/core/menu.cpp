@@ -106,6 +106,29 @@ bool MenuAssets::load(const std::string& menu_dat, const std::string& graf_dat, 
     for (size_t i = 0; i + 6 <= cardat.size(); i += 6)
         car_info.push_back({cardat[i], std::atoi(cardat[i + 1].c_str()), std::atoi(cardat[i + 2].c_str()),
                             std::atoi(cardat[i + 3].c_str()), std::atoi(cardat[i + 4].c_str())});
+    {
+        // CHAMP.TXT: blocks of lines separated by '#'
+        auto d = l->read("CHAMP.TXT");
+        if (d) {
+            std::vector<std::string> cur;
+            std::string ln;
+            auto flush = [&] {
+                if (!ln.empty() && ln.back() == '\r') ln.pop_back();
+                if (ln == "#") {
+                    champ_text.push_back(cur);
+                    cur.clear();
+                } else if (!ln.empty() && ln[0] != '*') {
+                    cur.push_back(ln);
+                }
+                ln.clear();
+            };
+            for (uint8_t c : *d) {
+                if (c == '\n') flush();
+                else ln.push_back(char(c));
+            }
+            flush();
+        }
+    }
     const auto trackdat = text_lines(*l, "TRACKDAT.TXT");
     for (size_t i = 0; i + 4 <= trackdat.size(); i += 4) track_names.push_back(trackdat[i]);
     return !texts.empty() && !cars.empty() && !maps.empty();
@@ -122,6 +145,49 @@ const PcxImage* MenuAssets::backdrop(const std::string& name) {
     if (!img) return nullptr;
     return &backdrops_.emplace(file, std::move(*img)).first->second;
 }
+
+namespace {
+
+// The championship script (0x1022b8): kind, league/points, track, text block, next, fail,
+// backdrop, race, font.
+const Menu::ChampStep kChamp[] = {
+    {0, 0, 1, 10, 0, 0, "CHAMP0", 0, 3},   {3, 42, 0, 10, 2, 52, "CHAMP0", 0, 3},
+    {0, 0, 2, 17, 0, 0, "CHAMP5", 1, 3},   {3, 42, 0, 10, 4, 52, "CHAMP0", 1, 3},
+    {0, 0, 3, 17, 0, 0, "CHAMP5", 2, 3},   {3, 42, 0, 10, 6, 52, "CHAMP0", 2, 3},
+    {0, 0, 4, 17, 0, 0, "CHAMP5", 3, 3},   {3, 42, 0, 10, 8, 52, "CHAMP0", 3, 3},
+    {0, 0, 5, 17, 0, 0, "CHAMP5", 4, 3},   {3, 42, 0, 10, 10, 52, "CHAMP0", 4, 3},
+    {0, 0, 6, 17, 0, 0, "CHAMP5", 5, 3},   {3, 42, 0, 10, 12, 52, "CHAMP0", 5, 3},
+    {1, 0, 1, 14, 13, 13, "CHAMP0", 0, 2},
+    {0, 1, 1, 11, 0, 0, "CHAMP1", 0, 3},   {3, 46, 1, 11, 15, 52, "CHAMP1", 0, 3},
+    {0, 1, 2, 17, 0, 0, "CHAMP5", 1, 3},   {3, 46, 1, 10, 17, 52, "CHAMP1", 1, 3},
+    {0, 1, 3, 17, 0, 0, "CHAMP5", 2, 3},   {3, 46, 1, 10, 19, 52, "CHAMP1", 2, 3},
+    {0, 1, 4, 17, 0, 0, "CHAMP5", 3, 3},   {3, 46, 1, 10, 21, 52, "CHAMP1", 3, 3},
+    {0, 1, 5, 17, 0, 0, "CHAMP5", 4, 3},   {3, 46, 1, 10, 23, 52, "CHAMP1", 4, 3},
+    {0, 1, 6, 17, 0, 0, "CHAMP5", 5, 3},   {3, 46, 1, 10, 25, 52, "CHAMP1", 5, 3},
+    {1, 0, 2, 15, 26, 26, "CHAMP1", 0, 2},
+    {0, 2, 1, 12, 0, 0, "CHAMP2", 0, 3},   {3, 50, 2, 12, 28, 52, "CHAMP2", 0, 3},
+    {0, 2, 2, 17, 0, 0, "CHAMP5", 1, 3},   {3, 50, 2, 10, 30, 52, "CHAMP2", 1, 3},
+    {0, 2, 3, 17, 0, 0, "CHAMP5", 2, 3},   {3, 50, 2, 10, 32, 52, "CHAMP2", 2, 3},
+    {0, 2, 4, 17, 0, 0, "CHAMP5", 3, 3},   {3, 50, 2, 10, 34, 52, "CHAMP2", 3, 3},
+    {0, 2, 5, 17, 0, 0, "CHAMP5", 4, 3},   {3, 50, 2, 10, 36, 52, "CHAMP2", 4, 3},
+    {0, 2, 6, 17, 0, 0, "CHAMP5", 5, 3},   {3, 50, 2, 10, 38, 52, "CHAMP2", 5, 3},
+    {1, 0, 3, 16, 39, 39, "CHAMP7", 0, 2},
+    {0, 3, 1, 13, 0, 0, "CHAMP3", 0, 3},   {3, 54, 3, 13, 41, 52, "CHAMP3", 0, 3},
+    {0, 3, 2, 17, 0, 0, "CHAMP5", 1, 3},   {3, 54, 3, 10, 43, 52, "CHAMP3", 1, 3},
+    {0, 3, 3, 17, 0, 0, "CHAMP5", 2, 3},   {3, 54, 3, 10, 45, 52, "CHAMP3", 2, 3},
+    {0, 3, 4, 17, 0, 0, "CHAMP5", 3, 3},   {3, 54, 3, 10, 47, 52, "CHAMP3", 3, 3},
+    {0, 3, 5, 17, 0, 0, "CHAMP5", 4, 3},   {3, 54, 3, 10, 49, 52, "CHAMP3", 4, 3},
+    {0, 3, 6, 17, 0, 0, "CHAMP5", 5, 3},   {3, 54, 3, 10, 51, 52, "CHAMP3", 5, 3},
+    {2, 0, 0, 18, 0, 0, "CHAMP6", 0, 2},   {2, 0, 0, 19, 0, 0, "CHAMP4", 0, 2},
+};
+constexpr int kChampSteps = int(sizeof(kChamp) / sizeof(kChamp[0]));
+// Points by finishing position (0x1021ec).
+constexpr int kChampPoints[5] = {24, 9, 7, 5, 0};
+// CHAMP.TXT blocks
+enum : int { kChampPos = 0, kChampTrack = 1, kChampTime = 2, kChampScore = 3, kChampQualify = 4, kChampTotal = 5,
+             kChampLeague = 6 };
+
+} // namespace
 
 namespace {
 constexpr size_t kLapRecords = 0x6c, kTotalRecords = 0x24c, kRecordStride = 0x50;
@@ -222,6 +288,14 @@ void Menu::load_choice(const ChoiceFile& c) {
     cars_unlocked = std::clamp(c.get(0x42c), 0, 2);
     tracks_unlocked = std::clamp(c.get(0x454), 0, 9);
     tracks_seen_ = c.get(0x458);
+    champ_step = std::clamp(c.get(0x018), 0, kChampSteps - 1);
+    champ_prev = std::clamp(c.get(0x01c), 0, kChampSteps - 1);
+    for (size_t i = 0; i < 6; ++i) {
+        champ_time[i] = c.getf(0x024 + i * 4);
+        champ_pos[i] = c.get(0x03c + i * 4);
+        champ_points[i] = c.get(0x054 + i * 4);
+    }
+    champ_failed = c.get(0x440);
     car = std::min(car, 0xb + cars_unlocked);
     track = std::min(track, tracks_unlocked + 2);
 }
@@ -240,6 +314,15 @@ ChoiceFile Menu::save_choice() const {
     c.set(0x42c, cars_unlocked);
     c.set(0x454, tracks_unlocked);
     c.set(0x458, tracks_seen_);
+    c.set(0x018, champ_step);
+    c.set(0x01c, champ_prev);
+    c.set(0x020, champ_total_);
+    for (size_t i = 0; i < 6; ++i) {
+        c.setf(0x024 + i * 4, champ_time[i]);
+        c.set(0x03c + i * 4, champ_pos[i]);
+        c.set(0x054 + i * 4, champ_points[i]);
+    }
+    c.set(0x440, champ_failed);
     return c;
 }
 
@@ -371,6 +454,7 @@ void Menu::show_page_background() {
     case 2: setup_car_page(); break;
     case 3: setup_track_page(); break;
     case 4: setup_name_page(); break;
+    case 5: setup_champ_page(); break;
     case 6: setup_records_page(); break;
     default: break;
     }
@@ -667,6 +751,141 @@ void Menu::name_page_update(float dt) {
     }
 }
 
+void Menu::setup_champ_page() {
+    // frontend_show_champ_pcx
+    cam_pow_ = true;
+    fade_rate_ = 1.5f;
+    cam_rate_ = 0.95f;
+    fade_dir_ = 1;
+    hide_objects();
+    if (game_mode == -1) {
+        champ_pos.fill(-1);
+        champ_step = champ_prev = 0;
+    }
+    champ_step = std::clamp(champ_step, 0, kChampSteps - 1);
+    backdrop_ = a_.backdrop(kChamp[champ_step].backdrop);
+    if (backdrop_) darken_ = build_darken_table(backdrop_->vga_pal.data(), 0.75f);
+    idle_ = 0;
+}
+
+void Menu::draw_champ(HudSurface& s) {
+    // champ_draw_standings
+    const ChampStep& st = kChamp[std::clamp(champ_step, 0, kChampSteps - 1)];
+    const auto block = [&](int i) -> const std::vector<std::string>& {
+        static const std::vector<std::string> none;
+        return size_t(i) < a_.champ_text.size() ? a_.champ_text[size_t(i)] : none;
+    };
+    const auto line = [&](int i) { return block(i).empty() ? std::string() : block(i)[0]; };
+    const auto centre = [&](const std::string& t, int y, int font, int m) {
+        s.text(a_.fonts, (320 - s.measure(a_.fonts, t, font)) >> 1, y, t, font, m);
+    };
+    champ_total_ = 0;
+    if (st.kind == 3) {
+        s.darken(0x10, 0x24, 0x120, 0x88, darken_);
+        centre(line(kChampLeague + st.track), 2, 2, 2);
+        s.text(a_.fonts, 0x1c, 0x30, line(kChampTrack), 0, 0xf);
+        s.text(a_.fonts, 0x58, 0x30, line(kChampPos), 0, 0xf);
+        s.text(a_.fonts, 0xaa, 0x30, line(kChampTime), 0, 0xf);
+        s.text(a_.fonts, 0xf6, 0x30, line(kChampScore), 0, 0xf);
+        int y = 0x3e;
+        char buf[64];
+        for (int i = 0; i < 6; ++i) {
+            std::snprintf(buf, sizeof buf, "-%d-", i + 1);
+            s.text(a_.fonts, 0x26, y, buf, 0, 0xf);
+            std::string score;
+            if (champ_pos[size_t(i)] == -1) {
+                s.text(a_.fonts, 0x58, y, "\x01-", 0, 0xf);
+                s.text(a_.fonts, 0x8c, y, "\x01--.--.--", 0, 0xf);
+                score = "\x01-";
+            } else if (champ_failed == 1 && st.race == i) {
+                s.text(a_.fonts, 0x58, y, "\x01" "10", 0, 0xf);
+                s.text(a_.fonts, 0x8c, y, "\x01" "00.00.00", 0, 0xf);
+                score = "\x01" "0";
+            } else {
+                std::snprintf(buf, sizeof buf, "\x01%d", champ_pos[size_t(i)]);
+                s.text(a_.fonts, 0x58, y, buf, 0, 0xf);
+                const float t = champ_time[size_t(i)];
+                const int secs = int(t);
+                std::snprintf(buf, sizeof buf, "\x01%02d.%02d.%02d", secs / 60, secs % 60, int((t - float(secs)) * 100.0f));
+                s.text(a_.fonts, 0x8c, y, buf, 0, 0xf);
+                champ_total_ += champ_points[size_t(i)];
+                std::snprintf(buf, sizeof buf, "\x01%d", champ_points[size_t(i)]);
+                score = buf;
+            }
+            s.text(a_.fonts, 0x10a, y, score, 0, 0xf);
+            y += 0xe;
+        }
+        y += 4;
+        std::snprintf(buf, sizeof buf, "%s:\x01%02d", line(kChampTotal).c_str(), champ_total_);
+        s.text(a_.fonts, 0x114 - s.measure(a_.fonts, buf, 0), y, buf, 0, 0xf);
+        y += 0x18;
+        std::snprintf(buf, sizeof buf, "%s:%d", line(kChampQualify).c_str(), st.value);
+        s.text(a_.fonts, (320 - s.measure(a_.fonts, buf, 0)) >> 1, y, buf, 0, 0xf);
+    } else {
+        // a text page, one line per font height
+        const int h = size_t(st.font) < a_.fonts.fonts.size() ? a_.fonts.fonts[size_t(st.font)].height : 8;
+        int y = 0x20;
+        for (const std::string& l : block(st.text)) {
+            centre(l, y, st.font, 2);
+            y += h;
+        }
+    }
+    if ((frame_ & 0x7f) < 0x48) {
+        const std::string t = size_t(56) < a_.texts.size() ? a_.texts[56] : std::string();
+        centre(t, 0xbe, 0, 2);
+    }
+}
+
+void Menu::champ_advance() {
+    // champ_advance: after the standings, the next race, the next league or the end
+    const ChampStep& st = kChamp[champ_step];
+    if (3 < champ_pos[size_t(st.race)] || champ_failed != 0) {
+        champ_prev = champ_step - 1;
+        champ_step = st.fail;
+        return;
+    }
+    if (st.value < 3 || champ_pos[size_t(st.race)] == 1) {
+        if (st.race != 5) {
+            champ_prev = champ_step;
+            champ_step = st.next;
+            return;
+        }
+        if (st.value <= champ_total_) {
+            champ_step = st.next;
+            champ_prev = champ_step;
+            champ_pos.fill(-1);
+            return;
+        }
+    }
+    champ_prev = champ_step - 1;
+    champ_step = st.fail;
+}
+
+void Menu::after_race(bool finished, bool failed, int position, float total_time) {
+    if (game_mode != 2) {
+        show_title();
+        return;
+    }
+    // champ_store_race_result
+    const ChampStep& st = kChamp[champ_step];
+    champ_failed = failed || !finished ? 1 : 0;
+    const int r = std::clamp(st.race, 0, 5);
+    champ_pos[size_t(r)] = position;
+    champ_time[size_t(r)] = total_time;
+    champ_points[size_t(r)] = kChampPoints[std::clamp(position, 0, 4)];
+    int best = 0;
+    for (int i = 0; i <= r; ++i) best += champ_points[size_t(i)];
+    for (int i = r + 1; i < 6; ++i) best += 9;
+    champ_step = std::min(champ_step + 1, kChampSteps - 1);
+    champ_prev = champ_step;
+    if (best < kChamp[champ_step].value) champ_failed = 2;
+    // frontend_init_state(5) from the title backdrop
+    show_title();
+    hide_objects();
+    mode = draw_mode_ = 5;
+    setup_champ_page();
+}
+
 void Menu::start_race() {
     // frontend_load_attack_map / frontend_start_race for a normal game
     MenuRace r;
@@ -679,6 +898,14 @@ void Menu::start_race() {
     r.car = car;
     r.laps = kLaps[std::clamp(option(2), 0, 3)];
     r.level = option(1) == 3 ? 4 : option(1);
+    if (game_mode == 2) {
+        // a championship race: the step's track and league, three laps
+        const ChampStep& st = kChamp[champ_step];
+        r.map = st.track;
+        r.mirrored = false;
+        r.laps = 3;
+        r.level = st.value;
+    }
     r.high_detail = option(0) == 2;
     r.speech = option(3) == 1;
     r.music = option(4) == 1;
@@ -689,7 +916,43 @@ void Menu::start_race() {
 void Menu::activate() {
     // frontend_activate_item
     if (mode != 0) {
-        if (mode == 2) {
+        if (mode == 5) {
+            // champ step: race, standings, next league or the end
+            const ChampStep& st = kChamp[champ_step];
+            switch (st.kind) {
+            case 0:
+                game_mode = 2;
+                init_state(2);
+                brightness = 0;
+                break;
+            case 1:
+                if (st.text == 14 || st.text == 15 || st.text == 16) tracks_unlocked = std::max(tracks_unlocked, st.track);
+                champ_prev = champ_step;
+                champ_step = st.next;
+                game_mode = 0;
+                init_state(5);
+                brightness = 0;
+                break;
+            case 2:
+                if (st.text == 18) {
+                    // the whole championship won: the last car, all tracks, AFTERBURNER
+                    cars_unlocked = 1;
+                    tracks_unlocked = 9;
+                    pages[1][1].max = 3;
+                }
+                page = 0;
+                built_page_ = -1;
+                page_stack.clear();
+                show_title();
+                break;
+            case 3:
+                champ_advance();
+                init_state(5);
+                brightness = 0;
+                break;
+            default: break;
+            }
+        } else if (mode == 2) {
             start_race();
         } else if (mode == 3) {
             draw_mode_ = mode;
@@ -725,7 +988,20 @@ void Menu::activate() {
         init_state(4);
         sounds.push_back(3);
         break;
-    case 1: push(5); break;   // championship (not ported yet)
+    case 1: push(5); break;   // championship: NEW / RESUME
+    case 26:                  // a new championship
+        game_mode = -1;
+        after_name_ = 5;
+        init_state(4);
+        sounds.push_back(3);
+        break;
+    case 27:                  // resume where it was left
+        game_mode = 0;
+        champ_step = champ_prev;
+        after_name_ = 5;
+        init_state(4);
+        sounds.push_back(3);
+        break;
     case 2: push(4); break;   // special modes
     case 4: push(1); break;   // options
     case 21: push(6); break;  // view records
@@ -749,6 +1025,7 @@ void Menu::activate() {
 void Menu::handle_keys(const MenuKeys& k) {
     // frontend_handle_keys: one action per key press (the last key is remembered)
     const int key = k.esc ? 0x20 : k.enter ? 0x10 : k.down ? 2 : k.up ? 1 : k.left ? 4 : k.right ? 8 : 0;
+    if (key != 0) idle_ = 0;
     if (key == 0 || key == last_key_) {
         last_key_ = key;
         return;
@@ -765,7 +1042,12 @@ void Menu::handle_keys(const MenuKeys& k) {
             page_stack.pop_back();
             sounds.push_back(0);
             break;
-        case 2:  // back to the track page
+        case 2:  // back to the track page (the championship page in a championship)
+            if (game_mode == 2) {
+                init_state(5);
+                brightness = 0;
+                break;
+            }
             fade_dir_ = -1;
             brightness = 0;
             fade_rate_ = 1.5f;
@@ -915,6 +1197,14 @@ void Menu::update(const MenuKeys& keys, float dt) {
         }
         break;
     case 4: name_page_update(dt); break;
+    case 5:
+        // a text page moves on by itself after 10 seconds
+        idle_ += dt;
+        if (kChamp[champ_step].kind != 3 && 10.0f < idle_) {
+            idle_ = 0;
+            activate();
+        }
+        break;
     default: break;
     }
     if (draw_mode_ == 0) {
@@ -1036,6 +1326,7 @@ void Menu::draw(Framebuffer& fb, Renderer& renderer) {
     case 2: draw_car_select(s); break;
     case 3: draw_track_select(s); break;
     case 4: draw_name_entry(s); break;
+    case 5: draw_champ(s); break;
     case 6: draw_records(s); break;
     default: break;
     }

@@ -57,6 +57,7 @@ struct MenuAssets {
     std::vector<std::string> texts;  // MENU.TXT
     std::vector<MenuCar> car_info;   // CARDAT.TXT, one per car model (each in two paints)
     std::vector<std::string> track_names;  // TRACKDAT.TXT
+    std::vector<std::vector<std::string>> champ_text;  // CHAMP.TXT blocks (separated by '#')
     std::string graf_path;
     char res = 'L';
 
@@ -140,7 +141,26 @@ public:
     int cars_unlocked = 0;           // DAT_001207ec: the last car is 0xb + this
     int tracks_unlocked = 0;         // DAT_00120814: the last track is 2 + this
     std::string name = "AAA";        // DAT_001203c8
-    int game_mode = 0;               // g_game_mode
+    int game_mode = 0;               // g_game_mode (1 normal, 2 championship race, -1 new championship)
+
+    // The championship (frontend_show_champ_pcx, champ_draw_standings, champ_advance,
+    // champ_store_race_result): a script of steps (table 0x1022b8). Each step is
+    // { kind, league or points needed, track, CHAMP.TXT block, next, next on failure, backdrop,
+    // race number, font }; kind 0 shows a text and leads to a race, 3 the standings after race n,
+    // 1 a "next league" text (unlocks tracks), 2 the end (all won, or lost).
+    struct ChampStep {
+        int kind, value, track, text, next, fail;
+        const char* backdrop;
+        int race, font;
+    };
+    int champ_step = 0;                   // DAT_001203d8
+    int champ_prev = 0;                   // DAT_001203dc (RESUME starts here)
+    std::array<int, 6> champ_pos{};       // DAT_001203fc: finishing position per race, -1 none
+    std::array<float, 6> champ_time{};    // DAT_001203e4
+    std::array<int, 6> champ_points{};    // DAT_00120414
+    int champ_failed = 0;                 // DAT_00120800: 1 out of time, 2 cannot qualify any more
+    // After the race the menu asked for: the championship takes the result, others the title.
+    void after_race(bool finished, bool failed, int position, float total_time);
 
     struct Item {
         int row = 0;              // +0x04
@@ -190,6 +210,9 @@ private:
     void draw_track_select(HudSurface& s);
     void draw_name_entry(HudSurface& s);
     void draw_records(HudSurface& s);
+    void setup_champ_page();
+    void draw_champ(HudSurface& s);
+    void champ_advance();
     void setup_records_page();
     int option(int item) const;
 
@@ -210,6 +233,8 @@ private:
     ChoiceFile choice_;       // records and what this menu does not use itself
     int records_track_ = 0;   // DAT_00120988
     int records_row_ = 0;     // DAT_0012098c
+    float idle_ = 0;          // DAT_0011d248: seconds without a key (texts move on after 10)
+    int champ_total_ = 0;     // DAT_001203e0
     std::array<uint8_t, 256> darken_{};  // build_darken_tables for the dialog's backdrop
     struct Block {
         int row = 0, ypos = 0, start = 0, centred = 1, turned = 0;

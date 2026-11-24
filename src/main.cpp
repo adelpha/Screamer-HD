@@ -237,7 +237,8 @@ struct Shared {
     std::optional<scr::MenuRace> race;  // the menu chose a race
     struct Outcome {
         float best_lap = 10000, total_time = 0;
-        bool finished = false;
+        bool finished = false, failed = false;
+        int position = 0;
     };
     std::optional<Outcome> outcome;     // how the race from the menu went
     std::string choice_path;            // our copy of CONFIG/CHOICE.DAT
@@ -479,11 +480,17 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         if (shared.outcome && shared.race) {
             menu->race_result(shared.race->map, shared.outcome->best_lap, shared.outcome->total_time,
                               shared.race->laps, shared.outcome->finished);
+            menu->after_race(shared.outcome->finished, shared.outcome->failed, shared.outcome->position,
+                             shared.outcome->total_time);
+        } else if (shared.race && shared.race->game_mode == 2) {
+            // a championship race left with Esc: it counts as lost
+            menu->after_race(false, true, 10, 0);
+        } else {
+            menu->show_title();
         }
         shared.outcome.reset();
         shared.race.reset();
         if (!shared.choice_path.empty()) menu->save_choice().save(shared.choice_path);
-        menu->show_title();
         // frontend_load: MENU.DTR's SOUND_FX (menu1..menu9)
         auto gen = scr::resolve_game_file(*game_dir, "DATA/GEN.DAT");
         auto snd = scr::resolve_game_file(*game_dir, "DATA/SOUND.DAT");
@@ -731,7 +738,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         end_timer += clock.frame_time();
                         if (5.0f <= end_timer && race_audio.speech_current() == -1) {
                             shared.back_to_menu = true;
-                            shared.outcome = Shared::Outcome{r.best_lap, r.total_time, r.finished};
+                            shared.outcome = Shared::Outcome{r.best_lap, r.total_time, r.finished, r.failed, r.player_position};
                             running = false;
                         }
                     }
