@@ -235,6 +235,12 @@ struct Shared {
     std::optional<scr::MenuAssets> menu_assets;
     std::optional<scr::Menu> menu;
     std::optional<scr::MenuRace> race;  // the menu chose a race
+    struct Outcome {
+        float best_lap = 10000, total_time = 0;
+        bool finished = false;
+    };
+    std::optional<Outcome> outcome;     // how the race from the menu went
+    std::string choice_path;            // our copy of CONFIG/CHOICE.DAT
     bool back_to_menu = false;          // the race asks to return to the menu
     uint64_t frames_run = 0;
 };
@@ -462,9 +468,21 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 return 1;
             }
             shared.menu.emplace(*shared.menu_assets);
+            // The saved menu state: ours, else the game's CONFIG/CHOICE.DAT, else the defaults.
+            scr::ChoiceFile choice;
+            if (!choice.load(shared.choice_path))
+                if (auto orig = scr::resolve_game_file(*game_dir, "CONFIG/CHOICE.DAT")) choice.load(*orig);
+            shared.menu->load_choice(choice);
         }
         menu = &*shared.menu;
         menu->quit = false;
+        if (shared.outcome && shared.race) {
+            menu->race_result(shared.race->map, shared.outcome->best_lap, shared.outcome->total_time,
+                              shared.race->laps, shared.outcome->finished);
+        }
+        shared.outcome.reset();
+        shared.race.reset();
+        if (!shared.choice_path.empty()) menu->save_choice().save(shared.choice_path);
         menu->show_title();
         // frontend_load: MENU.DTR's SOUND_FX (menu1..menu9)
         auto gen = scr::resolve_game_file(*game_dir, "DATA/GEN.DAT");
@@ -713,6 +731,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         end_timer += clock.frame_time();
                         if (5.0f <= end_timer && race_audio.speech_current() == -1) {
                             shared.back_to_menu = true;
+                            shared.outcome = Shared::Outcome{r.best_lap, r.total_time, r.finished};
                             running = false;
                         }
                     }
@@ -756,7 +775,10 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 menu->update(mk, clock.frame_time());
                 for (int sfx : menu->sounds) mixer.play(sfx);
                 menu->draw(fb, renderer3d);
-                if (menu->quit) running = false;
+                if (menu->quit) {
+                    running = false;
+                    if (!shared.choice_path.empty()) menu->save_choice().save(shared.choice_path);
+                }
                 if (menu->race) {
                     SDL_Log("menu: race on MAP%d%s, car %d, %d laps, level %d, driver %s", menu->race->map,
                             menu->race->mirrored ? " (reversed)" : "", menu->race->car, menu->race->laps,
@@ -764,6 +786,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     shared.race = *menu->race;
                     menu->race.reset();
                     running = false;
+                    if (!shared.choice_path.empty()) menu->save_choice().save(shared.choice_path);
+                    // frontend_start_race's loading screen
+                    menu->draw_loading(fb, shared.race->map);
                 }
             } else if (title) {
                 scr::blit_pcx(*title, fb);
@@ -881,9 +906,14 @@ int main(int argc, char** argv) {
     SDL_Log("video driver: %s, renderer: %s", SDL_GetCurrentVideoDriver(), SDL_GetRendererName(renderer));
 
     Shared shared;
+    if (!opt.headless) {
+        if (char* pref = SDL_GetPrefPath("", "ScreamerRecomp")) {
+            shared.choice_path = std::string(pref) + "CHOICE.DAT";
+            SDL_free(pref);
+        }
+    }
     int exit_code = 0;
     for (;;) {
-        shared.race.reset();
         shared.back_to_menu = false;
         exit_code = run_scene(opt, window, renderer, game_dir, title, shared);
         if (exit_code != 0) break;
@@ -891,6 +921,12 @@ int main(int argc, char** argv) {
             // --frames counts over all the scenes of the run
             if (shared.frames_run >= opt.frames) break;
             opt.frames -= shared.frames_run;
+        }
+        if (shared.back_to_menu) {
+            // the race is over: the menu takes the result (shared.race / outcome)
+            opt.scene = "menu";
+            opt.hold.clear();
+            continue;
         }
         if (shared.race) {
             // frontend_start_race: the race the menu chose, then back to the menu
@@ -905,11 +941,6 @@ int main(int argc, char** argv) {
             opt.from_menu = true;
             opt.start.clear();
             opt.menu_keys.clear();
-            continue;
-        }
-        if (shared.back_to_menu) {
-            opt.scene = "menu";
-            opt.hold.clear();
             continue;
         }
         break;

@@ -123,6 +123,199 @@ const PcxImage* MenuAssets::backdrop(const std::string& name) {
     return &backdrops_.emplace(file, std::move(*img)).first->second;
 }
 
+namespace {
+constexpr size_t kLapRecords = 0x6c, kTotalRecords = 0x24c, kRecordStride = 0x50;
+}
+
+ChoiceFile::ChoiceFile() {
+    // read_choice_dat without a file
+    set(0x42c, 0);       // cars unlocked
+    set(0x434, 0);
+    set(0x444, 0x6000);  // volumes
+    set(0x448, 0x6000);
+    set(0x44c, 0x6000);
+    set(0x450, 1);       // radar
+    set(0x438, 1);       // speech
+    set(0x43c, 1);       // music
+    set(0x430, 2);       // view
+    set(0x45c, 2);       // difficulty max
+    set(0x458, 0);
+    set(0x454, 0);
+    set(0x000, 0);
+    set(0x004, 0);
+    set(0x018, 0);
+    set(0x01c, 0);
+    set(0x020, 0);
+    for (size_t i = 0; i < 6; ++i) set(0x3c + i * 4, -1);
+    setstr(0x008, "AAA");
+    for (size_t t = 0; t < 6; ++t)
+        for (size_t i = 0; i < 5; ++i) {
+            setf(kLapRecords + t * kRecordStride + i * 4, 180.0f);
+            setstr(kLapRecords + t * kRecordStride + 0x14 + i * 4, "AAA");
+            set(kLapRecords + t * kRecordStride + 0x28 + i * 4, 0);
+            setf(kTotalRecords + t * kRecordStride + i * 4, 900.0f);
+            setstr(kTotalRecords + t * kRecordStride + 0x14 + i * 4, "AAA");
+            set(kTotalRecords + t * kRecordStride + 0x28 + i * 4, 0);
+        }
+    // the options the menu starts with (detail HI, difficulty NORMAL, 3 laps)
+    set(0x00c, 2);
+    set(0x010, 1);
+    set(0x014, 0);
+}
+
+bool ChoiceFile::load(const std::string& path) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::array<uint8_t, 0x460> buf{};
+    const size_t n = std::fread(buf.data(), 1, buf.size(), f);
+    std::fclose(f);
+    if (n != buf.size()) return false;
+    raw = buf;
+    return true;
+}
+
+bool ChoiceFile::save(const std::string& path) const {
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) return false;
+    const bool ok = std::fwrite(raw.data(), 1, raw.size(), f) == raw.size();
+    std::fclose(f);
+    return ok;
+}
+
+int32_t ChoiceFile::get(size_t o) const {
+    int32_t v = 0;
+    if (o + 4 <= raw.size()) std::memcpy(&v, raw.data() + o, 4);
+    return v;
+}
+void ChoiceFile::set(size_t o, int32_t v) {
+    if (o + 4 <= raw.size()) std::memcpy(raw.data() + o, &v, 4);
+}
+float ChoiceFile::getf(size_t o) const {
+    float v = 0;
+    if (o + 4 <= raw.size()) std::memcpy(&v, raw.data() + o, 4);
+    return v;
+}
+void ChoiceFile::setf(size_t o, float v) {
+    if (o + 4 <= raw.size()) std::memcpy(raw.data() + o, &v, 4);
+}
+std::string ChoiceFile::str(size_t o) const {
+    std::string r;
+    for (size_t i = 0; i < 4 && o + i < raw.size() && raw[o + i]; ++i) r.push_back(char(raw[o + i]));
+    return r;
+}
+void ChoiceFile::setstr(size_t o, const std::string& v) {
+    for (size_t i = 0; i < 4 && o + i < raw.size(); ++i) raw[o + i] = i < v.size() && i < 3 ? uint8_t(v[i]) : 0;
+}
+
+void Menu::load_choice(const ChoiceFile& c) {
+    choice_ = c;
+    car = std::max(0, c.get(0x000));
+    track = std::max(0, c.get(0x004));
+    name = c.str(0x008);
+    if (name.empty()) name = "AAA";
+    pages[1][0].value = std::clamp(c.get(0x00c), 0, 2);
+    pages[1][1].max = std::clamp(c.get(0x45c), 2, 3);
+    pages[1][1].value = std::clamp(c.get(0x010), 0, pages[1][1].max);
+    pages[1][2].value = std::clamp(c.get(0x014), 0, 3);
+    pages[1][3].value = c.get(0x438) ? 1 : 0;
+    pages[1][4].value = c.get(0x43c) ? 1 : 0;
+    cars_unlocked = std::clamp(c.get(0x42c), 0, 2);
+    tracks_unlocked = std::clamp(c.get(0x454), 0, 9);
+    tracks_seen_ = c.get(0x458);
+    car = std::min(car, 0xb + cars_unlocked);
+    track = std::min(track, tracks_unlocked + 2);
+}
+
+ChoiceFile Menu::save_choice() const {
+    ChoiceFile c = choice_;
+    c.set(0x000, car);
+    c.set(0x004, track);
+    c.setstr(0x008, name);
+    c.set(0x00c, pages[1][0].value);
+    c.set(0x010, pages[1][1].value);
+    c.set(0x014, pages[1][2].value);
+    c.set(0x438, pages[1][3].value);
+    c.set(0x43c, pages[1][4].value);
+    c.set(0x45c, pages[1][1].max);
+    c.set(0x42c, cars_unlocked);
+    c.set(0x454, tracks_unlocked);
+    c.set(0x458, tracks_seen_);
+    return c;
+}
+
+void Menu::race_result(int map, float best_lap, float total_time, int laps, bool finished) {
+    // menu_replay_files: insert into the track's top five (lower is better)
+    if (map < 1 || map > 6) return;
+    const size_t t = size_t(map - 1) * kRecordStride;
+    auto insert = [&](size_t table, float time, size_t extra, int extra_value) {
+        int pos = 0;
+        while (pos < 5 && choice_.getf(table + t + size_t(pos) * 4) <= time) ++pos;
+        if (pos >= 5) return;
+        for (int i = 3; pos <= i; --i) {
+            choice_.setf(table + t + size_t(i + 1) * 4, choice_.getf(table + t + size_t(i) * 4));
+            choice_.set(table + t + 0x28 + size_t(i + 1) * 4, choice_.get(table + t + 0x28 + size_t(i) * 4));
+            choice_.set(table + t + extra + size_t(i + 1) * 4, choice_.get(table + t + extra + size_t(i) * 4));
+            choice_.setstr(table + t + 0x14 + size_t(i + 1) * 4, choice_.str(table + t + 0x14 + size_t(i) * 4));
+        }
+        choice_.setf(table + t + size_t(pos) * 4, time);
+        choice_.set(table + t + 0x28 + size_t(pos) * 4, table == kLapRecords ? 1 : 0);
+        choice_.set(table + t + extra + size_t(pos) * 4, extra_value);
+        choice_.setstr(table + t + 0x14 + size_t(pos) * 4, name);
+    };
+    if (best_lap < 10000.0f) insert(kLapRecords, best_lap, 0x3c, 0);
+    if (finished && laps == 3) insert(kTotalRecords, total_time, 0x3c, game_mode);
+}
+
+void Menu::draw_loading(Framebuffer& fb, int map) {
+    const PcxImage* bg = a_.backdrop("LOAD" + std::to_string(map));
+    if (!bg) return;
+    for (int y = 0; y < fb.height(); ++y) {
+        const uint8_t* row = bg->pixels.data() + size_t(y * bg->height / fb.height()) * size_t(bg->width);
+        for (int x = 0; x < fb.width(); ++x) fb.at(x, y) = row[x * bg->width / fb.width()];
+    }
+    fb.palette() = bg->palette();
+    HudSurface s(fb);
+    const std::string t = size_t(47) < a_.texts.size() ? a_.texts[47] : "LOADING";
+    s.text(a_.fonts, (320 - s.measure(a_.fonts, t, 3)) >> 1, 0x50, t, 3, 0);
+}
+
+void Menu::setup_records_page() {
+    // frontend_show_load_pcx: the track's loading picture behind the records
+    records_track_ = pages[size_t(page)][size_t(selected[size_t(page)])].max;
+    backdrop_ = a_.backdrop("LOAD" + std::to_string(records_track_ + 1));
+    if (backdrop_) darken_ = build_darken_table(backdrop_->vga_pal.data(), 0.75f);
+    cam_rate_ = 8.0f;
+    fade_dir_ = 1;
+    fade_rate_ = 1.5f;
+    hide_objects();
+    records_row_ = 0;
+}
+
+void Menu::draw_records(HudSurface& s) {
+    // menu_draw_dialog: the best total times and best laps of the track
+    const auto text = [&](int i) { return size_t(i) < a_.texts.size() ? a_.texts[size_t(i)] : std::string(); };
+    const auto centre = [&](const std::string& t, int y, int font, int m) {
+        s.text(a_.fonts, (320 - s.measure(a_.fonts, t, font)) >> 1, y, t, font, m);
+    };
+    s.darken(0x30, 0x24, 0xe2, 0xa0, darken_);
+    centre(text(31 + records_track_), 2, 3, 0);
+    centre(text(42), 0x28, 0, 0);
+    centre(text(43), 0x78, 0, 0);
+    const size_t t = size_t(records_track_) * kRecordStride;
+    auto line = [&](size_t table, int i, bool replay) {
+        const float v = choice_.getf(table + t + size_t(i) * 4);
+        const int secs = int(v);
+        char buf[64];
+        std::snprintf(buf, sizeof buf, "\x01%d. %3s %02d.%02d.%02d %s", i + 1, choice_.str(table + t + 0x14 + size_t(i) * 4).c_str(),
+                      secs / 60, secs % 60, int((v - float(secs)) * 100.0f), replay ? "R" : " ");
+        return std::string(buf);
+    };
+    for (int i = 0; i < 5; ++i)
+        centre(line(kTotalRecords, i, choice_.get(kTotalRecords + t + 0x28 + size_t(i) * 4) != 0), 0x3c + i * 10, 1,
+               i == records_row_ ? 1 : 0);  // the selected total (its replay) in orange
+    for (int i = 0; i < 5; ++i) centre(line(kLapRecords, i, false), 0x8c + i * 10, 1, 0);
+}
+
 Menu::Menu(MenuAssets& assets) : pages(default_pages()), a_(assets) {}
 
 int Menu::option(int item) const { return pages[1][size_t(item)].value; }
@@ -178,6 +371,7 @@ void Menu::show_page_background() {
     case 2: setup_car_page(); break;
     case 3: setup_track_page(); break;
     case 4: setup_name_page(); break;
+    case 6: setup_records_page(); break;
     default: break;
     }
 }
@@ -535,6 +729,10 @@ void Menu::activate() {
     case 2: push(4); break;   // special modes
     case 4: push(1); break;   // options
     case 21: push(6); break;  // view records
+    case 31:                  // a track's records
+        init_state(6);
+        sounds.push_back(3);
+        break;
     case 1234:
         // menu_cycle_option
         if (flipping_ == 0) {
@@ -785,9 +983,10 @@ void Menu::draw_name_entry(HudSurface& s) {
     // menu_draw_name_entry
     const auto text = [&](int i) { return size_t(i) < a_.texts.size() ? a_.texts[size_t(i)] : std::string(); };
     s.text(a_.fonts, (320 - s.measure(a_.fonts, text(kEnterName), 3)) >> 1, 2, text(kEnterName), 3, 2);
-    const int x = (320 - s.measure(a_.fonts, name, 2)) >> 1;
-    s.text(a_.fonts, x, 0x4c, name, 2, 2);
-    s.text(a_.fonts, x + name_cursor_ * 0x15, 0x58, "_", 2, 2);
+    const std::string shown = "\x01" + name;
+    const int x = (320 - s.measure(a_.fonts, shown, 2)) >> 1;
+    s.text(a_.fonts, x, 0x4c, shown, 2, 2);
+    s.text(a_.fonts, x + name_cursor_ * 0x15, 0x58, "\x01-", 2, 2);
 }
 
 void Menu::draw(Framebuffer& fb, Renderer& renderer) {
@@ -837,6 +1036,7 @@ void Menu::draw(Framebuffer& fb, Renderer& renderer) {
     case 2: draw_car_select(s); break;
     case 3: draw_track_select(s); break;
     case 4: draw_name_entry(s); break;
+    case 6: draw_records(s); break;
     default: break;
     }
     for (auto& c : fb.palette()) {
