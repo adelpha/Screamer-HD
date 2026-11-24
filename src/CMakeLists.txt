@@ -18,6 +18,7 @@ add_library(screamer_core STATIC
   core/fm_synth.cpp
   core/pcx.cpp
   core/render3d.cpp
+  core/worker_pool.cpp
   core/sim_clock.cpp
   core/testpattern.cpp
   core/track.cpp

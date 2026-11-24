@@ -57,11 +57,21 @@ struct Part {
     // +0x20 (object-relative) for 0x2000 parts: int32 count, float x, y, z per vertex - the
     // vertex normals used for the car glass reflections.
     std::vector<std::array<float, 3>> vertex_normals;
+    // Bounding sphere of the vertices (part space), for skipping parts outside the view;
+    // radius < 0: unknown (never skipped).
+    std::array<float, 3> center{};
+    float radius = -1;
 };
 
 struct Model {
     std::vector<Part> parts;
+    // Bounding sphere around the object's origin that holds every part however it is placed;
+    // radius < 0: unknown.
+    float radius = -1;
 };
+
+// Fills in Part::center/radius and Model::radius (parse_model does this).
+void compute_bounds(Model& model);
 
 // Parses one object starting at `data` (size bytes available).
 std::optional<Model> parse_model(const uint8_t* data, size_t size);

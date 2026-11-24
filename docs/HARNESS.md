@@ -35,6 +35,8 @@ no manual steps.
 | `--track NAME` | Track for `--scene track` (default `MAP2`, loaded from `GFX/<NAME>L.DAT`). |
 | `--camera X,Y,Z,YAW,PITCH[,ROLL]` | Camera for `--scene track` in game units (angles 0..2047). Default: the first placement. `48459,196,7124,472,2005,0` is the intro race at the start gate. |
 | `--render-size WxH` | Framebuffer size for the 3D scene (default 320x200), e.g. `1280x800`. |
+| `--threads N` | Threads that fill the 3D view (default: one per CPU thread). The picture is the same for any number. |
+| `--perf` | Print the average and worst time the 3D view took to draw, at exit. |
 | `--flat` | Draw faces with each material's average colour instead of textures. |
 | `--scene drive` | Drive a car on the track with the ported physics and the chase camera: arrow keys (up accelerate, down brake, left/right steer) or a gamepad (triggers, left stick). `--car-index N` picks the car from `CARS_DATA`, `--start X,Z` the start position, `--hold accel,left` holds controls in every frame for headless runs; the last frame logs the car's state. With CPU cars (tracks with racing lines, e.g. `--track MAP1`) the race starts with the countdown and shows the HUD; F1-F4 switch the view (bumper, cockpit, chase, far chase; `--view N` starts in one), M cycles the radar size. |
 | `--scene menu` | The front end (the default when the game files are found): main menu, options, then NORMAL GAME goes name, track and car selection into a race and back. `--menu-keys 200:enter,300:down` presses keys at given frames for headless runs. In a race from the menu, Esc or the end of the race asks PLAY AGAIN?; P opens the car-stereo panel (CD track, volumes; `--hold pause` opens it at frame 150 in headless runs). |

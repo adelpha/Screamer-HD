@@ -1,5 +1,7 @@
 #include "core/model3d.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <set>
 
@@ -101,7 +103,38 @@ std::optional<Model> parse_model(const uint8_t* d, size_t size) {
         }
         m.parts.push_back(std::move(part));
     }
+    compute_bounds(m);
     return m;
+}
+
+void compute_bounds(Model& model) {
+    model.radius = 0;
+    for (Part& part : model.parts) {
+        if (part.vertices.empty()) {
+            part.center = {};
+            part.radius = 0;
+            continue;
+        }
+        float lo[3] = {1e9f, 1e9f, 1e9f}, hi[3] = {-1e9f, -1e9f, -1e9f};
+        for (const Vec3i16& v : part.vertices) {
+            const float c[3] = {float(v.x), float(v.y), float(v.z)};
+            for (int i = 0; i < 3; ++i) {
+                lo[i] = std::min(lo[i], c[i]);
+                hi[i] = std::max(hi[i], c[i]);
+            }
+        }
+        for (int i = 0; i < 3; ++i) part.center[size_t(i)] = (lo[i] + hi[i]) * 0.5f;
+        float r2 = 0;
+        for (const Vec3i16& v : part.vertices) {
+            const float dx = float(v.x) - part.center[0], dy = float(v.y) - part.center[1], dz = float(v.z) - part.center[2];
+            r2 = std::max(r2, dx * dx + dy * dy + dz * dz);
+        }
+        part.radius = std::sqrt(r2) + 1.0f;
+        // However the part is turned, it stays within |offset| + |centre| + radius of the origin.
+        const auto len = [](float x, float y, float z) { return std::sqrt(x * x + y * y + z * z); };
+        model.radius = std::max(model.radius, len(float(part.offset[0]), float(part.offset[1]), float(part.offset[2])) +
+                                                  len(part.center[0], part.center[1], part.center[2]) + part.radius);
+    }
 }
 
 } // namespace scr

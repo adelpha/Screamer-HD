@@ -77,6 +77,7 @@ public:
     const std::vector<Material>& materials() const { return materials_; }
     // Texel of the given frame (wrapped to the frame count), coordinates wrapped to the material size.
     uint8_t texel(const Material& m, int u, int v, int frame = 0) const;
+    const std::vector<uint8_t>& data() const { return data_; }
 
 private:
     std::vector<uint8_t> data_;

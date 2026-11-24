@@ -31,6 +31,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
@@ -44,6 +45,8 @@ namespace {
 struct Options {
     std::string data_dir;
     bool headless = false;
+    bool perf = false;              // print the 3D render time per frame at the end
+    int threads = 0;                // renderer threads (0: one per hardware thread)
     bool fullscreen = false;
     uint64_t frames = 0;            // 0 = run until quit
     std::string screenshot;         // rendered output after the last frame
@@ -86,6 +89,8 @@ void print_usage() {
         "Usage: screamer [options]\n"
         "  --data DIR           original game directory (default: $SCREAMER_DATA or build-time path)\n"
         "  --headless           no visible window, software renderer, dummy audio\n"
+        "  --perf               print how long the 3D view takes to draw\n"
+        "  --threads N          threads drawing the 3D view (default: one per CPU thread)\n"
         "  --frames N           exit after N simulation frames (2 ticks of the game's 100 Hz clock each)\n"
         "  --scene NAME         menu (default when the game files are found), title, track, drive or testpattern\n"
         "  --menu-keys LIST     --scene menu: keys pressed at frames, e.g. 40:down,60:enter (headless runs)\n"
@@ -159,6 +164,8 @@ bool parse_args(int argc, char** argv, Options& o) {
         };
         if (a == "--data") o.data_dir = next("--data");
         else if (a == "--headless") o.headless = true;
+        else if (a == "--perf") o.perf = true;
+        else if (a == "--threads") o.threads = std::atoi(next("--threads"));
         else if (a == "--fullscreen") o.fullscreen = true;
         else if (a == "--frames") o.frames = std::strtoull(next("--frames"), nullptr, 10);
         else if (a == "--screenshot") o.screenshot = next("--screenshot");
@@ -516,6 +523,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     SDL_Gamepad* pad = nullptr;
     scr::Renderer renderer3d;
     renderer3d.set_textures(!opt.flat);
+    renderer3d.set_threads(opt.threads);
 
     // --scene menu: the front end (kept by main across races)
     scr::Menu* menu = nullptr;
@@ -607,6 +615,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
 
     uint64_t frame = 0;
     float end_timer = 0;
+    double perf_total = 0, perf_max = 0;  // --perf
+    int perf_frames = 0;
     // race_run's "PLAY AGAIN?" after a race from the menu (pause_menu_draw_scene): -1 not shown,
     // else the highlighted answer (0 yes, 1 no)
     int prompt = -1;
@@ -857,6 +867,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     cam.yaw = float(int(player->camera.yaw * kToUnits) & 0x7ff);
                     cam.roll = float(int(player->camera.roll * kToUnits) & 0x7ff);
                 }
+                const auto perf_t0 = std::chrono::steady_clock::now();
                 renderer3d.begin(*track, cam, fb);
                 renderer3d.draw_placements();
                 // obstacles_update and the obstacles
@@ -956,6 +967,12 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     renderer3d.draw_model(c.model, c.pose);
                 }
                 renderer3d.finish();
+                {
+                    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - perf_t0).count();
+                    perf_total += ms;
+                    perf_max = std::max(perf_max, ms);
+                    ++perf_frames;
+                }
                 if (player && player->cpu_cars && hud) {
                     const scr::Race& r = player->race;
                     const scr::Car& c = r.player;
@@ -1102,6 +1119,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     }
 
     SDL_Log("frames=%llu", static_cast<unsigned long long>(frame));
+    if (opt.perf && perf_frames)
+        SDL_Log("render3d: %.2f ms average, %.2f ms worst over %d frames at %dx%d", perf_total / perf_frames, perf_max,
+                perf_frames, fb.width(), fb.height());
     shared.frames_run = frame;
     if (!opt.record_audio.empty() && !write_wav(opt.record_audio, recorded, 44100)) exit_code = 1;
     if (audio_stream) SDL_DestroyAudioStream(audio_stream);
