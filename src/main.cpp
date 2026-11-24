@@ -45,6 +45,8 @@ namespace {
 
 // Car shadows are tested against the depth buffer as if this much nearer (see Pose::depth_bias).
 constexpr float kShadowBias = 64.0f;
+// Obstacles (cones, barriers) likewise, so their lower half shows over the ground.
+constexpr float kObstacleBias = 512.0f;
 
 struct Options {
     std::string data_dir;
@@ -959,6 +961,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     scr::Pose op;
                     op.x = float(o.x);
                     op.y = float(o.y);
+                    // half of each obstacle is below the ground (it stands at the ground height);
+                    // the original draws it over the ground all the same (painter's order)
+                    op.depth_bias = kObstacleBias;
                     op.z = float(o.z);
                     op.ax = float(int(o.ax * kObsUnits) & 0x7ff);
                     op.ay = float(int(o.ay * kObsUnits) & 0x7ff);
