@@ -66,6 +66,7 @@ struct Placement {
     int x = 0, y = 0, z = 0;
     int ax = 0, ay = 0, az = 0;  // 0..0x7ff per turn
     int animation = -1;          // +0x20: texture animation word (-1 = global counter, see Pose)
+    int reflection = 0;          // +0x3c: see Pose::reflection
     int slot = 0;
 };
 
@@ -117,6 +118,7 @@ std::optional<float> ground_height(const Track& track, float x, float z, float b
 struct GroundHit {
     int y = 0;           // integer height, like collision_test_object_faces
     char surface = 0;    // 4th letter of the road part's name ('e' = bumpy)
+    int normal_x = 0, normal_z = 0;  // the face's normal (object frame, 2.14)
 };
 // collision_query_cells: the ground under x, z, or empty off the road (the game treats that
 // as a wall). walls_only = the corner probes' variant (collision_test_object_faces_b), which

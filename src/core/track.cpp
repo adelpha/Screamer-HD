@@ -92,7 +92,7 @@ std::optional<std::vector<Placement>> parse_mmp(const std::vector<uint8_t>& mmp,
                 const int32_t n = le32(mmp, size_t(co) + 20 + size_t(slot) * 4);
                 for (int32_t k = 0; k < n; ++k) {
                     const size_t e = size_t(so) + size_t(k) * 64;
-                    if (e + 32 > mmp.size()) return std::nullopt;
+                    if (e + 64 > mmp.size()) return std::nullopt;
                     Placement p;
                     p.object = le32(mmp, e);
                     p.flags = le32(mmp, e + 4);
@@ -103,6 +103,7 @@ std::optional<std::vector<Placement>> parse_mmp(const std::vector<uint8_t>& mmp,
                     p.ay = le32(mmp, e + 24);
                     p.az = le32(mmp, e + 28);
                     p.animation = le32(mmp, e + 32);
+                    p.reflection = le32(mmp, e + 60);
                     p.slot = slot;
                     if (p.object >= 0 && size_t(p.object) < object_count) out.push_back(p);
                 }
@@ -249,6 +250,8 @@ std::optional<GroundHit> ground_query(const Track& track, int x, int z, bool wal
                     if (!inside) continue;
                     GroundHit hit;
                     hit.surface = part.name.size() > 3 ? part.name[3] : char(0);
+                    hit.normal_x = f.normal[0];
+                    hit.normal_z = f.normal[2];
                     if (f.normal[1] != 0) {
                         const Vec3i16& v0 = part.vertices[f.vtx[0]];
                         const int64_t num = int64_t(px - (v0.x + p.x)) * f.normal[0] + int64_t(pz - (v0.z + p.z)) * f.normal[2];

@@ -67,6 +67,15 @@ foreach(trace accel:1 steer:0 wall:0 skid:0 fast:4)
     set_tests_properties(physics.${name} PROPERTIES LABELS "physics")
   endif()
 endforeach()
+# Recordings with the CPU cars (RECORD_OPPONENTS=1): the whole race is stepped.
+foreach(name opp_start opp_300 opp_700 tunnel)
+  set(file ${CMAKE_SOURCE_DIR}/artifacts/traces/${name}.trace)
+  if(EXISTS ${file} AND EXISTS ${SCREAMER_DATA_DIR}/GFX/MAP1H.DAT)
+    add_test(NAME physics.${name}
+      COMMAND tracecmp ${file} ${SCREAMER_DATA_DIR}/GFX/MAP1H.DAT MAP1 --data ${SCREAMER_DATA_DIR}/DATA/MAP1.DAT)
+    set_tests_properties(physics.${name} PROPERTIES LABELS "physics")
+  endif()
+endforeach()
 
 # --- Original game data: verify the user's copy against the recorded manifest ---
 add_test(NAME gamedata.manifest

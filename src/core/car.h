@@ -36,6 +36,7 @@ struct CarInput {
     bool gear_up = false;       // manual gearbox only
     bool gear_down = false;
     bool race_started = true;   // g_race_flags & 1: before the start only the revs move
+    bool cpu_cars_go = true;    // g_race_flags & 5: the CPU cars drive
 };
 
 // Per-car constants from CARS_DATA (CarData) and the wheel positions in the .3DX model.
@@ -126,6 +127,17 @@ public:
     float track_heading = 0;
     bool bumpy_front = false;              // brake_mode at 0x2f0: a front wheel on 'e'
     std::array<CarWheel, 4> wheel{};
+    // Bumpers (car_update_bumpers): two points on the centre line, a quarter of the way in
+    // from the front and rear corner probes; collision_radius = half their distance.
+    int front_local_z = 0, rear_local_z = 0, collision_radius = 0;
+    int front_x = 0, front_z = 0, rear_x = 0, rear_z = 0;
+    // Track markers (car_update_track_progress, simplified to marker, lap and progress).
+    int track_marker = 0, lap = 0, marker_flags = 0;
+    // car_apply_surface: the current marker's flags as the body's +0x3c word (0, 0x8000,
+    // 0xff00), which picks the window reflection frame (Pose::reflection).
+    int surface_render_flag = 0;
+    float track_progress = 0;
+    void update_bumpers();
     std::array<CarProbe, 4> probe{};
 
     // Derived from the setup (player_car_load)

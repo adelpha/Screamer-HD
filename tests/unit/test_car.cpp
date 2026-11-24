@@ -4,12 +4,14 @@
 #include "core/car.h"
 #include "core/dtr.h"
 #include "core/gamedata.h"
+#include "core/opponent.h"
 #include "core/sim_clock.h"
 #include "core/track.h"
 
 #include <cmath>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -128,4 +130,50 @@ TEST_CASE("car: deterministic for the same inputs") {
     CHECK(a.pos_x == b.pos_x);
     CHECK(a.pos_z == b.pos_z);
     CHECK(a.speed == b.speed);
+}
+
+TEST_CASE("race: CPU cars on MAP1 leave the grid along their racing lines") {
+    auto dir = scr::find_game_dir();
+    if (!dir) SKIP("original game data not present");
+    auto map = scr::resolve_game_file(*dir, "GFX/MAP1H.DAT");
+    auto data = scr::resolve_game_file(*dir, "DATA/MAP1.DAT");
+    auto gen = scr::resolve_game_file(*dir, "DATA/GEN.DAT");
+    REQUIRE(map.has_value());
+    REQUIRE(data.has_value());
+    REQUIRE(gen.has_value());
+    auto track = scr::load_track(*map, "MAP1");
+    auto model = scr::load_object(*map, "AUTO00.3DX");
+    auto a = scr::Archive::open(*gen);
+    auto text = a ? a->read("CARS.DTR") : std::nullopt;
+    REQUIRE(track.has_value());
+    REQUIRE(model.has_value());
+    REQUIRE(text.has_value());
+    auto cars = scr::DtrFile(std::string(text->begin(), text->end())).pack_section("CARS_DATA", 0x40, 0x40);
+    REQUIRE(cars.has_value());
+    const scr::CarSetup setup = scr::car_setup(cars->data(), *model);
+    scr::Race race;
+    REQUIRE(race.load(*data, "MAP1"));
+    CHECK(race.lines.size() == 10);
+    CHECK(race.defs.size() == 9);
+    CHECK(race.defs[0].max_spd == 15000.0f);  // MAP1B.DTR, the level of a new game
+    race.start(*track, setup, std::vector<scr::CarSetup>(9, setup));
+    REQUIRE(race.opponents.size() == 9);
+    // Grid: the first CPU car on line 0 at the B-spline point between its control points.
+    CHECK(race.opponents[0].line_x == -1055);
+    CHECK(race.opponents[0].line_z == -2779);
+    CHECK(race.player.pos_x == 2600);  // line 9's start knot
+    CHECK(race.player.pos_z == -18500);
+    CHECK(race.player_position == 10);
+    scr::SimClock clock;
+    scr::CarInput in;
+    for (int i = 0; i < 200; ++i) {
+        clock.add_ticks(2);
+        clock.begin_frame();
+        race.update(*track, in, clock.frame_time(), clock.pow_table_row());
+    }
+    for (const auto& o : race.opponents) {
+        CHECK(o.speed > 1000.0f);
+        CHECK(scr::ground_query(*track, o.pos_x, o.pos_z).has_value());
+    }
+    CHECK(race.opponents[0].pos_z > -2779 + 2000);  // the lines run towards +z here
 }

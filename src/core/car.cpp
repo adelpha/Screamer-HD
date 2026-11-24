@@ -67,6 +67,9 @@ void Car::reset(const CarSetup& su, const Track& track, int x, int z) {
         probe[i].local_x = wheel[i].local_x;
         probe[i].local_z = wheel[i].local_z + ((i & 1) == 0 ? -250 : 150);
     }
+    front_local_z = probe[2].local_z + (probe[3].local_z - probe[2].local_z) / 4;
+    rear_local_z = probe[3].local_z + (probe[2].local_z - probe[3].local_z) / 4;
+    collision_radius = std::abs((front_local_z - rear_local_z) / 2);
     track_width = -(wheel[0].local_x - wheel[2].local_x);
     wheelbase = -(wheel[0].local_z - wheel[1].local_z);
     rpm_per_speed = float(double(su.maxrpm / su.maxspd) * 0.02223);
@@ -461,6 +464,15 @@ void Car::update_track_heading(const Track& track) {
     drift_angle = 0.0f;
 }
 
+void Car::update_bumpers() {
+    rotate_xz(front_x, front_z, 0, front_local_z, -yaw);
+    rotate_xz(rear_x, rear_z, 0, rear_local_z, -yaw);
+    front_x += pos_x;
+    front_z += pos_z;
+    rear_x += pos_x;
+    rear_z += pos_z;
+}
+
 void Car::crash_update(const Track& track) {
     switch (crash_state) {
     case 2:
@@ -486,7 +498,7 @@ void Car::crash_update(const Track& track) {
             crash_bounce = float(-(double(crash_bounce) * 0.4));
             body_roll_ofs = body_pitch_ofs = 0.0f;
             crash_roll_rate = (crash_bounce_count & 1) == 0 ? 0.6f : -0.6f;
-            crash_pitch_rate = -4.0f;
+            crash_pitch_rate = -1.0f;  // -0x40800000 as float bits
         }
         if (3 < crash_bounce_count) crash_state = 0;
         break;
@@ -548,6 +560,9 @@ void Car::load_player_car(const uint8_t* p) {
     speed = f(0x50c); speed_limit = f(0x510); yaw_rate = f(0x548); impact_timer = f(0x54c);
     impact_vel_x = f(0x550); impact_vel_z = f(0x558); prev_speed = f(0x588);
     surface_grip = f(0x670); engine_rpm = f(0x7a8); gear = i(0x7ac);
+    front_local_z = probe[2].local_z + (probe[3].local_z - probe[2].local_z) / 4;
+    rear_local_z = probe[3].local_z + (probe[2].local_z - probe[3].local_z) / 4;
+    collision_radius = std::abs((front_local_z - rear_local_z) / 2);
 }
 
 void Car::body_from_wheels() {

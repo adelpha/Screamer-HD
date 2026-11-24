@@ -198,6 +198,14 @@ code when they form tables (a lone fixup there is usually an instruction operand
   one because the reference point of collision_test_object_faces' plane formula is unclear
   (at run time it reads the part header). Spins, CPU cars, checkpoints and sounds are not
   ported yet.
+* CPU cars (`src/core/opponent.cpp`): each follows its own racing line (MAPnOPP.SPL, a quadratic
+  B-spline walked by arc length), with a sideways offset from bumps that decays back to the
+  line; speed heads for OPPONENTS.max_spd (+ skill while behind the player) times the speed
+  factor of the current track marker (MAPn.MRK). race_frame interleaves them with the player:
+  positions, player, driving, angles/crashes, ground and markers, then contacts. Cars further
+  than 35000 units from the listener (the player) are frozen. Race positions only change by
+  swapping the player with one CPU car per frame. Checked frame by frame against recordings of
+  the original (start, mid-race with a bump from the player, far from the player): exact.
 * Ground and track lines: `collision_query_cells` tests the faces of slot 0 (road) objects in
   the 3x3 cells around a probe, and the 4th letter of the part name is the surface type.
   `track_find_nearest_point` uses slot 2 (centre-line points with heading) and slot 3 (road
