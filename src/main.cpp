@@ -65,6 +65,7 @@ struct Options {
     bool mute = false;              // no audio device
     int sfx_volume = 100, music_volume = 70;  // 0..100
     bool music = true, speech = true;
+    bool midi_enhanced = false;     // --midi-driver enhanced
     std::string music_source = "auto";  // cd | midi | auto (CD audio when the image is there)
     bool audio_smooth = true;       // linear interpolation (false: the driver's nearest sample)
     std::string record_audio;       // write the mix to a .wav (frame-locked, works headless)
@@ -103,6 +104,7 @@ void print_usage() {
         "  --music-volume N     CD music volume 0..100 (default 70)\n"
         "  --no-music           no CD music (from the CD image: SCREAM.cue/.bin, or SCREAM.DAT/.gog as Steam and GOG ship it)\n"
         "  --no-speech          no announcer\n"
+        "  --midi-driver MODE   hmi (default: as the game, 9 voices) or enhanced (18 voices, no cut-off notes)\n"
         "  --music-source SRC   cd, midi (the FM synth versions in DATA/MUSIC.DAT) or auto (default: CD if found)\n"
         "  --record-audio FILE  write the sound of the run to a 44.1 kHz .wav (also headless)\n"
         "  --audio-filter MODE  linear (default) or nearest (the original driver's crunchier resampling)\n"
@@ -172,6 +174,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--no-music") o.music = false;
         else if (a == "--no-speech") o.speech = false;
         else if (a == "--music-source") o.music_source = next("--music-source");
+        else if (a == "--midi-driver") o.midi_enhanced = std::string(next("--midi-driver")) == "enhanced";
         else if (a == "--record-audio") o.record_audio = next("--record-audio");
         else if (a == "--audio-log") o.audio_log = true;
         else if (a == "--audio-filter") o.audio_smooth = std::string(next("--audio-filter")) != "nearest";
@@ -433,7 +436,7 @@ int main(int argc, char** argv) {
             if (!playing && opt.music_source != "cd") {
                 // The game's MIDI music on the FM synth, as it plays without the CD.
                 auto music_dat = scr::resolve_game_file(*game_dir, "DATA/MUSIC.DAT");
-                auto song = music_dat ? scr::load_hmp_music(*music_dat, scr::music_for_race(map)) : nullptr;
+                auto song = music_dat ? scr::load_hmp_music(*music_dat, scr::music_for_race(map), true, opt.midi_enhanced) : nullptr;
                 if (song) mixer.set_music(song);
                 else SDL_Log("no MIDI music (DATA/MUSIC.DAT)");
             }

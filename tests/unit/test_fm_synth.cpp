@@ -60,6 +60,10 @@ TEST_CASE("fm synth: HMI's nine voices") {
     scr::FmMidiSynth synth({sine_patch()}, {});
     for (int n = 40; n < 70; ++n) synth.message(0x90, uint8_t(n), 100);
     CHECK(synth.active_voices() == 9);
+    scr::FmMidiSynth enhanced({sine_patch()}, {});
+    enhanced.set_enhanced(true);
+    for (int n = 40; n < 70; ++n) enhanced.message(0x90, uint8_t(n), 100);
+    CHECK(enhanced.active_voices() == 18);
 }
 
 namespace {

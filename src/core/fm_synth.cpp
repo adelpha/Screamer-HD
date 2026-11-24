@@ -202,26 +202,39 @@ void FmMidiSynth::write(int bank, int reg, int value) {
     OPL3_WriteRegBuffered(chip_.get(), uint16_t((bank ? 0x100 : 0) + reg), uint8_t(value));
 }
 
+bool FmMidiSynth::on_bank(int v, int bank) const { return enhanced_ ? v / 9 == bank : true; }
+
+int FmMidiSynth::pan_bits(int ch) const {
+    const int p = ch_pan_[size_t(ch)];
+    return p < 32 ? 0x10 : p > 96 ? 0x20 : 0x30;
+}
+
+void FmMidiSynth::set_enhanced(bool on) {
+    enhanced_ = on;
+    if (rate_ > 0) reset();
+}
+
 void FmMidiSynth::chip_reset(int rate) {
     OPL3_Reset(chip_.get(), uint32_t(rate));
     rate_ = rate;
     write(1, 0x05, 0x01);  // OPL3 mode
     write(1, 0x04, 0x00);
     write(0, 0xbd, 0x00);
-    for (int v = 0; v < 9; ++v) {
+    for (int v = 0; v < 18; ++v) {
         voice_note_[size_t(v)] = 0;
         b0_[size_t(v)] = 0;
-        write(0, 0x40 + kVoiceSlots[v][1], 0xff);
-        write(1, 0x40 + kVoiceSlots[v][1], 0xff);
+        write(v / 9, 0x40 + kVoiceSlots[v % 9][1], 0xff);
     }
 }
 
 void FmMidiSynth::reset() {
     // FUN_00000a5b
-    for (int v = 0; v < 9; ++v) {
+    for (int v = 0; v < 18; ++v) {
         voice_note_[size_t(v)] = 0;
         voice_channel_[size_t(v)] = 0;
         voice_velocity_[size_t(v)] = 0x7f;
+        released_[size_t(v)] = 0;
+        started_[size_t(v)] = 0;
     }
     for (int c = 0; c < 16; ++c) {
         ch_bend_[size_t(c)] = 0x40;
@@ -245,9 +258,10 @@ void FmMidiSynth::set_freq(int v, uint32_t word, bool retrigger) {
     a0_[size_t(v)] = int(word & 0xff);
     b0_[size_t(v)] = int((word >> 8) & 0xff) | 0x20;
     for (int bank = 0; bank < 2; ++bank) {
-        write(bank, 0xa0 + v, a0_[size_t(v)]);
-        if (retrigger) write(bank, 0xb0 + v, b0_[size_t(v)] & 0xdf);
-        write(bank, 0xb0 + v, b0_[size_t(v)]);
+        if (!on_bank(v, bank)) continue;
+        write(bank, 0xa0 + v % 9, a0_[size_t(v)]);
+        if (retrigger) write(bank, 0xb0 + v % 9, b0_[size_t(v)] & 0xdf);
+        write(bank, 0xb0 + v % 9, b0_[size_t(v)]);
     }
 }
 
@@ -255,21 +269,23 @@ void FmMidiSynth::key_off(int v) {
     // FUN_000020d8
     if (voice_note_[size_t(v)] == 0) return;
     b0_[size_t(v)] &= 0xdf;
-    write(0, 0xb0 + v, b0_[size_t(v)]);
-    write(1, 0xb0 + v, b0_[size_t(v)]);
+    for (int bank = 0; bank < 2; ++bank)
+        if (on_bank(v, bank)) write(bank, 0xb0 + v % 9, b0_[size_t(v)]);
     voice_note_[size_t(v)] = 0;
+    released_[size_t(v)] = ++age_;
 }
 
 void FmMidiSynth::load_patch(int v, const FmPatch& p) {
     // FUN_00002162 with the bank converted like FUN_00000cd6 (BNK fields -> register bytes)
     for (int k = 0; k < 2; ++k) {
         const FmOperator& op = p.op[size_t(k)];
-        const int slot = kVoiceSlots[v][k];
+        const int slot = kVoiceSlots[v % 9][k];
         const int r20 = (op.am ? 0x80 : 0) | (op.vib ? 0x40 : 0) | (op.sustain ? 0x20 : 0) | (op.ksr ? 0x10 : 0) | (op.mult & 15);
         const int r40 = (op.ksl & 3) << 6 | (op.tl & 63);
-        reg40_[size_t(slot)] = r40;
-        reg80_[size_t(slot)] = (op.sl & 15) << 4 | (op.rr & 15);
+        reg40_[size_t(v * 2 + k)] = r40;
+        reg80_[size_t(v * 2 + k)] = (op.sl & 15) << 4 | (op.rr & 15);
         for (int bank = 0; bank < 2; ++bank) {
+            if (!on_bank(v, bank)) continue;
             write(bank, 0x20 + slot, r20);
             write(bank, 0x40 + slot, r40);
             write(bank, 0x60 + slot, (op.ar & 15) << 4 | (op.dr & 15));
@@ -278,21 +294,35 @@ void FmMidiSynth::load_patch(int v, const FmPatch& p) {
         }
     }
     const int c0 = ((p.feedback & 7) << 1 | (p.additive ? 1 : 0)) & 0x1f;
-    write(0, 0xc0 + v, c0 | 0x20);
-    write(1, 0xc0 + v, c0 | 0x10);
+    c0_[size_t(v)] = c0;
+    if (enhanced_) {
+        write(v / 9, 0xc0 + v % 9, c0 | pan_bits(voice_channel_[size_t(v)]));
+    } else {
+        write(0, 0xc0 + v, c0 | 0x20);
+        write(1, 0xc0 + v, c0 | 0x10);
+    }
     voice_additive_[size_t(v)] = p.additive;
 }
 
 void FmMidiSynth::write_level(int bank, int v, int value) {
     // carrier, and the modulator when both are heard
-    const int car = kVoiceSlots[v][1], mod = kVoiceSlots[v][0];
-    if (voice_additive_[size_t(v)]) write(bank, 0x40 + mod, level(value, reg40_[size_t(mod)]) | (reg40_[size_t(mod)] & 0xc0));
-    write(bank, 0x40 + car, level(value, reg40_[size_t(car)]) | (reg40_[size_t(car)] & 0xc0));
+    if (enhanced_) bank = v / 9;
+    const int car = kVoiceSlots[v % 9][1], mod = kVoiceSlots[v % 9][0];
+    const int r_mod = reg40_[size_t(v * 2)], r_car = reg40_[size_t(v * 2 + 1)];
+    if (voice_additive_[size_t(v)]) write(bank, 0x40 + mod, level(value, r_mod) | (r_mod & 0xc0));
+    write(bank, 0x40 + car, level(value, r_car) | (r_car & 0xc0));
 }
 
 void FmMidiSynth::pan(int ch, int value) {
     // FUN_0000276d
     ch_pan_[size_t(ch)] = value;
+    if (enhanced_) {
+        // One copy per voice: the OPL3's own left / right / both outputs, the usual way round.
+        for (int v = 0; v < 18; ++v)
+            if (voice_note_[size_t(v)] != 0 && voice_channel_[size_t(v)] == ch)
+                write(v / 9, 0xc0 + v % 9, c0_[size_t(v)] | pan_bits(ch));
+        return;
+    }
     int p = value;
     if (0x3f < p) p = 0x7f - p;
     for (int v = 0; v < 9; ++v) {
@@ -305,7 +335,7 @@ void FmMidiSynth::pan(int ch, int value) {
 void FmMidiSynth::volume(int ch, int value) {
     // FUN_000024cb
     ch_volume_[size_t(ch)] = value;
-    for (int v = 0; v < 9; ++v) {
+    for (int v = 0; v < voice_count(); ++v) {
         if (voice_note_[size_t(v)] == 0 || voice_channel_[size_t(v)] != ch) continue;
         const int u = int(((uint64_t(value) << 7) / 0x7f) * uint64_t(voice_velocity_[size_t(v)]) >> 7);
         write_level(ch_pan_[size_t(ch)] < 0x40 ? 0 : 1, v, u);
@@ -339,6 +369,18 @@ uint32_t FmMidiSynth::bend_word(int msb, int note, int v) const {
 
 int FmMidiSynth::pick_voice(int ch) const {
     // FUN_00002033
+    if (enhanced_) {
+        // The voice that went quiet longest ago, so a ringing note is not cut off; when all
+        // play, the oldest note.
+        int best = -1;
+        for (int v = 0; v < 18; ++v)
+            if (voice_note_[size_t(v)] == 0 && (best < 0 || released_[size_t(v)] < released_[size_t(best)])) best = v;
+        if (best >= 0) return best;
+        best = 0;
+        for (int v = 1; v < 18; ++v)
+            if (started_[size_t(v)] < started_[size_t(best)]) best = v;
+        return best;
+    }
     for (int v = 0; v < 9; ++v)
         if (voice_note_[size_t(v)] == 0) return v;
     for (int c = 0; c < 16; ++c) {
@@ -372,11 +414,11 @@ void FmMidiSynth::note_on(int ch, int note, int vel) {
     // Before the new patch, both operators get the fastest release (sustain level kept), five
     // times over: with the write spacing that lets the old sound die away in about a
     // millisecond instead of being cut.
-    for (int n = 0; n < 5; ++n)
+    for (int n = 0; n < (enhanced_ ? 0 : 5); ++n)
         for (int k = 1; k >= 0; --k) {
             const int slot = kVoiceSlots[v][k];
-            write(0, 0x80 + slot, reg80_[size_t(slot)] | 0x0f);
-            write(1, 0x80 + slot, reg80_[size_t(slot)] | 0x0f);
+            write(0, 0x80 + slot, reg80_[size_t(v * 2 + k)] | 0x0f);
+            write(1, 0x80 + slot, reg80_[size_t(v * 2 + k)] | 0x0f);
         }
     load_patch(v, *patch);
     voice_velocity_[size_t(v)] = vel;
@@ -384,6 +426,7 @@ void FmMidiSynth::note_on(int ch, int note, int vel) {
     write_level(1, v, u);
     write_level(0, v, u);
     voice_note_[size_t(v)] = note;
+    started_[size_t(v)] = ++age_;
     pan(ch, ch_pan_[size_t(ch)]);
     set_freq(v, word, true);
     if (ch != 9 && ch_bending_[size_t(ch)]) set_freq(v, bend_word(ch_bend_[size_t(ch)], note, v), false);
@@ -396,7 +439,7 @@ void FmMidiSynth::note_off(int ch, int note) {
         held.push_back(note);
         return;
     }
-    for (int v = 0; v < 9; ++v)
+    for (int v = 0; v < voice_count(); ++v)
         if (voice_note_[size_t(v)] == note && voice_channel_[size_t(v)] == ch) key_off(v);
 }
 
@@ -433,7 +476,7 @@ void FmMidiSynth::message(uint8_t status, uint8_t a, uint8_t b) {
             ch_bend_[size_t(ch)] = 0x40;
             ch_range_[size_t(ch)] = 2;
         } else if (a == 123) {
-            for (int v = 0; v < 9; ++v)
+            for (int v = 0; v < voice_count(); ++v)
                 if (voice_channel_[size_t(v)] == ch) key_off(v);
         }
         break;
@@ -443,7 +486,7 @@ void FmMidiSynth::message(uint8_t status, uint8_t a, uint8_t b) {
         if (ch == 9) break;
         ch_bend_[size_t(ch)] = b;
         ch_bending_[size_t(ch)] = true;
-        for (int v = 0; v < 9; ++v)
+        for (int v = 0; v < voice_count(); ++v)
             if (voice_note_[size_t(v)] != 0 && voice_channel_[size_t(v)] == ch)
                 set_freq(v, bend_word(b, voice_note_[size_t(v)], v), false);
         break;
@@ -466,8 +509,10 @@ void FmMidiSynth::render(float* out, int frames, int rate, float gain) {
     }
 }
 
-HmpPlayer::HmpPlayer(HmpSong song, std::vector<FmPatch> melodic, std::vector<FmPatch> drums, bool loop)
-    : song_(std::move(song)), synth_(std::move(melodic), std::move(drums)), loop_(loop) {}
+HmpPlayer::HmpPlayer(HmpSong song, std::vector<FmPatch> melodic, std::vector<FmPatch> drums, bool loop, bool enhanced)
+    : song_(std::move(song)), synth_(std::move(melodic), std::move(drums)), loop_(loop) {
+    synth_.set_enhanced(enhanced);
+}
 
 void HmpPlayer::mix(float* out, int frames, int rate, float gain) {
     if (done_ || rate <= 0) return;
@@ -500,7 +545,7 @@ void HmpPlayer::mix(float* out, int frames, int rate, float gain) {
     }
 }
 
-std::shared_ptr<HmpPlayer> load_hmp_music(const std::string& music_dat, int number, bool loop) {
+std::shared_ptr<HmpPlayer> load_hmp_music(const std::string& music_dat, int number, bool loop, bool enhanced) {
     auto a = Archive::open(music_dat);
     if (!a) return nullptr;
     auto hmp = a->read("MUSIC" + std::to_string(number) + ".HMP");
@@ -511,7 +556,7 @@ std::shared_ptr<HmpPlayer> load_hmp_music(const std::string& music_dat, int numb
     auto m = parse_adlib_bank(*mel);
     auto d = parse_adlib_bank(*drum);
     if (!song || m.empty()) return nullptr;
-    return std::make_shared<HmpPlayer>(std::move(*song), std::move(m), std::move(d), loop);
+    return std::make_shared<HmpPlayer>(std::move(*song), std::move(m), std::move(d), loop, enhanced);
 }
 
 int music_for_race(int map_index) {
