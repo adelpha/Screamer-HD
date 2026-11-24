@@ -64,6 +64,27 @@ private:
     std::map<std::string, PcxImage> backdrops_;
 };
 
+// CONFIG/CHOICE.DAT: the game's saved menu state, a 0x460-byte image of the globals from
+// 0x1203c0 (read_choice_dat / write_choice_dat):
+//   +0x000 car, +0x004 track, +0x008 name[4], +0x00c detail, +0x010 difficulty, +0x014 laps,
+//   +0x018..0x020 championship, +0x03c 6 ints, +0x06c best laps per track (6 x 0x50: float
+//   time[5], char name[5][4], int flags[5], int mode[5]), +0x24c best total times (same,
+//   +0x28 the replay number), +0x42c cars unlocked, +0x430 view, +0x438 speech, +0x43c music,
+//   +0x444..0x44c music/sfx/cd volume, +0x450 radar, +0x454 tracks unlocked, +0x458 tracks
+//   seen, +0x45c difficulty max.
+struct ChoiceFile {
+    std::array<uint8_t, 0x460> raw{};
+    ChoiceFile();  // the defaults read_choice_dat uses without a file
+    bool load(const std::string& path);
+    bool save(const std::string& path) const;
+    int32_t get(size_t o) const;
+    void set(size_t o, int32_t v);
+    float getf(size_t o) const;
+    void setf(size_t o, float v);
+    std::string str(size_t o) const;  // char[4]
+    void setstr(size_t o, const std::string& v);
+};
+
 // Keys the menu reacts to, as held this frame (frontend_handle_keys acts on changes).
 struct MenuKeys {
     bool esc = false, enter = false, up = false, down = false, left = false, right = false;
@@ -88,6 +109,14 @@ public:
 
     // frontend_show_title
     void show_title();
+    // The saved state (read_choice_dat) and back (write_choice_dat).
+    void load_choice(const ChoiceFile& c);
+    ChoiceFile save_choice() const;
+    // After a race (menu_replay_files): the best lap and, for 3-lap races, the total time go
+    // into the track's top five under the player's name.
+    void race_result(int map, float best_lap, float total_time, int laps, bool finished);
+    // frontend_start_race's loading screen: LOAD<n>L.PCX and "LOADING".
+    void draw_loading(Framebuffer& fb, int map);
     // One frame of frontend_draw_frame (keys, camera, page) at frame time dt.
     void update(const MenuKeys& keys, float dt);
     void draw(Framebuffer& fb, Renderer& renderer);
@@ -160,6 +189,8 @@ private:
     void draw_car_select(HudSurface& s);
     void draw_track_select(HudSurface& s);
     void draw_name_entry(HudSurface& s);
+    void draw_records(HudSurface& s);
+    void setup_records_page();
     int option(int item) const;
 
     MenuAssets& a_;
@@ -176,6 +207,10 @@ private:
     float letter_ = 0;        // DAT_0011d238
     int tracks_seen_ = 0;     // DAT_00120818
     uint32_t frame_ = 0;      // g_frame_counter (blinking)
+    ChoiceFile choice_;       // records and what this menu does not use itself
+    int records_track_ = 0;   // DAT_00120988
+    int records_row_ = 0;     // DAT_0012098c
+    std::array<uint8_t, 256> darken_{};  // build_darken_tables for the dialog's backdrop
     struct Block {
         int row = 0, ypos = 0, start = 0, centred = 1, turned = 0;
         int x0 = 0, y0 = 0, z0 = 0, sx = 0, sy = 0;
