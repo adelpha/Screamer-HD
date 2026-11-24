@@ -134,7 +134,10 @@ bool Race::load(const std::string& data_dat, const std::string& track_name, char
     if (mrk) markers = parse_markers(*mrk);
     size_t n = 0;
     const DtrFile dtr_file(std::string(dtr->begin(), dtr->end()));
-    if (auto td = dtr_file.pack_section("TRACK_DATA", 0x10, 0x10); td && td->size() >= 0x10) bonus_time = rd32(*td, 8);
+    if (auto td = dtr_file.pack_section("TRACK_DATA", 0x10, 0x10); td && td->size() >= 0x10) {
+        camera_hi = rd32(*td, 4);
+        bonus_time = rd32(*td, 8);
+    }
     auto packed = dtr_file.pack_section("OPPONENTS", 0x14, 0x14, &n);
     defs.clear();
     if (packed)
@@ -601,7 +604,7 @@ void Race::update(const Track& track, const CarInput& in_raw, float frame_time, 
         in.race_started = started;
         in.cpu_cars_go = started;
         // car_update_race_timers (in car_update_driving)
-        if (started && !finished) {
+        if (started && !finished && !failed) {
             if (timing_started) {
                 total_time += frame_time;
                 lap_time += frame_time;
@@ -609,7 +612,8 @@ void Race::update(const Track& track, const CarInput& in_raw, float frame_time, 
             time_left -= frame_time;
             if (time_left < 0.0f) time_left = 0.0f;
         }
-        if (finished || time_left <= 0.0f) in.accel = 0;  // out of time: no throttle
+        if (finished || failed || time_left <= 0.0f) in.accel = 0;  // out of time: no throttle
+        if (started && !finished && time_left <= 0.0f && player.speed < 1.0f) failed = true;
     }
     positions_running_ = in.race_started;
     update_positions();  // race_update_positions runs before the cars move

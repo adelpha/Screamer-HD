@@ -1,6 +1,7 @@
 #include "core/hud.h"
 
 #include "core/archive.h"
+#include "core/dtr.h"
 #include "core/sim_clock.h"
 
 #include <algorithm>
@@ -202,6 +203,43 @@ bool Hud::load(const std::string& game_dat) {
     return true;
 }
 
+bool Hud::load_texts(const std::string& local_dat) {
+    auto a = Archive::open(local_dat);
+    auto t = a ? a->read("GAME.TXT") : std::nullopt;
+    if (!t) return false;
+    texts.clear();
+    std::string line;
+    for (char c : *t) {
+        if (c == 13) continue;
+        if (c == 10) {
+            if (line.empty() || line[0] != '*') texts.push_back(line);
+            line.clear();
+        } else {
+            line.push_back(c);
+        }
+    }
+    if (!line.empty() && line[0] != '*') texts.push_back(line);
+    return true;
+}
+
+bool Hud::load_cockpit(const std::string& game_dat, const std::string& id, const std::string& cars_dtr,
+                       const std::string& section) {
+    auto a = Archive::open(game_dat);
+    if (!a) return false;
+    auto pkc = a->read("COCK" + id + "L.PKC");
+    if (!pkc) return false;
+    auto values = DtrFile(cars_dtr).section(section);
+    if (!values || values->size() < 29) return false;
+    auto v = [&](size_t i) { return (*values)[i].i; };
+    layout.needle_len = v(0);
+    layout.gear_sprite = v(1);
+    layout.speed_x = v(2); layout.speed_y = v(3);
+    layout.rpm_x = v(5); layout.rpm_y = v(6);
+    for (size_t g = 0; g < 7; ++g) layout.gear[g] = {v(8 + 3 * g), v(9 + 3 * g)};
+    cockpit = std::move(*pkc);
+    return true;
+}
+
 void Hud::draw_needle(HudSurface& s, int cx, int cy, int len, float angle, uint8_t color) {
     // hud_draw_needle: a line from the pivot and from two points one pixel either side of it
     // to the tip; angle 0 points 2 radians anticlockwise of up.
@@ -222,7 +260,19 @@ void Hud::draw(Framebuffer& fb, const HudState& st, const std::array<uint8_t, 25
     HudSurface s(fb);
     // hud_draw_cockpit: the labels, then the gauges of the chosen view.
     s.rle(labels);
-    if (view == 2) {
+    if (view == 1 && !cockpit.empty()) {
+        // The dashboard: speed and rev needles (lerp k 0x5a), the gear as a sprite.
+        s.rle(cockpit);
+        const float speed_target = st.speed / st.maxspd * 4.084070563316345f;
+        speed_needle_ = (speed_needle_ - speed_target) * pow_table(pow_row, 0x5a) + speed_target;
+        draw_needle(s, layout.speed_x, layout.speed_y, layout.needle_len, speed_needle_, 0xff);
+        float rpm_target = st.rpm / st.maxrpm * 3.612831652164459f;
+        if (3.612831652164459f < rpm_target) rpm_target = 3.612831652164459f;
+        rpm_needle_ = (rpm_needle_ - rpm_target) * pow_table(pow_row, 0x5a) + rpm_target;
+        draw_needle(s, layout.rpm_x, layout.rpm_y, layout.needle_len, rpm_needle_, 0xff);
+        const size_t g = size_t(std::clamp(st.gear, 0, 6));
+        s.sprite(sprites, st.gear + layout.gear_sprite, layout.gear[g][0], layout.gear[g][1]);
+    } else if (view == 2) {
         s.rle(gauges);
         char buf[16];
         std::snprintf(buf, sizeof buf, "\x01%03d", int(st.speed * 0.017f));  // km/h
@@ -277,6 +327,16 @@ void Hud::draw(Framebuffer& fb, const HudState& st, const std::array<uint8_t, 25
         }
         s.sprite(sprites, 4, 0x26, 0x9e);
         s.reset_clip();
+    }
+    // race_end_screen (race_end_draw_mode1, or "TIME OVER" when out of time)
+    auto centred = [&](const std::string& t, int y) { s.text(fonts, (320 - s.measure(fonts, t, 0)) / 2, y, t, 0, 2); };
+    if (st.end == 1 && texts.size() > 11) {
+        if (st.won) centred(texts[11], 0x3e);
+        const size_t pos = size_t(std::clamp(st.position, 1, 10));
+        centred(texts[pos] + " " + texts[0], 0x5a);
+        centred(clock_text(st.total_time), 0x78);
+    } else if (st.end == 2 && texts.size() > 22) {
+        centred(texts[22], 0x5a);
     }
     // race_countdown_update: the start lights.
     if (st.countdown_stage >= 0) s.sprite(sprites, st.countdown_stage, 0x78, 0x36);

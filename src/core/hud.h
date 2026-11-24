@@ -93,11 +93,22 @@ struct HudState {
     float player_yaw = 0;
     std::vector<std::array<int, 2>> cpu_cars;                       // positions for the radar
     std::vector<std::array<int, 4>> radar_lines;                    // track lines (x1, z1, x2, z2)
+    // The end of the race (race_end_screen): 1 finished (won = first), 2 out of time.
+    int end = 0;
+    bool won = false;
 };
 
 class Hud {
 public:
     bool load(const std::string& game_dat);  // GFX/GAME.DAT
+    // The dashboard of a car: COCK<id>L.PKC from GAME.DAT and the layout section from CARS.DTR.
+    bool load_cockpit(const std::string& game_dat, const std::string& id, const std::string& cars_dtr,
+                      const std::string& section);
+    // GAME.TXT from DATA/LOCAL.DAT (text_load): "POSITION", "1ST".."10TH", "GREAT!", ...
+    bool load_texts(const std::string& local_dat);
+    std::vector<std::string> texts;
+    std::vector<uint8_t> cockpit;
+    CockpitLayout layout;
     // view: 1 dashboard (COCKnn), 2 compact gauges (IMPRES, the default); radar 0 (off) .. 3.
     void draw(Framebuffer& fb, const HudState& s, const std::array<uint8_t, 256>& darken075, float frame_time,
               int pow_row, int view = 2, int radar = 1);

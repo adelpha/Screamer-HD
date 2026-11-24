@@ -55,7 +55,8 @@ struct Options {
     std::string detail = "H";
     int car_index = 0;              // --scene drive: CARS_DATA record (0..12)
     std::string start;              // --scene drive: X,Z start position
-    std::string hold;               // --scene drive: keys held in every frame (accel,brake,left,right)       // --detail: H (high, GFX/MAPnH.DAT) or L (low, MAPnL.DAT)
+    std::string hold;
+    int view = 2;                   // --scene drive: starting view 0..3 (F1..F4)               // --scene drive: keys held in every frame (accel,brake,left,right)       // --detail: H (high, GFX/MAPnH.DAT) or L (low, MAPnL.DAT)
 };
 
 void print_usage() {
@@ -114,6 +115,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--car-index") o.car_index = std::atoi(next("--car-index"));
         else if (a == "--start") o.start = next("--start");
         else if (a == "--hold") o.hold = next("--hold");
+        else if (a == "--view") o.view = std::atoi(next("--view"));
         else if (a == "--detail") o.detail = std::string(next("--detail")) == "low" ? "L" : "H";
         else if (a == "--render-size") {
             if (std::sscanf(next("--render-size"), "%dx%d", &o.fb_width, &o.fb_height) != 2 || o.fb_width <= 0 || o.fb_height <= 0) {
@@ -266,12 +268,13 @@ int main(int argc, char** argv) {
         bool cpu_cars = false;             // DATA/<track>.DAT had racing lines
         scr::Model model;
         std::vector<scr::Model> cpu_models;  // per CPU car
-        scr::ChaseCamera camera;
+        scr::ViewCamera camera;            // F1..F4
         scr::EnvScroll env;                // glass reflection scroll of the player car
         std::vector<scr::EnvScroll> cpu_env;
     };
     std::optional<Player> player;
     std::optional<scr::Hud> hud;  // the race HUD (--scene drive with CPU cars)
+    int radar = 1;                // M cycles 0 (off) .. 3 (DAT_0011d2a0)
     if (drive) {
         auto gen = scr::resolve_game_file(*game_dir, "DATA/GEN.DAT");
         auto ga = gen ? scr::Archive::open(*gen) : std::nullopt;
@@ -319,10 +322,18 @@ int main(int argc, char** argv) {
             player->race.player.reset(setup, *track, sx, sz);
         }
         SDL_Log("driving %s (CARS_DATA %zu), %zu CPU cars", name.c_str(), idx, player->race.opponents.size());
+        player->camera.set(opt.view);
         if (player->cpu_cars) {
             auto game = scr::resolve_game_file(*game_dir, "GFX/GAME.DAT");
             hud.emplace();
             if (!game || !hud->load(*game)) hud.reset();
+            if (auto local = scr::resolve_game_file(*game_dir, "DATA/LOCAL.DAT"); hud && local) hud->load_texts(*local);
+            // The car's dashboard: COCK<nn><A|B>L.PKC and its layout COCK<nn>L in CARS.DTR.
+            if (hud && name.size() >= 6) {
+                const std::string nn = name.substr(4, 2);
+                hud->load_cockpit(*game, nn + (setup.animation ? "B" : "A"),
+                                  std::string(text->begin(), text->end()), "COCK" + nn + "L");
+            }
         }
     }
     SDL_Gamepad* pad = nullptr;
@@ -347,6 +358,9 @@ int main(int argc, char** argv) {
             case SDL_EVENT_QUIT: running = false; break;
             case SDL_EVENT_KEY_DOWN:
                 if (ev.key.key == SDLK_ESCAPE) running = false;
+                else if (player && ev.key.key >= SDLK_F1 && ev.key.key <= SDLK_F4 && player->race.started)
+                    player->camera.select(int(ev.key.key - SDLK_F1));
+                else if (ev.key.key == SDLK_M && !ev.key.repeat) radar = radar >= 3 ? 0 : radar + 1;
                 else if (ev.key.key == SDLK_F12) {
                     scr::SurfacePtr s(SDL_RenderReadPixels(renderer, nullptr));
                     save_or_log(s.get(), "artifacts/screenshots/frame_" + std::to_string(frame) + ".png");
@@ -406,7 +420,10 @@ int main(int argc, char** argv) {
                         player->race.update(*track, in, clock.frame_time(), clock.pow_table_row());
                     else
                         player->race.player.update(*track, in, clock.frame_time(), clock.pow_table_row());
-                    player->camera.update(player->race.player, clock.frame_time(), clock.pow_table_row());
+                    player->camera.update(player->race.player, player->race.camera_hi, clock.frame_time(),
+                                          clock.pow_table_row());
+                    // engine_set_viewport(320, h, h * 0.65): the projection centre follows the view size.
+                    cam.center_y = float(int(float(player->camera.viewport) * 0.65f));
                     constexpr float kToUnits = 1024.0f / 3.1415927410125732f;
                     cam.x = float(player->camera.x);
                     cam.y = float(player->camera.y);
@@ -437,8 +454,10 @@ int main(int argc, char** argv) {
                     pose.env_rate = env_rate;
                     scr::Pose sh = pose;
                     sh.y = float(c.ground_y - 2);
-                    if (shadow) renderer3d.draw_model(*shadow, sh);
-                    renderer3d.draw_model(player->model, pose);
+                    if (player->camera.car_visible) {
+                        if (shadow) renderer3d.draw_model(*shadow, sh);
+                        renderer3d.draw_model(player->model, pose);
+                    }
                     // opponent_sync_render_object
                     for (size_t i = 0; i < player->race.opponents.size(); ++i) {
                         const scr::Opponent& o = player->race.opponents[i];
@@ -486,6 +505,8 @@ int main(int argc, char** argv) {
                     hs.maxrpm = c.setup.maxrpm;
                     hs.gear = c.gear;
                     hs.countdown_stage = r.countdown_stage;
+                    hs.end = r.finished ? 1 : r.failed ? 2 : 0;
+                    hs.won = r.finished && r.player_position == 1;
                     hs.player_x = c.pos_x;
                     hs.player_z = c.pos_z;
                     hs.player_yaw = c.yaw;
@@ -494,7 +515,8 @@ int main(int argc, char** argv) {
                     for (const scr::TrackSection& ts : track->sections)
                         if (std::abs(ts.x - c.pos_x) < 8 * 8192 + 4096 && std::abs(ts.z - c.pos_z) < 8 * 8192 + 4096)
                             hs.radar_lines.push_back({ts.left_x, ts.left_z, ts.right_x, ts.right_z});
-                    hud->draw(fb, hs, track->darken075, clock.frame_time(), clock.pow_table_row());
+                    hud->draw(fb, hs, track->darken075, clock.frame_time(), clock.pow_table_row(), player->camera.hud_view,
+                              radar);
                 }
             } else if (title) {
                 scr::blit_pcx(*title, fb);

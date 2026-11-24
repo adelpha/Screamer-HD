@@ -54,7 +54,10 @@ CarSetup car_setup(const uint8_t* d, const Model& model) {
     const char* inner[4] = {"fli", "rli", "fri", "rri"};
     for (size_t w = 0; w < 4; ++w)
         for (const Part& p : model.parts)
-            if (p.name == inner[w]) s.wheel_pos[w] = {p.offset[0], p.offset[2]};
+            if (p.name == inner[w]) {
+                s.wheel_pos[w] = {p.offset[0], p.offset[2]};
+                s.wheel_y = p.offset[1];
+            }
     return s;
 }
 
@@ -583,6 +586,94 @@ void Car::body_from_wheels() {
     pitch = float(std::atan(double(float(wheel[2].y - wheel[3].y)) / double(wheelbase)));
     ground_roll = float(-std::atan(double(float(wheel[0].y2 - wheel[2].y2)) / double(track_width)));
     ground_pitch = float(std::atan(double(float(wheel[2].y2 - wheel[3].y2)) / double(wheelbase)));
+}
+
+namespace {
+struct ViewDef {
+    int mode, viewport, hud;
+};
+constexpr ViewDef kViews[4] = {{0, 200, 2}, {0, 132, 1}, {1, 200, 2}, {9, 200, 2}};
+} // namespace
+
+void ViewCamera::select(int v) {
+    if (v < 0 || v > 3 || v == view) return;
+    view = v;
+    pending_viewport_ = kViews[v].viewport;
+    pending_hud_ = kViews[v].hud;
+    // camera_handle_view_keys: the full-height view and the gauges during the blend.
+    viewport = 200;
+    if (hud_view == 1) hud_view = 2;
+    start_blend_ = true;
+}
+
+void ViewCamera::set(int v) {
+    if (v < 0 || v > 3) return;
+    view = v;
+    viewport = pending_viewport_ = kViews[v].viewport;
+    hud_view = pending_hud_ = kViews[v].hud;
+    blending_ = start_blend_ = false;
+}
+
+void ViewCamera::base(const Car& car, int camera_hi, float frame_time, int pow_row, float& p, float& yw, float& r,
+                      int& cx, int& cy, int& cz) {
+    const int mode = kViews[view].mode;
+    if (mode == 0) {
+        // camera_mode_chase: on the car at camera height.
+        p = car.pitch + car.lean_pitch;
+        yw = car.yaw + car.drift_angle;
+        r = car.lean_roll * 3.0f + car.roll;
+        cx = car.pos_x + car.cam_shake_x;
+        cy = car.setup.wheel_y + car.pos_y + car.body_lift + camera_hi;  // wheel_susp[1]: a wheel part height
+        cz = car.pos_z;
+        car_visible = false;
+        return;
+    }
+    chase_.update(car, frame_time, pow_row, mode == 1 ? 1 : 9);
+    p = chase_.pitch; yw = chase_.yaw; r = chase_.roll;
+    cx = chase_.x; cy = chase_.y; cz = chase_.z;
+    car_visible = true;
+}
+
+void ViewCamera::update(const Car& car, int camera_hi, float frame_time, int pow_row) {
+    float p, yw, r;
+    int cx, cy, cz;
+    if (start_blend_) {
+        // Remember the old camera, then blend from it (camera_interpolate).
+        const float op = pitch, oyw = yaw, orl = roll;
+        const int ox = x, oy = y, oz = z;
+        chase_.snap = true;
+        base(car, camera_hi, frame_time, pow_row, p, yw, r, cx, cy, cz);
+        off_pos_[0] = ox - cx; off_pos_[1] = oy - cy; off_pos_[2] = oz - cz;
+        off_angle_[0] = op - p; off_angle_[1] = oyw - yw; off_angle_[2] = orl - r;
+        start_blend_ = false;
+        blending_ = true;
+    } else {
+        base(car, camera_hi, frame_time, pow_row, p, yw, r, cx, cy, cz);
+    }
+    if (blending_) {
+        for (float& a : off_angle_) {
+            float d = a;
+            while (d > kPi) d -= kTwoPi;
+            while (d < -kPi) d += kTwoPi;
+            a = d * pow_table(pow_row, 0x19);  // angle_lerp_toward(offset, 0, 0x19)
+        }
+        for (int& o : off_pos_) o = chop(double(o) * pow_table(pow_row, 0x168 / 4));
+        const float settle = frame_time * 200.0f;
+        if (std::cos(off_angle_[0]) > 0.99995 && std::cos(off_angle_[1]) > 0.99995 && std::cos(off_angle_[2]) > 0.99995 &&
+            float(std::abs(off_pos_[0])) < settle && float(std::abs(off_pos_[1])) < settle && float(std::abs(off_pos_[2])) < settle) {
+            blending_ = false;
+            viewport = pending_viewport_;
+            hud_view = pending_hud_;
+            off_angle_[0] = off_angle_[1] = off_angle_[2] = 0;
+            off_pos_[0] = off_pos_[1] = off_pos_[2] = 0;
+        }
+    }
+    pitch = p + off_angle_[0];
+    yaw = yw + off_angle_[1];
+    roll = r + off_angle_[2];
+    x = cx + off_pos_[0];
+    y = cy + off_pos_[1];
+    z = cz + off_pos_[2];
 }
 
 void ChaseCamera::update(const Car& car, float frame_time, int pow_row, int view) {
