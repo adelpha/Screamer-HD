@@ -27,3 +27,5 @@ target_link_libraries(screamer PRIVATE screamer_core)
 # Image comparison tool used by the test harness and the DOSBox reference scripts.
 add_executable(imgcmp tools/imgcmp.cpp)
 target_link_libraries(imgcmp PRIVATE screamer_core)
+add_executable(tracecmp tools/tracecmp.cpp)
+target_link_libraries(tracecmp PRIVATE screamer_core)

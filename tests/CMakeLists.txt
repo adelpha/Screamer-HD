@@ -53,6 +53,21 @@ add_render_test(testpattern_window_widescreen
 add_test(NAME smoke.headless_run COMMAND screamer --headless --scene testpattern --frames 10)
 set_tests_properties(smoke.headless_run PROPERTIES LABELS "smoke" PASS_REGULAR_EXPRESSION "frames=10")
 
+# --- Car physics against recordings of the original (tools/dosbox/record-race.ps1) ---
+# The recordings stay in artifacts/traces (git-ignored); a test exists only when its recording
+# does. Allowed differences: bumps from CPU cars (not ported yet) and +-1 ground height on slopes.
+foreach(trace accel:1 steer:0 wall:0 skid:0 fast:4)
+  string(REPLACE ":" ";" parts ${trace})
+  list(GET parts 0 name)
+  list(GET parts 1 allowed)
+  set(file ${CMAKE_SOURCE_DIR}/artifacts/traces/${name}.trace)
+  if(EXISTS ${file} AND EXISTS ${SCREAMER_DATA_DIR}/GFX/MAP1H.DAT)
+    add_test(NAME physics.${name}
+      COMMAND tracecmp ${file} ${SCREAMER_DATA_DIR}/GFX/MAP1H.DAT MAP1 --max-diff ${allowed})
+    set_tests_properties(physics.${name} PROPERTIES LABELS "physics")
+  endif()
+endforeach()
+
 # --- Original game data: verify the user's copy against the recorded manifest ---
 add_test(NAME gamedata.manifest
   COMMAND ${CMAKE_COMMAND}

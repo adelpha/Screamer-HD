@@ -114,6 +114,7 @@ void Car::update(const Track& track, const CarInput& in, float frame_time, int p
     update_steering(in);
     wheel_loads();
     update_skid();
+    crash_update(track);
     // car_update_track_contact (progress and checkpoints are not ported)
     corner_probes(track);
     resolve_corner_probes(track);
@@ -121,6 +122,9 @@ void Car::update(const Track& track, const CarInput& in, float frame_time, int p
     wheel_ground(track);
     update_track_heading(track);
     body_from_wheels();
+    // camera_mode_car keeps the yaw in 0..2pi (camera_update runs at the end of race_frame).
+    if (kTwoPi < yaw) yaw += -kTwoPi;
+    else if (yaw < 0.0f) yaw += kTwoPi;
 }
 
 void Car::integrate_motion() {
@@ -130,7 +134,10 @@ void Car::integrate_motion() {
     if (kTwoPi < yaw) yaw += -kTwoPi;
     prev_speed = speed;
     const float speed_factor = 1.0f;  // 0x300, network catch-up
-    if (steer == 0.0f) {
+    if (crash_state != 0) {
+        pos_x = chop(std::sin(double(yaw)) * double(speed) * dt_ + double(pos_x));
+        pos_z = chop(double(pos_z) - std::cos(double(yaw)) * double(speed) * dt_);
+    } else if (steer == 0.0f) {
         const float fx = float(std::sin(double(yaw)) * std::cos(double(pitch)));
         const float fz = float(-std::cos(double(pitch)) * std::cos(double(yaw)));
         pos_x = chop(double(fx * speed * dt_ * speed_factor) + double(pos_x));
@@ -155,6 +162,11 @@ void Car::integrate_motion() {
 
 void Car::engine_gearbox(const CarInput& in) {
     const float maxrpm = setup.maxrpm;
+    if (!in.race_started) {
+        engine_rpm = lerp(engine_rpm, throttle * maxrpm, 0x4b);
+        if (speed < dt_ * 500.0f) gear = 0;
+        return;
+    }
     if (setup.shiftmode == 0) {
         if (in.gear_up) {
             if (gear < setup.n_shifts && !gear_latch) { ++gear; gear_latch = true; }
@@ -169,15 +181,18 @@ void Car::engine_gearbox(const CarInput& in) {
         } else if (engine_rpm < float(4000 - gear) && gear > 1) {
             --gear;
         }
+        if (crash_state == 5) gear = 1;
     }
     if (gear != 0) {
         const float ratio = setup.sh_rap[size_t(gear - 1)];
         speed_limit = float(double(setup.maxspd) - (1.0 + std::sin(double(pitch)) * 4.0) * 1000.0);
         if (setup.grip * 6000.0f < engine_rpm && speed < 2000.0f && in.accel >= 0xc9) {
-            // Wheelspin at the start (car_set_state): the revs drop instead of following speed.
+            // Wheelspin at the start: the revs drop instead of following speed.
+            set_state(5);
             engine_rpm -= dt_ * 500.0f;
         } else {
             engine_rpm = ratio * speed * rpm_per_speed;
+            if (crash_state == 5) crash_state = 6;
         }
         const float top = maxrpm / (rpm_per_speed * ratio);  // top speed in this gear
         float pull, gain;
@@ -203,7 +218,7 @@ void Car::engine_gearbox(const CarInput& in) {
             if (double(engine_rpm) < double(maxrpm) * double(throttle)) engine_rpm = maxrpm * throttle;
         }
         const float old = speed;
-        speed = engine_rpm / (rpm_per_speed * ratio);
+        speed = crash_state == 5 ? dt_ * 1000.0f + speed : engine_rpm / (rpm_per_speed * ratio);
         if (speed_limit < speed) speed = speed_limit;
         if (max_accel * dt_ < old - speed) braking = 1.0f;
     } else {
@@ -215,7 +230,7 @@ void Car::engine_gearbox(const CarInput& in) {
 }
 
 void Car::update_throttle(const CarInput& in) {
-    if (0.0f <= throttle && skid == 0.0f && braking == 0.0f && in.accel > 0) {
+    if (0.0f <= throttle && skid == 0.0f && crash_state == 0 && braking == 0.0f && in.accel > 0) {
         throttle = float(std::abs(in.accel)) / 1023.0f;
     } else {
         throttle = 0.0f;
@@ -224,7 +239,8 @@ void Car::update_throttle(const CarInput& in) {
 
 void Car::update_brake(const CarInput& in) {
     if (in.brake > 0) {
-        brake = float(std::abs(in.brake)) / 1023.0f;  // digital/keyboard path
+        // An analog pedal sets the brake directly; a key ramps it up to 1.
+        brake = in.analog_brake ? float(std::abs(in.brake)) / 1023.0f : lerp(brake, 1.0f, 0x52);
     } else {
         brake = 0.0f;
     }
@@ -236,7 +252,7 @@ void Car::update_brake(const CarInput& in) {
 }
 
 void Car::update_steering(const CarInput& in) {
-    const int k = (braking == 0.0f && skid == 0.0f) ? 0x50 : 0x55;
+    const int k = crash_state == 5 ? 0x58 : (braking == 0.0f && skid == 0.0f) ? 0x50 : 0x55;
     steer_max = float((1.0 - safe_sqrt(double(speed / setup.maxspd))) * 0.2967059910297394 + 0.01745329238474369);
     const float mirror = 1.0f;  // g_race_options & 0x10 (MIRRO cheat) gives -1
     if (in.analog_steer) {
@@ -255,7 +271,7 @@ void Car::update_steering(const CarInput& in) {
         steer = float(safe_sqrt(1.0 - double(speed / setup.maxspd)) * shake + double(steer));
         if (steer_max < std::fabs(steer)) steer = (steer < 0.0f ? -1.0f : 1.0f) * steer_max;
     }
-    if ((0.0f < steer && probe[0].hit) || (steer < 0.0f && probe[2].hit)) steer = 0.0f;
+    if ((0.0f < steer && probe[0].hit) || (steer < 0.0f && probe[2].hit) || crash_state == 1) steer = 0.0f;
     if (steer != 0.0f) {
         turn_radius = float(double(wheelbase) / std::tan(double(steer)));
         turn_rate = (dt_ * speed) / turn_radius;
@@ -285,7 +301,7 @@ void Car::wheel_loads() {
         }
         if (std::fabs(w.load_long) < std::fabs(lng / dt_)) {
             w.load_time = 0;
-            w.load_long = lerp(w.load_long, lng / dt_, 0x50);
+            w.load_long = lerp(w.load_long, lng / dt_, 0x3d);
         }
         const float load = w.load_lat + w.load_long;
         w.lift = chop(std::cos(double(w.load_time * 12.566370964f) + double(kPi)) * double(load));
@@ -304,6 +320,11 @@ void Car::wheel_loads() {
 
 void Car::update_skid() {
     bool skidding = false;
+    if (crash_state != 0) {
+        skid_level = lerp(skid_level, skid, 0x50);
+        if (skid_level < 10.0f) skid_level = 0.0f;
+        return;
+    }
     if (braking == 0.0f) {
         const float sign = turn_rate < 0.0f ? -1.0f : 1.0f;
         const int bumps = (int(wheel[0].bumpy) + int(wheel[2].bumpy)) * 1000 + (int(wheel[1].bumpy) + int(wheel[3].bumpy)) * 600;
@@ -353,7 +374,7 @@ void Car::corner_probes(const Track& track) {
         rotate_xz(ox, oz, chop(double(p.local_x) * cr), chop(double(p.local_z) * cp), -yaw);
         p.x = pos_x + ox;
         p.z = pos_z + oz;
-        p.hit = !ground_query(track, p.x, p.z).has_value();
+        p.hit = !ground_query(track, p.x, p.z, true).has_value();
         if (p.hit) wall_contact = true;
     }
 }
@@ -376,7 +397,7 @@ void Car::resolve_corner_probes(const Track& track) {
         rotate_xz(bx, bz, lx, lz, s->heading);
         p.push_x = bx - rx;
         p.push_z = bz - rz;
-        p.heading = float(int(s->heading));  // stored as an int in the game
+        p.heading = s->heading;
     }
 }
 
@@ -417,19 +438,19 @@ void Car::wheel_ground(const Track& track) {
 
 void Car::update_track_heading(const Track& track) {
     if (const TrackPoint* p = nearest_track_point(track, pos_x, pos_z)) track_heading = p->heading;
-    if (!wall_contact) return;
+    if (!wall_contact || crash_state != 0) return;
     const float hit = float(std::fabs(std::sin(double(yaw + wall_heading))));
     float diff = std::fabs(yaw - track_heading);
     while (kPi < diff) diff += -kPi;
     if (kHalfPi < diff) diff = kPi - diff;
     diff = diff / kHalfPi;
-    (void)diff;  // speed * diff > slide_threshold starts a crash (car_set_state), not ported
+    if (slide_threshold < speed * diff) set_state(2);  // too fast into the wall: crash
     const float len = float(safe_sqrt(double(wall_push_x) * wall_push_x + double(wall_push_z) * wall_push_z));
     if (len > 0.0f) {
         impact_vel_x = float(wall_push_x) / len;
         impact_vel_z = float(wall_push_z) / len;
     }
-    impact_timer = float(std::pow(double(hit), 2.0) * double(speed * 2.0f) + 2000.0);
+    impact_timer = float(std::pow(double(hit), 4.0) * double(speed * 2.0f) + 2000.0);
     if (5000.0f < impact_timer) impact_timer = 5000.0f;
     speed = float(double(speed) - double(speed) * 0.9 * double(hit));
     if (speed <= 0.0f) speed = 0.0f;
@@ -438,6 +459,95 @@ void Car::update_track_heading(const Track& track) {
     skid_prev = 0.0f;
     skid = 0.0f;
     drift_angle = 0.0f;
+}
+
+void Car::crash_update(const Track& track) {
+    switch (crash_state) {
+    case 2:
+        crash_state = 1;
+        speed = float(double(speed) * 0.6);
+        if (const TrackPoint* p = nearest_track_point(track, pos_x, pos_z)) yaw = p->heading;
+        crash_bounce = 3000.0f;
+        crash_bounce_count = 0;
+        crash_roll_rate = crash_pitch_rate = 12.0f;
+        drift_angle = body_roll_ofs = body_pitch_ofs = 0.0f;
+        body_ofs_y = 0;
+        [[fallthrough]];
+    case 1:
+        body_ofs_y = chop(double(crash_bounce * dt_) + double(body_ofs_y));
+        crash_bounce = crash_bounce - dt_ * 6000.0f;
+        crash_pitch_rate = pow_table(pow_row_, 0x184 / 4) * crash_pitch_rate;
+        body_pitch_ofs = crash_pitch_rate * dt_ + body_pitch_ofs;
+        crash_roll_rate = pow_table(pow_row_, 0x184 / 4) * crash_roll_rate;
+        body_roll_ofs = crash_roll_rate * dt_ + body_roll_ofs;
+        if (body_ofs_y < 1) {
+            ++crash_bounce_count;
+            body_ofs_y = 0;
+            crash_bounce = float(-(double(crash_bounce) * 0.4));
+            body_roll_ofs = body_pitch_ofs = 0.0f;
+            crash_roll_rate = (crash_bounce_count & 1) == 0 ? 0.6f : -0.6f;
+            crash_pitch_rate = -4.0f;
+        }
+        if (3 < crash_bounce_count) crash_state = 0;
+        break;
+    case 5:
+        if (gear != 0) {
+            cam_shake_x ^= 0x1f;
+            yaw = float(double(steer) * 0.3 + double(yaw));
+        }
+        break;
+    case 6:
+        cam_shake_x = 0;
+        crash_state = 0;
+        break;
+    default:
+        break;
+    }
+}
+
+void Car::load_player_car(const uint8_t* p) {
+    auto f = [&](size_t o) { return rd_f32(p, o); };
+    auto i = [&](size_t o) { return rd_i32(p, o); };
+    arc_dx = i(0x1c); arc_dz = i(0x24);
+    wall_contact = i(0x40) != 0; wall_push_x = i(0x44); wall_push_z = i(0x4c);
+    wall_heading = f(0x50);
+    for (size_t k = 0; k < 4; ++k) {
+        const size_t b = 0x54 + k * 0x2c;
+        probe[k].local_x = i(b); probe[k].local_z = i(b + 8);
+        probe[k].x = i(b + 0xc); probe[k].z = i(b + 0x14);
+        probe[k].hit = i(b + 0x18) != 0;
+        probe[k].push_x = i(b + 0x1c); probe[k].push_z = i(b + 0x24);
+        probe[k].heading = f(b + 0x28);
+    }
+    steer = f(0x108); steer_max = f(0x10c); braking = f(0x110); brake = f(0x114);
+    body_pitch_ofs = f(0x124); drift_angle = f(0x128); body_roll_ofs = f(0x12c); body_ofs_y = i(0x134);
+    track_heading = f(0x13c); gear_latch = i(0x140) != 0; throttle = f(0x144);
+    crash_state = i(0x148); crash_bounce = f(0x14c); crash_bounce_count = i(0x150);
+    crash_pitch_rate = f(0x154); crash_roll_rate = f(0x15c);
+    rpm_per_speed = f(0x174); engine_drag = f(0x178); brake_decel = f(0x17c); slide_threshold = f(0x180);
+    grip_limit = f(0x184); skid_brake_limit = f(0x188); max_accel = f(0x18c); brake_skid_limit = f(0x190);
+    for (size_t k = 0; k < 4; ++k) {
+        const size_t b = 0x194 + k * 0x54;
+        CarWheel& w = wheel[k];
+        w.x = i(b); w.y = i(b + 4); w.z = i(b + 8);
+        w.x2 = i(b + 0xc); w.y2 = i(b + 0x10); w.z2 = i(b + 0x14);
+        w.local_x = i(b + 0x18); w.local_z = i(b + 0x20);
+        w.ground_y = i(b + 0x24); w.ground_y2 = i(b + 0x28); w.bumpy = i(b + 0x2c) != 0;
+        w.load_time = f(b + 0x30); w.lift = i(b + 0x34); w.load_lat = f(b + 0x38); w.load_long = f(b + 0x40);
+    }
+    track_width = i(0x2e4); wheelbase = i(0x2ec); bumpy_front = i(0x2f0) != 0;
+    turn_rate = f(0x2f4); turn_radius = f(0x2f8);
+    setup.animation = i(0x470 + 0x0c); setup.maxspd = f(0x470 + 0x10); setup.maxrpm = f(0x470 + 0x14);
+    setup.grip = f(0x470 + 0x18); setup.accel = f(0x470 + 0x1c); setup.shiftmode = i(0x470 + 0x20);
+    setup.n_shifts = i(0x470 + 0x24);
+    for (size_t k = 0; k < 6; ++k) setup.sh_rap[k] = f(0x470 + 0x28 + 4 * k);
+    pos_x = i(0x4b0); pos_y = i(0x4b4); pos_z = i(0x4b8); body_lift = i(0x4c0);
+    pitch = f(0x4c8); yaw = f(0x4cc); roll = f(0x4d0); ground_pitch = f(0x4d4); ground_roll = f(0x4dc);
+    lean_pitch = f(0x4e0); lean_roll = f(0x4e8); ground_y = i(0x4ec);
+    skid_prev = f(0x4f0); skid = f(0x4f4); skid_level = f(0x4fc); slip_a = f(0x500); slip_b = f(0x508);
+    speed = f(0x50c); speed_limit = f(0x510); yaw_rate = f(0x548); impact_timer = f(0x54c);
+    impact_vel_x = f(0x550); impact_vel_z = f(0x558); prev_speed = f(0x588);
+    surface_grip = f(0x670); engine_rpm = f(0x7a8); gear = i(0x7ac);
 }
 
 void Car::body_from_wheels() {

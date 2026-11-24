@@ -12,6 +12,9 @@ disassembly dumps, or Ghidra projects to git. Hashes, notes and our own code are
 - Test: `.\tools\test.ps1` (all), `-Label unit|render|smoke|gamedata`, `-Filter <regex>`.
 - Run headless and look at the result: `.\tools\run.ps1 --headless --frames N --screenshot artifacts\x.png`
   (or `--dump-fb` for the native 320x200 frame), then Read the PNG.
+- Car physics against the original: `.\tools\dosbox\record-race.ps1 -Out artifacts\traces\x.trace -Frames 450 -Script '300:accel,100:accel+left' [-Skip N]`
+  records the player car every frame of a real race (MAP1); `build\debug\bin\tracecmp.exe artifacts\traces\x.trace SCREAMER\GFX\MAP1H.DAT MAP1`
+  replays each frame through src/core/car and lists differences. Traces in artifacts/traces become `physics.*` tests.
 - Golden images: `.\tools\update-golden.ps1` only for intentional rendering changes; view the new images first.
 - Original game reference: `.\tools\dosbox\run-original.ps1 -Name x -Autotype '-w 4 esc' -Shots 9 -Duration 10`
   then Read `artifacts\dosbox\x\shot_*.png`. Add `-Webserver` and use `tools\dosbox\read-memory.ps1`

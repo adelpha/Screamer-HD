@@ -74,7 +74,17 @@ TEST_CASE("car: full throttle on the start straight") {
     const float yaw0 = car.yaw;
     scr::CarInput in;
     in.accel = 1023;
+    // Revving on the grid, then flooring it at the start spins the wheels first
+    // (crash_state 5): +1000 units/s^2, as in recordings of the original.
+    in.race_started = false;
     drive(car, w->track, in, 100);
+    CHECK(car.speed == 0.0f);
+    CHECK(car.engine_rpm > 8500.0f);
+    in.race_started = true;
+    drive(car, w->track, in, 20);
+    CHECK(car.crash_state == 5);
+    CHECK(std::abs(car.speed - 20.0f * 20.0f) < 25.0f);
+    drive(car, w->track, in, 230);
     CHECK(car.speed > 4000.0f);
     CHECK(car.gear >= 2);
     CHECK(car.pos_x > 46000);           // the straight runs along +x
