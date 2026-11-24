@@ -223,8 +223,8 @@ code when they form tables (a lone fixup there is usually an instruction operand
   events (table at 0x101fb0, 27 events x 3 samples), played 0.7 s apart; speech_check_events
   raises the in-race ones. Music is CD audio (MSCDEX): menu track 4, races `table[map + 2] + 1`
   from 0x101efc; MUSIC.DAT holds the same tunes as HMI MIDI (`MUSICn.HMP`, n = CD track - 1)
-  with AdLib FM banks (MELODIC.BNK, DRUM.BNK), played by `src/core/fm_synth.cpp` (formats in
-  its header). Without SPFXFULL only the first sample of each announcer event exists.
+  with AdLib FM banks (MELODIC.BNK, DRUM.BNK), played by `src/core/fm_synth.cpp` on an emulated
+  OPL3 (Nuked-OPL3; formats in its header). Without SPFXFULL only the first sample of each announcer event exists.
 * Moving scenery (`src/core/animations.cpp`): ANIMATIONS in MAPnDAT.DTR (object, speed, spline
   in MAPnANM.SPL, sound) move along racing-line style splines whose knots carry a height at
   +0xc; within 52000 units of the player they advance speed * frame time, heading from acos of

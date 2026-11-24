@@ -21,7 +21,7 @@ add_library(screamer_core STATIC
   core/track.cpp
 )
 target_include_directories(screamer_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(screamer_core PUBLIC SDL3::SDL3)
+target_link_libraries(screamer_core PUBLIC SDL3::SDL3 nuked_opl3)
 target_compile_definitions(screamer_core PUBLIC
   SCREAMER_DEFAULT_DATA_DIR="${SCREAMER_DATA_DIR}"
   SCREAMER_VERSION="${PROJECT_VERSION}"

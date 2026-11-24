@@ -14,9 +14,10 @@
 //                connection), u8 wave 0, u8 wave 1 }. MELODIC has the 128 General MIDI
 //                programs; DRUM is indexed by note and its flag byte is the pitch to play.
 //
-// The synthesizer is a two-operator FM voice modelled on the Yamaha OPL2/OPL3 in a Sound
-// Blaster: the same frequency, envelope, key scaling, waveform and feedback rules, computed in
-// floating point at the output rate (not a bit-exact chip emulation).
+// The sound comes from an emulated Yamaha OPL3 (YMF262, the Sound Blaster 16's FM chip):
+// Nuked-OPL3 (tgies/Nuked-OPL3-fast, LGPL-2.1, built as opl3.dll). FmMidiSynth is the MIDI
+// driver in front of it: 18 two-operator channels, the patch in the operator registers, the
+// note as F-number and block.
 // Music number n goes with CD track n + 1 (menu MUSIC3, MAP1 MUSIC2, ...).
 
 #include "core/sound.h"
@@ -27,6 +28,8 @@
 #include <optional>
 #include <string>
 #include <vector>
+
+struct _opl3_chip;
 
 namespace scr {
 
@@ -59,7 +62,7 @@ struct HmpSong {
 
 std::optional<HmpSong> parse_hmp(const std::vector<uint8_t>& hmp);
 
-// Eighteen two-operator FM voices (OPL3) driven by MIDI messages.
+// MIDI messages to the OPL3's eighteen two-operator channels.
 class FmMidiSynth {
 public:
     FmMidiSynth(std::vector<FmPatch> melodic, std::vector<FmPatch> drums);
@@ -79,12 +82,16 @@ private:
     };
     void note_on(int ch, int note, int vel);
     void note_off(int ch, int note);
-    void update_voice(Voice& v);
+    void update_voice(Voice& v, bool patch);
+    void key(Voice& v, bool on);
+    void write(int reg, int value);
+    void chip_reset(int rate);
     std::vector<FmPatch> melodic_, drums_;
     std::array<Channel, 16> channels_{};
     std::vector<std::unique_ptr<Voice>> voices_;
+    std::unique_ptr<_opl3_chip> chip_;
+    int rate_ = 0;
     uint64_t age_ = 0;
-    double lfo_time_ = 0;
 };
 
 // Plays an HMP song on the FM synth, looping like MidiMusic_play(song, 1).

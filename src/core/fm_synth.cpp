@@ -2,6 +2,8 @@
 
 #include "core/archive.h"
 
+#include <opl3.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -10,7 +12,6 @@ namespace scr {
 
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
 constexpr double kChipRate = 49716.0;  // OPL clock / 288
 constexpr int kVoices = 18;
 
@@ -20,40 +21,6 @@ uint32_t rd32(const std::vector<uint8_t>& d, size_t o) {
 }
 uint16_t rd16(const std::vector<uint8_t>& d, size_t o) {
     return o + 2 <= d.size() ? uint16_t(d[o] | d[o + 1] << 8) : 0;
-}
-
-// The OPL's frequency multipliers (x2: 0 is one half).
-constexpr double kMult[16] = {0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 12, 12, 15, 15};
-// Key scale level at block 7 by the top four F-number bits, dB for 6 dB/octave.
-constexpr double kKsl[16] = {0.0, 9.0, 12.0, 13.875, 15.0, 16.125, 16.875, 17.625,
-                             18.0, 18.75, 19.125, 19.5, 19.875, 20.25, 20.625, 21.0};
-
-double waveform(int wave, double phase) {
-    const double p = phase - std::floor(phase);
-    const double s = std::sin(2.0 * kPi * p);
-    switch (wave & 7) {
-    case 1: return p < 0.5 ? s : 0.0;                          // half sine
-    case 2: return std::fabs(s);                               // absolute sine
-    case 3: return (p < 0.25 || (p >= 0.5 && p < 0.75)) ? std::fabs(s) : 0.0;  // quarter pulses
-    case 4: return p < 0.5 ? std::sin(4.0 * kPi * p) : 0.0;    // OPL3 extras
-    case 5: return p < 0.5 ? std::fabs(std::sin(4.0 * kPi * p)) : 0.0;
-    case 6: return p < 0.5 ? 1.0 : -1.0;
-    case 7: return p < 0.5 ? std::pow(2.0, -p * 16.0) : -std::pow(2.0, -(1.0 - p) * 16.0);
-    default: return s;
-    }
-}
-
-// Time in ms for a full envelope sweep at effective rate r (4 * R + key scaling).
-double decay_ms(int r) {
-    if (r < 4) return 0;
-    static constexpr double frac[4] = {1.0, 0.8, 0.6667, 0.5714};
-    return 39280.64 / std::pow(2.0, double((r >> 2) - 1)) * frac[r & 3];
-}
-double attack_ms(int r) {
-    if (r < 4) return 0;
-    if (r >= 60) return 0.0001;
-    static constexpr double frac[4] = {1.0, 0.7971, 0.6667, 0.5652};
-    return 2826.24 / std::pow(2.0, double((r >> 2) - 1)) * frac[r & 3];
 }
 
 } // namespace
@@ -160,157 +127,109 @@ std::optional<HmpSong> parse_hmp(const std::vector<uint8_t>& d) {
     return song;
 }
 
-// --- The FM voice ---
+// --- The MIDI driver over the OPL3 ---
+//
+// Each of the 18 two-operator channels of the chip plays one note. The patch goes into the
+// operator registers (0x20 tremolo/vibrato/sustain/KSR/multiple, 0x40 KSL/level, 0x60
+// attack/decay, 0x80 sustain level/release, 0xE0 waveform, 0xC0 output/feedback/connection),
+// the pitch into 0xA0/0xB0 as F-number and block with the key-on bit.
 
 struct FmMidiSynth::Voice {
-    struct Op {
-        double phase = 0;
-        double att = 96.0;  // envelope attenuation, dB
-        int stage = 4;      // 0 attack, 1 decay, 2 sustain, 3 release, 4 off
-        double out[2]{};
-    };
-    FmPatch patch;
-    std::array<Op, 2> op{};
+    int chip_channel = 0;
     int channel = -1, note = -1, play_note = 60;
     int velocity = 0;
     bool on = false, held = false;
     uint64_t age = 0;
-    double level_db[2]{};  // extra attenuation from velocity and volume
-    double pan_l = 1, pan_r = 1;
-    double fnum = 0;
-    int block = 0;
-
-    bool active() const { return op[1].stage != 4 || (patch.additive && op[0].stage != 4); }
-
-    void set_pitch(double semitones) {
-        const double hz = 440.0 * std::pow(2.0, (semitones - 69.0) / 12.0);
-        block = 0;
-        fnum = hz * double(1 << 20) / kChipRate;
-        while (fnum >= 1024.0 && block < 7) {
-            ++block;
-            fnum = hz * double(1 << (20 - block)) / kChipRate;
-        }
-    }
-    int key_scale() const { return (block << 1) | (int(fnum) >> 9); }
-
-    void key_on() {
-        for (Op& o : op) {
-            o.stage = 0;
-            o.phase = 0;
-        }
-        on = true;
-    }
-    void key_off() {
-        for (size_t k = 0; k < 2; ++k)
-            if (op[k].stage < 3) op[k].stage = 3;
-        on = false;
-    }
-
-    // One operator sample: returns its output (-1..1).
-    double run(size_t k, double mod, double dt, double am_db, double vib) {
-        const FmOperator& p = patch.op[k];
-        Op& o = op[k];
-        if (o.stage == 4) {
-            o.out[1] = o.out[0];
-            o.out[0] = 0;
-            return 0;
-        }
-        const int ks = p.ksr ? key_scale() : key_scale() >> 2;
-        auto rate = [&](int r) { return r == 0 ? 0 : std::min(63, r * 4 + ks); };
-        switch (o.stage) {
-        case 0: {
-            const double t = attack_ms(rate(p.ar));
-            if (t <= 0) break;  // rate 0: stays
-            // Exponential approach to full level (ln(960) time constants over the sweep).
-            o.att -= o.att * (6.87 * dt * 1000.0 / t) + 1e-6;
-            if (o.att <= 0.05) {
-                o.att = 0;
-                o.stage = 1;
-            }
-            break;
-        }
-        case 1: {
-            const double sl = p.sl == 15 ? 93.0 : p.sl * 3.0;
-            const double t = decay_ms(rate(p.dr));
-            if (t > 0) o.att += 96.0 * dt * 1000.0 / t;
-            if (o.att >= sl) {
-                o.att = sl;
-                o.stage = 2;
-            }
-            break;
-        }
-        case 2:
-            if (!p.sustain) {
-                const double t = decay_ms(rate(p.rr));
-                if (t > 0) o.att += 96.0 * dt * 1000.0 / t;
-            }
-            break;
-        case 3: {
-            const double t = decay_ms(rate(p.rr));
-            if (t > 0) o.att += 96.0 * dt * 1000.0 / t;
-            break;
-        }
-        default: break;
-        }
-        if (o.att >= 96.0) {
-            o.att = 96.0;
-            if (o.stage >= 2) o.stage = 4;
-        }
-        // Frequency with vibrato.
-        const double hz = fnum * kChipRate / double(1 << (20 - block)) * kMult[p.mult] * (p.vib ? vib : 1.0);
-        double ksl = 0;
-        if (p.ksl) {
-            ksl = std::max(0.0, kKsl[int(fnum) >> 6] - 6.0 * (7 - block));
-            ksl *= p.ksl == 1 ? 0.5 : p.ksl == 2 ? 0.25 : 1.0;
-        }
-        const double att = p.tl * 0.75 + ksl + o.att + level_db[k] + (p.am ? am_db : 0.0);
-        const double amp = att >= 96.0 ? 0.0 : std::pow(10.0, -att / 20.0);
-        const double v = waveform(p.wave, o.phase + mod) * amp;
-        o.phase += hz * dt;
-        if (o.phase > 1024.0) o.phase -= std::floor(o.phase);
-        o.out[1] = o.out[0];
-        o.out[0] = v;
-        return v;
-    }
-
-    double sample(double dt, double am_db, double vib) {
-        const Op& m = op[0];
-        // Feedback: the average of the modulator's last two outputs, up to 2 cycles at 7.
-        const double fb = patch.feedback ? (m.out[0] + m.out[1]) * 0.5 * std::pow(2.0, patch.feedback - 7) * 2.0 : 0.0;
-        const double a = run(0, fb, dt, am_db, vib);
-        // FM: the modulator moves the carrier's phase by up to 4 cycles.
-        const double b = run(1, patch.additive ? 0.0 : a * 4.0, dt, am_db, vib);
-        return patch.additive ? a + b : b;
-    }
+    FmPatch patch;
+    int fnum = 0, block = 0;
 };
 
+namespace {
+
+constexpr int kSlot[9] = {0, 1, 2, 8, 9, 10, 16, 17, 18};
+
+void pitch_to_fnum(double semitones, int& fnum, int& block) {
+    const double hz = 440.0 * std::pow(2.0, (semitones - 69.0) / 12.0);
+    block = 0;
+    double f = hz * double(1 << 20) / kChipRate;
+    while (f >= 1023.5 && block < 7) {
+        ++block;
+        f = hz * double(1 << (20 - block)) / kChipRate;
+    }
+    fnum = std::clamp(int(std::lround(f)), 0, 1023);
+}
+
+} // namespace
+
 FmMidiSynth::FmMidiSynth(std::vector<FmPatch> melodic, std::vector<FmPatch> drums)
-    : melodic_(std::move(melodic)), drums_(std::move(drums)) {
-    for (int i = 0; i < kVoices; ++i) voices_.push_back(std::make_unique<Voice>());
+    : melodic_(std::move(melodic)), drums_(std::move(drums)), chip_(std::make_unique<opl3_chip>()) {
+    for (int i = 0; i < kVoices; ++i) {
+        voices_.push_back(std::make_unique<Voice>());
+        voices_.back()->chip_channel = i;
+    }
 }
 
 FmMidiSynth::~FmMidiSynth() = default;
 
+void FmMidiSynth::write(int reg, int value) {
+    OPL3_WriteReg(chip_.get(), uint16_t(reg), uint8_t(value));
+}
+
+void FmMidiSynth::chip_reset(int rate) {
+    OPL3_Reset(chip_.get(), uint32_t(rate));
+    rate_ = rate;
+    write(0x105, 0x01);  // OPL3 mode: 18 channels, 8 waveforms, stereo
+    write(0x104, 0x00);  // no four-operator channels
+    write(0x01, 0x20);
+    write(0xbd, 0x00);   // shallow tremolo and vibrato, no rhythm mode
+    for (auto& v : voices_) {
+        v->on = false;
+        v->held = false;
+    }
+}
+
 void FmMidiSynth::reset() {
-    for (auto& v : voices_) *v = Voice{};
     channels_ = {};
+    if (rate_ > 0) chip_reset(rate_);
 }
 
 int FmMidiSynth::active_voices() const {
-    return int(std::count_if(voices_.begin(), voices_.end(), [](const auto& v) { return v->active(); }));
+    return int(std::count_if(voices_.begin(), voices_.end(), [](const auto& v) { return v->on; }));
 }
 
-void FmMidiSynth::update_voice(Voice& v) {
+void FmMidiSynth::update_voice(Voice& v, bool patch) {
     const Channel& c = channels_[size_t(v.channel)];
-    // Velocity, volume and expression as attenuation (40 log10 like a GM synth's curve).
+    const int bank = v.chip_channel >= 9 ? 0x100 : 0;
+    const int ch = v.chip_channel % 9;
+    // Velocity, volume and expression as extra attenuation (40 log10, like a GM synth's
+    // curve) in the level registers' 0.75 dB steps.
     const double g = (double(v.velocity) / 127.0) * (double(c.volume) / 127.0) * (double(c.expression) / 127.0);
-    const double db = g <= 0.0 ? 96.0 : std::min(96.0, -40.0 * std::log10(g));
-    v.level_db[0] = v.patch.additive ? db : 0.0;
-    v.level_db[1] = db;
-    const double pan = double(c.pan) / 127.0;
-    v.pan_l = std::sqrt(1.0 - pan) * 1.41421356;
-    v.pan_r = std::sqrt(pan) * 1.41421356;
-    v.set_pitch(double(v.play_note) + (v.channel == 9 ? 0.0 : c.bend));
+    const double db = g <= 0.0 ? 48.0 : std::min(48.0, -40.0 * std::log10(g));
+    const int extra = int(std::lround(db / 0.75));
+    for (int k = 0; k < 2; ++k) {
+        const FmOperator& op = v.patch.op[size_t(k)];
+        const int slot = bank + kSlot[ch] + (k ? 3 : 0);
+        const bool heard = k == 1 || v.patch.additive;
+        if (patch) {
+            write(0x20 + slot, (op.am ? 0x80 : 0) | (op.vib ? 0x40 : 0) | (op.sustain ? 0x20 : 0) | (op.ksr ? 0x10 : 0) |
+                                   (op.mult & 15));
+            write(0x60 + slot, (op.ar & 15) << 4 | (op.dr & 15));
+            write(0x80 + slot, (op.sl & 15) << 4 | (op.rr & 15));
+            write(0xe0 + slot, op.wave & 7);
+        }
+        write(0x40 + slot, (op.ksl & 3) << 6 | std::min(63, op.tl + (heard ? extra : 0)));
+    }
+    const int out = c.pan < 32 ? 0x10 : c.pan > 96 ? 0x20 : 0x30;  // the OPL3 has left, right or both
+    write(0xc0 + bank + ch, out | (v.patch.feedback & 7) << 1 | (v.patch.additive ? 1 : 0));
+    pitch_to_fnum(double(v.play_note) + (v.channel == 9 ? 0.0 : double(c.bend)), v.fnum, v.block);
+    write(0xa0 + bank + ch, v.fnum & 0xff);
+    write(0xb0 + bank + ch, (v.on ? 0x20 : 0) | (v.block & 7) << 2 | (v.fnum >> 8 & 3));
+}
+
+void FmMidiSynth::key(Voice& v, bool on) {
+    v.on = on;
+    const int bank = v.chip_channel >= 9 ? 0x100 : 0;
+    write(0xb0 + bank + v.chip_channel % 9, (on ? 0x20 : 0) | (v.block & 7) << 2 | (v.fnum >> 8 & 3));
 }
 
 void FmMidiSynth::note_on(int ch, int note, int vel) {
@@ -329,18 +248,15 @@ void FmMidiSynth::note_on(int ch, int note, int vel) {
         if (size_t(c.program) >= melodic_.size()) return;
         patch = &melodic_[size_t(c.program)];
     }
-    // A free voice, else the oldest released one, else the oldest.
+    // The longest released channel, else the oldest playing one.
     Voice* pick = nullptr;
     for (auto& v : voices_)
-        if (!v->active() && (!pick || v->age < pick->age)) pick = v.get();
-    if (!pick)
-        for (auto& v : voices_)
-            if (!v->on && (!pick || v->age < pick->age)) pick = v.get();
+        if (!v->on && (!pick || v->age < pick->age)) pick = v.get();
     if (!pick)
         for (auto& v : voices_)
             if (!pick || v->age < pick->age) pick = v.get();
     Voice& v = *pick;
-    const bool reuse = v.active();
+    if (v.on) key(v, false);
     v.patch = *patch;
     v.channel = ch;
     v.note = note;
@@ -348,21 +264,21 @@ void FmMidiSynth::note_on(int ch, int note, int vel) {
     v.velocity = vel;
     v.held = false;
     v.age = ++age_;
-    update_voice(v);
-    if (!reuse)
-        for (auto& o : v.op) o.att = 96.0;
-    v.key_on();
+    v.on = false;
+    update_voice(v, true);
+    key(v, true);
 }
 
 void FmMidiSynth::note_off(int ch, int note) {
     for (auto& v : voices_) {
         if (!v->on || v->channel != ch || v->note != note) continue;
         if (channels_[size_t(ch)].hold) v->held = true;
-        else v->key_off();
+        else key(*v, false);
     }
 }
 
 void FmMidiSynth::message(uint8_t status, uint8_t a, uint8_t b) {
+    if (rate_ <= 0) chip_reset(44100);
     const int ch = status & 15;
     Channel& c = channels_[size_t(ch)];
     switch (status & 0xf0) {
@@ -379,7 +295,7 @@ void FmMidiSynth::message(uint8_t status, uint8_t a, uint8_t b) {
                 for (auto& v : voices_)
                     if (v->channel == ch && v->held) {
                         v->held = false;
-                        v->key_off();
+                        key(*v, false);
                     }
             break;
         case 121:
@@ -391,42 +307,36 @@ void FmMidiSynth::message(uint8_t status, uint8_t a, uint8_t b) {
         case 120:
         case 123:
             for (auto& v : voices_)
-                if (v->channel == ch) v->key_off();
+                if (v->channel == ch && v->on) key(*v, false);
             break;
         default: break;
         }
         if (a == 7 || a == 10 || a == 11)
             for (auto& v : voices_)
-                if (v->channel == ch && v->active()) update_voice(*v);
+                if (v->channel == ch && v->on) update_voice(*v, false);
         break;
     case 0xc0: c.program = a & 127; break;
     case 0xe0:
         c.bend = float((int(a) | int(b) << 7) - 8192) / 8192.0f * 2.0f;
         for (auto& v : voices_)
-            if (v->channel == ch && v->active()) update_voice(*v);
+            if (v->channel == ch && v->on) update_voice(*v, false);
         break;
     default: break;
     }
 }
 
 void FmMidiSynth::render(float* out, int frames, int rate, float gain) {
-    const double dt = 1.0 / double(rate);
-    for (int i = 0; i < frames; ++i) {
-        // Tremolo 1 dB at 3.7 Hz, vibrato 7 cents at 6.1 Hz (the OPL's shallow settings).
-        const double am_db = 0.5 * (1.0 - std::cos(2.0 * kPi * 3.7 * lfo_time_));
-        const double vib = std::pow(2.0, 7.0 / 1200.0 * std::sin(2.0 * kPi * 6.1 * lfo_time_));
-        lfo_time_ += dt;
-        double l = 0, r = 0;
-        for (auto& v : voices_) {
-            if (!v->active()) continue;
-            const double s = v->sample(dt, am_db, vib);
-            l += s * v->pan_l;
-            r += s * v->pan_r;
-        }
-        out[i * 2] += float(l * 0.3 * gain);
-        out[i * 2 + 1] += float(r * 0.3 * gain);
+    if (rate != rate_) {
+        // The chip resamples to the output rate; a new rate needs a reset (and the patches again).
+        chip_reset(rate);
     }
-    if (lfo_time_ > 1000.0) lfo_time_ -= 1000.0;
+    int16_t s[2];
+    const float k = gain * (2.5f / 32768.0f);
+    for (int i = 0; i < frames; ++i) {
+        OPL3_GenerateResampled(chip_.get(), s);
+        out[i * 2] += float(s[0]) * k;
+        out[i * 2 + 1] += float(s[1]) * k;
+    }
 }
 
 HmpPlayer::HmpPlayer(HmpSong song, std::vector<FmPatch> melodic, std::vector<FmPatch> drums, bool loop)
