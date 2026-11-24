@@ -168,9 +168,11 @@ void parse_mmp_track_lines(const std::vector<uint8_t>& mmp, std::vector<TrackPoi
     }
 }
 
-std::optional<float> ground_height(const Track& track, float x, float z, float below_y) {
+namespace {
+
+template <typename F>
+void for_each_ground_face(const Track& track, float x, float z, F&& f_) {
     constexpr float kAngle = 6.28318530718f / 2048.0f;
-    std::optional<float> best;
     for (const Placement& p : track.placements) {
         if (p.slot != 0 || std::fabs(float(p.x) - x) > 12288 || std::fabs(float(p.z) - z) > 12288) continue;
         // Into object space: undo the yaw (objects turn by -ay, see render3d.cpp).
@@ -193,9 +195,50 @@ std::optional<float> ground_height(const Track& track, float x, float z, float b
                 const Vec3i16& v0 = part.vertices[f.vtx[0]];
                 const float nx = float(f.normal[0]), ny = float(f.normal[1]), nz = float(f.normal[2]);
                 const float y = float(v0.y) - (nx * (lx - float(v0.x)) + nz * (lz - float(v0.z))) / ny + float(p.y);
-                if (y <= below_y && (!best || y > *best)) best = y;
+                f_(y, part);
             }
         }
+    }
+}
+
+} // namespace
+
+std::optional<float> ground_height(const Track& track, float x, float z, float below_y) {
+    std::optional<float> best;
+    for_each_ground_face(track, x, z, [&](float y, const Part&) {
+        if (y <= below_y && (!best || y > *best)) best = y;
+    });
+    return best;
+}
+
+std::optional<GroundHit> ground_query(const Track& track, int x, int z) {
+    std::optional<GroundHit> best;
+    float best_y = 0;
+    for_each_ground_face(track, float(x), float(z), [&](float y, const Part& part) {
+        if (!best || y > best_y) {
+            best_y = y;
+            best = GroundHit{int(y), part.name.size() > 3 ? part.name[3] : char(0)};
+        }
+    });
+    return best;
+}
+
+const TrackPoint* nearest_track_point(const Track& track, int x, int z) {
+    const TrackPoint* best = nullptr;
+    int64_t bd = 0;
+    for (const TrackPoint& p : track.points) {
+        const int64_t dx = p.x - x, dz = p.z - z, d = dx * dx + dz * dz;
+        if (!best || d < bd) { best = &p; bd = d; }
+    }
+    return best;
+}
+
+const TrackSection* nearest_track_section(const Track& track, int x, int z) {
+    const TrackSection* best = nullptr;
+    int64_t bd = 0;
+    for (const TrackSection& s : track.sections) {
+        const int64_t dx = s.x - x, dz = s.z - z, d = dx * dx + dz * dz;
+        if (!best || d < bd) { best = &s; bd = d; }
     }
     return best;
 }
