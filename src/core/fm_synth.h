@@ -72,16 +72,9 @@ public:
     // Adds `frames` stereo frames at `rate` to out.
     void render(float* out, int frames, int rate, float gain);
     int active_voices() const;
-    // Not HMI: 18 voices, a quiet voice for each new note, the OPL3's own stereo outputs.
-    void set_enhanced(bool on);
 
 private:
     struct Voice;
-    int voice_count() const { return enhanced_ ? 18 : 9; }
-    bool on_bank(int v, int bank) const;
-    int pan_bits(int ch) const;
-    bool enhanced_ = false;
-    uint64_t age_ = 0;
     void note_on(int ch, int note, int vel);
     void note_off(int ch, int note);
     void key_off(int v);
@@ -99,11 +92,10 @@ private:
     std::unique_ptr<_opl3_chip> chip_;
     int rate_ = 0;
     // The driver's state (names after what they hold; addresses in fm_synth.cpp).
-    std::array<int, 18> voice_note_{}, voice_channel_{}, voice_velocity_{};
-    std::array<bool, 18> voice_additive_{};
-    std::array<int, 18> a0_{}, b0_{}, c0_{};
-    std::array<uint64_t, 18> released_{}, started_{};
-    std::array<int, 36> reg40_{}, reg80_{};  // each voice's KSL/level and SL/RR bytes per operator
+    std::array<int, 9> voice_note_{}, voice_channel_{}, voice_velocity_{};
+    std::array<bool, 9> voice_additive_{};
+    std::array<int, 9> a0_{}, b0_{};
+    std::array<int, 22> reg40_{}, reg80_{};  // the patches' KSL/level and SL/RR bytes by slot
     std::array<int, 16> ch_volume_{}, ch_pan_{}, ch_program_{}, ch_bend_{}, ch_range_{}, ch_sustain_{};
     std::array<bool, 16> ch_bending_{};
     std::array<std::vector<int>, 16> held_;  // note offs held back by the sustain pedal
@@ -112,8 +104,7 @@ private:
 // Plays an HMP song on the FM synth, looping like MidiMusic_play(song, 1).
 class HmpPlayer : public AudioSource {
 public:
-    HmpPlayer(HmpSong song, std::vector<FmPatch> melodic, std::vector<FmPatch> drums, bool loop = true,
-              bool enhanced = false);
+    HmpPlayer(HmpSong song, std::vector<FmPatch> melodic, std::vector<FmPatch> drums, bool loop = true);
     void mix(float* out, int frames, int rate, float gain) override;
     bool finished() const { return done_; }
 
@@ -126,8 +117,7 @@ private:
 };
 
 // MUSIC.DAT: loads MUSIC<n>.HMP with the two banks.
-std::shared_ptr<HmpPlayer> load_hmp_music(const std::string& music_dat, int number, bool loop = true,
-                                          bool enhanced = false);
+std::shared_ptr<HmpPlayer> load_hmp_music(const std::string& music_dat, int number, bool loop = true);
 
 // The music number for a race on map `map_index` (0 = MAP1) and for the menu (0x101efc).
 int music_for_race(int map_index);
