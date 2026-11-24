@@ -59,7 +59,7 @@ struct Progress {
 };
 
 void update_progress(const std::vector<TrackMarker>& m, int& marker, int& lap, float& progress, int& flags,
-                     float* speed_factor, int x, int z) {
+                     float* speed_factor, int x, int z, std::vector<uint8_t>* seen = nullptr, int* passed = nullptr) {
     const int n = int(m.size());
     if (n == 0) return;
     for (int d = -1; d < 2; ++d) {
@@ -69,7 +69,23 @@ void update_progress(const std::vector<TrackMarker>& m, int& marker, int& lap, f
         const TrackMarker& mk = m[size_t(k)];
         if (std::abs(x - mk.x) < mk.radius && std::abs(z - mk.z) < mk.radius &&
             chop(safe_sqrt(double(x - mk.x) * (x - mk.x) + double(z - mk.z) * (z - mk.z))) <= mk.radius) {
-            if (k == 0 && marker == n - 1) ++lap;  // crossed the line (checkpoint bookkeeping simplified)
+            if (seen && passed) {
+                // a new marker counts once; the line counts as a lap once all have been passed
+                if (seen->size() < size_t(n)) seen->resize(size_t(n), 0);
+                std::vector<uint8_t>& s = *seen;
+                if (((k == 0 || s[size_t(k - 1)] == 0) && k != 0) || s[size_t(k)] != 0) {
+                    if (k == 0 && *passed == n) {
+                        for (int i = 1; i < n; ++i) s[size_t(i)] = 0;
+                        *passed = 1;
+                        ++lap;
+                    }
+                } else {
+                    s[size_t(k)] = 1;
+                    ++*passed;
+                }
+            } else if (k == 0 && marker == n - 1) {
+                ++lap;  // free driving: crossing the line
+            }
             marker = k;
             flags = mk.flags;
             if (speed_factor) *speed_factor = mk.speed_factor;
@@ -372,7 +388,8 @@ void Race::crash_update(Opponent& o) {
 }
 
 void Race::track_progress(Opponent& o) {
-    update_progress(markers, o.track_marker, o.lap, o.track_progress, o.marker_flags, &o.speed_factor, o.pos_x, o.pos_z);
+    update_progress(markers, o.track_marker, o.lap, o.track_progress, o.marker_flags, &o.speed_factor, o.pos_x, o.pos_z,
+                    &o.checkpoints_seen, &o.checkpoints_passed);
 }
 
 void Race::bumpers(Opponent& o) {
@@ -500,7 +517,8 @@ void Race::player_contacts(const Track& track) {
 void Race::update_positions() {
     // race_update_positions (races against the CPU): at most one swap per frame between the
     // player and a CPU car whose order disagrees with the track progress.
-    if (!positions_running_) return;
+    // (g_race_flags & 1 and the player's timing started: from the first time over the line)
+    if (!positions_running_ || !timing_started) return;
     for (Opponent& o : opponents) {
         if ((player.track_progress - o.track_progress) * float(o.race_position - player_position) < 0.0f) {
             std::swap(o.race_position, player_position);
@@ -524,6 +542,9 @@ void Race::load_state(const uint8_t* pc, const uint8_t* cpu, size_t count) {
         const uint8_t* c = cpu + k * 0x590;
         Opponent& o = opponents[k];
         o.index = i(c, 0);
+        o.checkpoints_passed = i(c, 0x324);
+        o.checkpoints_seen.assign(50, 0);
+        for (size_t m = 0; m < 50; ++m) o.checkpoints_seen[m] = uint8_t(i(c, 0x328 + 4 * m) != 0);
         o.prev_lateral_x = i(c, 0x160); o.prev_lateral_z = i(c, 0x168); o.prev_speed = f(c, 0x178);
         o.ground_y = i(c, 0x238); o.ground_pitch = f(c, 0x23c); o.ground_roll = f(c, 0x244);
         o.spline_index = i(c, 0x248); o.segment = i(c, 0x24c); o.t = f(c, 0x250); o.step = i(c, 0x254);
@@ -624,7 +645,7 @@ void Race::player_progress() {
     const double cx = double(p.pos_x - a.x) * 0.05, cz = double(p.pos_z - a.z) * 0.05;
     const float fraction = float(chop(safe_sqrt(cx * cx + cz * cz))) / float(span);
     if (checkpoints_seen[size_t(p.track_marker)] != 0)
-        p.track_progress = float(int(fraction + float(p.track_marker) + float(p.lap * 100)));
+        p.track_progress = float(p.lap * 100) + float(p.track_marker) + fraction;
 }
 
 void Race::update(const Track& track, const CarInput& in_raw, float frame_time, int pow_row) {

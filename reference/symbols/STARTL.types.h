@@ -314,7 +314,7 @@ typedef struct PlayerCar { /* 0x1084 bytes */
     unsigned char pad_674[0x4];
     int marker_flags; /* 0x678 bit 1 checkpoint, bit 2 announcer cue */
     float marker_fraction; /* 0x67c progress between this marker and the next */
-    int track_progress; /* 0x680 marker_fraction + marker + lap * 100; used for race positions */
+    float track_progress; /* 0x680 marker_fraction + marker + lap * 100 (FSTP float); used for race positions */
     int lap; /* laps completed */
     int race_position; /* 1 = first; also used as result code in some modes */
     unsigned char pad_68c[0xd0];
