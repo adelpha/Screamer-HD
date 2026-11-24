@@ -17,6 +17,7 @@
 #include "core/framebuffer.h"
 #include "core/gamedata.h"
 #include "core/hud.h"
+#include "core/menu.h"
 #include "core/image.h"
 #include "core/pcx.h"
 #include "core/race_audio.h"
@@ -67,6 +68,7 @@ struct Options {
     bool music = true, speech = true;
     std::string music_source = "auto";  // cd | midi | auto (CD audio when the image is there)
     bool audio_smooth = true;       // linear interpolation (false: the driver's nearest sample)
+    std::string menu_keys;          // --scene menu: scripted keys "frame:key,..." (headless runs)
     std::string record_audio;       // write the mix to a .wav (frame-locked, works headless)
     bool audio_log = false;         // log every sample that starts
 };
@@ -78,7 +80,8 @@ void print_usage() {
         "  --data DIR           original game directory (default: $SCREAMER_DATA or build-time path)\n"
         "  --headless           no visible window, software renderer, dummy audio\n"
         "  --frames N           exit after N simulation frames (2 ticks of the game's 100 Hz clock each)\n"
-        "  --scene NAME         title (default when the game files are found), track, drive or testpattern\n"
+        "  --scene NAME         title (default when the game files are found), menu, track, drive or testpattern\n"
+        "  --menu-keys LIST     --scene menu: keys pressed at frames, e.g. 40:down,60:enter (headless runs)\n"
         "  --track NAME         track for --scene track / drive (MAP1..MAP6, default MAP2)\n"
         "  --car-index N        --scene drive: car from CARS_DATA (0..12, default 0)\n"
         "  --start X,Z          --scene drive: start position (default: the intro demo's grid)\n"
@@ -173,6 +176,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--no-speech") o.speech = false;
         else if (a == "--music-source") o.music_source = next("--music-source");
         else if (a == "--record-audio") o.record_audio = next("--record-audio");
+        else if (a == "--menu-keys") o.menu_keys = next("--menu-keys");
         else if (a == "--audio-log") o.audio_log = true;
         else if (a == "--audio-filter") o.audio_smooth = std::string(next("--audio-filter")) != "nearest";
         else if (a == "--detail") o.detail = std::string(next("--detail")) == "low" ? "L" : "H";
@@ -473,7 +477,70 @@ int main(int argc, char** argv) {
     scr::Renderer renderer3d;
     renderer3d.set_textures(!opt.flat);
 
-    scr::Framebuffer fb = track ? scr::Framebuffer(opt.fb_width, opt.fb_height) : scr::Framebuffer();
+    // --scene menu: the front end
+    std::optional<scr::MenuAssets> menu_assets;
+    std::optional<scr::Menu> menu;
+    scr::SoundBank menu_sounds;
+    if (opt.scene == "menu") {
+        auto md = scr::resolve_game_file(*game_dir, "GFX/MENU.DAT");
+        auto gd = scr::resolve_game_file(*game_dir, "GFX/GRAF.DAT");
+        auto ld = scr::resolve_game_file(*game_dir, "DATA/LOCAL.DAT");
+        menu_assets.emplace();
+        if (!md || !gd || !ld || !menu_assets->load(*md, *gd, *ld)) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "cannot load the menu from GFX/MENU.DAT and GFX/GRAF.DAT");
+            return 1;
+        }
+        menu.emplace(*menu_assets);
+        menu->show_title();
+        // frontend_load: MENU.DTR's SOUND_FX (menu1..menu9)
+        auto gen = scr::resolve_game_file(*game_dir, "DATA/GEN.DAT");
+        auto snd = scr::resolve_game_file(*game_dir, "DATA/SOUND.DAT");
+        if (gen && snd) {
+            if (auto ga = scr::Archive::open(*gen)) {
+                if (auto dtr = ga->read("MENU.DTR")) {
+                    menu_sounds.fx = scr::parse_sound_fx(std::string(dtr->begin(), dtr->end()));
+                    if (auto sa = scr::Archive::open(*snd))
+                        for (auto& f : menu_sounds.fx)
+                            if (auto d = sa->read(f.name + ".RAW")) f.data = std::move(*d);
+                    menu_sounds.num_base = int(menu_sounds.fx.size());
+                    mixer.set_bank(&menu_sounds);
+                }
+            }
+        }
+        if (opt.music && ((!opt.headless && !opt.mute) || !opt.record_audio.empty())) {
+            // the menu tune: CD track 4 or MUSIC3
+            bool playing = false;
+            if (opt.music_source != "midi") {
+                if (auto cue = scr::find_cd_cue(*game_dir); cue && cd.open(*cue)) {
+                    auto music = std::make_shared<scr::CdAudioPlayer>(cd, scr::kCdTrackMenu);
+                    if (music->ok()) {
+                        mixer.set_music(music);
+                        playing = true;
+                    }
+                }
+            }
+            if (!playing && opt.music_source != "cd")
+                if (auto md2 = scr::resolve_game_file(*game_dir, "DATA/MUSIC.DAT"))
+                    if (auto song = scr::load_hmp_music(*md2, scr::kMusicMenu)) mixer.set_music(song);
+        }
+        if (!opt.headless && !opt.mute) {
+            const SDL_AudioSpec spec{SDL_AUDIO_F32, 2, 44100};
+            audio_stream = SDL_OpenAudioDeviceStream(
+                SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec,
+                [](void* user, SDL_AudioStream* stream, int additional, int) {
+                    auto* m = static_cast<scr::Mixer*>(user);
+                    static std::vector<float> buf;
+                    const int frames = additional / int(sizeof(float) * 2);
+                    if (frames <= 0) return;
+                    buf.resize(size_t(frames) * 2);
+                    m->mix(buf.data(), frames, 44100);
+                    SDL_PutAudioStreamData(stream, buf.data(), frames * int(sizeof(float) * 2));
+                },
+                &mixer);
+            if (audio_stream) SDL_ResumeAudioStreamDevice(audio_stream);
+        }
+    }
+    scr::Framebuffer fb = (track || menu) ? scr::Framebuffer(opt.fb_width, opt.fb_height) : scr::Framebuffer();
     SDL_Texture* tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, fb.width(), fb.height());
     SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
 
@@ -675,6 +742,35 @@ int main(int argc, char** argv) {
                     hud->draw(fb, hs, track->darken075, clock.frame_time(), clock.pow_table_row(), player->camera.hud_view,
                               radar);
                 }
+            } else if (menu) {
+                scr::MenuKeys mk;
+                const bool* keys = SDL_GetKeyboardState(nullptr);
+                mk.esc = keys[SDL_SCANCODE_ESCAPE];
+                mk.enter = keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER];
+                mk.up = keys[SDL_SCANCODE_UP];
+                mk.down = keys[SDL_SCANCODE_DOWN];
+                mk.left = keys[SDL_SCANCODE_LEFT];
+                mk.right = keys[SDL_SCANCODE_RIGHT];
+                // scripted keys: "frame:key" held for that one frame
+                for (size_t pos = 0; pos < opt.menu_keys.size();) {
+                    size_t end = opt.menu_keys.find(',', pos);
+                    if (end == std::string::npos) end = opt.menu_keys.size();
+                    const std::string item = opt.menu_keys.substr(pos, end - pos);
+                    pos = end + 1;
+                    const size_t colon = item.find(':');
+                    if (colon == std::string::npos || std::strtoull(item.c_str(), nullptr, 10) != frame) continue;
+                    const std::string k = item.substr(colon + 1);
+                    mk.esc |= k == "esc";
+                    mk.enter |= k == "enter";
+                    mk.up |= k == "up";
+                    mk.down |= k == "down";
+                    mk.left |= k == "left";
+                    mk.right |= k == "right";
+                }
+                menu->update(mk, clock.frame_time());
+                for (int sfx : menu->sounds) mixer.play(sfx);
+                menu->draw(fb, renderer3d);
+                if (menu->quit) running = false;
             } else if (title) {
                 scr::blit_pcx(*title, fb);
             } else {
