@@ -224,7 +224,11 @@ code when they form tables (a lone fixup there is usually an instruction operand
   raises the in-race ones. Music is CD audio (MSCDEX): menu track 4, races `table[map + 2] + 1`
   from 0x101efc; MUSIC.DAT holds the same tunes as HMI MIDI (`MUSICn.HMP`, n = CD track - 1)
   with AdLib FM banks (MELODIC.BNK, DRUM.BNK), played by `src/core/fm_synth.cpp` on an emulated
-  OPL3 (Nuked-OPL3; formats in its header). Without SPFXFULL only the first sample of each announcer event exists.
+  OPL3 (Nuked-OPL3; formats in its header) through a port of HMI's OPL3 MIDI driver (`fmmidi3`
+  in HMIMDRV.386, driver 0xa009, cut out and decompiled with tools/ghidra/scripts/RawEntries.java):
+  9 voices doubled on both register banks for stereo, a 64-step attenuation table for
+  velocity x CC7, pan by turning one copy down (MIDI pan < 64 turns down the output A copy, so
+  the game's stereo is mirrored), bend MSB only with CC 102 as the range, no CC11. Without SPFXFULL only the first sample of each announcer event exists.
 * Moving scenery (`src/core/animations.cpp`): ANIMATIONS in MAPnDAT.DTR (object, speed, spline
   in MAPnANM.SPL, sound) move along racing-line style splines whose knots carry a height at
   +0xc; within 52000 units of the player they advance speed * frame time, heading from acos of

@@ -4,7 +4,9 @@
 #include "core/fm_synth.h"
 #include "core/gamedata.h"
 
+#include <array>
 #include <cmath>
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <vector>
@@ -54,10 +56,45 @@ TEST_CASE("fm synth: A4 is 440 Hz and note off releases") {
     CHECK(bent < 995);
 }
 
-TEST_CASE("fm synth: voices run out and get reused") {
+TEST_CASE("fm synth: HMI's nine voices") {
     scr::FmMidiSynth synth({sine_patch()}, {});
     for (int n = 40; n < 70; ++n) synth.message(0x90, uint8_t(n), 100);
-    CHECK(synth.active_voices() == 18);
+    CHECK(synth.active_voices() == 9);
+}
+
+namespace {
+
+// Peak of each channel over a second of one held note.
+std::array<float, 2> peaks(std::initializer_list<std::array<uint8_t, 3>> msgs) {
+    scr::FmMidiSynth synth({sine_patch()}, {});
+    for (const auto& m : msgs) synth.message(m[0], m[1], m[2]);
+    std::vector<float> buf(44100 * 2, 0.0f);
+    synth.render(buf.data(), 44100, 44100, 1.0f);
+    std::array<float, 2> p{};
+    for (size_t i = 22050 * 2; i < buf.size(); ++i) p[i & 1] = std::max(p[i & 1], std::fabs(buf[i]));
+    return p;
+}
+
+double db(float a, float b) { return 20.0 * std::log10(double(a) / double(b)); }
+
+} // namespace
+
+TEST_CASE("fm synth: HMI's velocity, volume and pan curves") {
+    // Velocity 64: v = 64, attenuation table[32] = 13 steps -> level 13 = 9.75 dB down.
+    const auto full = peaks({{0x90, 69, 127}});
+    const auto half = peaks({{0x90, 69, 64}});
+    CHECK(std::fabs(db(half[0], full[0]) + 9.75) < 0.6);
+    // Channel volume 32: v = (32 << 7) / 127 * 127 >> 7 = 32 -> table[16] = 27 steps (20.25 dB);
+    // the pan pass recomputes one side as volume * velocity >> 7 = 31 -> table[15] = 28 steps.
+    const auto vol = peaks({{0xb0, 7, 32}, {0x90, 69, 127}});
+    CHECK(std::fabs(db(vol[0], full[0]) + 21.0) < 0.6);
+    CHECK(std::fabs(db(vol[1], full[1]) + 20.25) < 0.6);
+    // Hard pan: HMI turns down the copy in bank 1 for pan < 64; Nuked's first output is
+    // that copy's (output A), so MIDI pan 0 silences the first channel.
+    const auto hard = peaks({{0xb0, 10, 0}, {0x90, 69, 127}});
+    CHECK(hard[0] < full[0] * 0.01f);
+    // ...while the centre position (64) turns the other copy down by one step (0.75 dB).
+    CHECK(std::fabs(db(hard[1], full[1]) - 0.75) < 0.2);
 }
 
 TEST_CASE("fm synth: the game's banks and songs") {

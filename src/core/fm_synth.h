@@ -15,9 +15,9 @@
 //                programs; DRUM is indexed by note and its flag byte is the pitch to play.
 //
 // The sound comes from an emulated Yamaha OPL3 (YMF262, the Sound Blaster 16's FM chip):
-// Nuked-OPL3 (tgies/Nuked-OPL3-fast, LGPL-2.1, built as opl3.dll). FmMidiSynth is the MIDI
-// driver in front of it: 18 two-operator channels, the patch in the operator registers, the
-// note as F-number and block.
+// Nuked-OPL3 (tgies/Nuked-OPL3-fast, LGPL-2.1, built as opl3.dll). FmMidiSynth is HMI's OPL3
+// MIDI driver (fmmidi3 in HMIMDRV.386) ported register write for register write: 9 stereo
+// voices, its volume, pan and pitch bend maths (details in fm_synth.cpp).
 // Music number n goes with CD track n + 1 (menu MUSIC3, MAP1 MUSIC2, ...).
 
 #include "core/sound.h"
@@ -62,7 +62,7 @@ struct HmpSong {
 
 std::optional<HmpSong> parse_hmp(const std::vector<uint8_t>& hmp);
 
-// MIDI messages to the OPL3's eighteen two-operator channels.
+// HMI's OPL3 MIDI driver: MIDI messages to OPL3 register writes.
 class FmMidiSynth {
 public:
     FmMidiSynth(std::vector<FmPatch> melodic, std::vector<FmPatch> drums);
@@ -75,23 +75,30 @@ public:
 
 private:
     struct Voice;
-    struct Channel {
-        int program = 0, volume = 100, expression = 127, pan = 64;
-        float bend = 0;  // semitones
-        bool hold = false;
-    };
     void note_on(int ch, int note, int vel);
     void note_off(int ch, int note);
-    void update_voice(Voice& v, bool patch);
-    void key(Voice& v, bool on);
-    void write(int reg, int value);
+    void key_off(int v);
+    void set_freq(int v, uint32_t word, bool retrigger);
+    void load_patch(int v, const FmPatch& p);
+    void write_level(int bank, int v, int value);
+    void pan(int ch, int value);
+    void volume(int ch, int value);
+    uint32_t bend_word(int msb, int note, int v) const;
+    int pick_voice(int ch) const;
+    void write(int bank, int reg, int value);
     void chip_reset(int rate);
+
     std::vector<FmPatch> melodic_, drums_;
-    std::array<Channel, 16> channels_{};
-    std::vector<std::unique_ptr<Voice>> voices_;
     std::unique_ptr<_opl3_chip> chip_;
     int rate_ = 0;
-    uint64_t age_ = 0;
+    // The driver's state (names after what they hold; addresses in fm_synth.cpp).
+    std::array<int, 9> voice_note_{}, voice_channel_{}, voice_velocity_{};
+    std::array<bool, 9> voice_additive_{};
+    std::array<int, 9> a0_{}, b0_{};
+    std::array<int, 22> reg40_{};  // the patches' KSL/level bytes by operator slot
+    std::array<int, 16> ch_volume_{}, ch_pan_{}, ch_program_{}, ch_bend_{}, ch_range_{}, ch_sustain_{};
+    std::array<bool, 16> ch_bending_{};
+    std::array<std::vector<int>, 16> held_;  // note offs held back by the sustain pedal
 };
 
 // Plays an HMP song on the FM synth, looping like MidiMusic_play(song, 1).
