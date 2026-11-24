@@ -8,6 +8,8 @@
 namespace scr {
 namespace {
 
+constexpr float kEdgeSlack = 0.35f;  // pixels at 320x200, scaled with the height
+
 constexpr float kAngle = 6.28318530718f / 2048.0f;
 constexpr float kNear = 16.0f;
 
@@ -139,6 +141,7 @@ void Renderer::draw_placements() {
         // before the road and its verges, which cover them where the quad pokes through.
         // (Only ground below the eye: flat ceilings overhead keep their depth.)
         if (p.slot != 0 && m.flat && float(p.y + m.flat_y) < cam_->y) pose.depth_bias = -kFlatGroundBias;
+        pose.seal_edges = p.slot == 0;
         draw_model(m, pose);
     }
 }
@@ -170,6 +173,7 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
         if (!sphere_visible(cx, cy, cz, model.radius)) return;
     }
     ++stats_.objects;
+    edge_slack_ = pose.seal_edges ? kEdgeSlack * float(fb_->height()) / 200.0f : 0.0f;
 
     // The game turns objects the other way round from the camera: negate the yaw (checked
     // against the original: walls facing the road, cars seen from behind in the intro).
@@ -275,6 +279,7 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
 }
 
 RenderStats Renderer::finish() {
+    edge_slack_ = 0;
     // Translucent polygons do not write depth; draw them far to near over the opaque scene.
     std::stable_sort(deferred_.begin(), deferred_.end(),
                      [](const Deferred& a, const Deferred& b) { return a.depth > b.depth; });
@@ -364,6 +369,7 @@ void Renderer::draw_polygon(const ClipVert* in, size_t count, const Material* ma
     fill.flat = mode == Mode::Flat && mat && (mat->type >> 1) == 4 ? face_color : (mat ? mat->color : 15);
     fill.writes_depth = mode != Mode::Translucent && mode != Mode::Darken;
     fill.depth_bias = depth_bias;
+    fill.edge_slack = fill.writes_depth ? edge_slack_ : 0.0f;
     // mat10_draw takes its frame from the instance's +0x3c word, the others from the
     // animation phase (cell_begin).
     fill.frame = !mat ? 0
@@ -416,6 +422,14 @@ void Renderer::fill_rows(int band0, int band1) {
         // Along a row w0, w1 and w2 are linear in x (w = k x + m): where all three can be
         // positive bounds the span; the exact test below still decides each pixel.
         const float k0 = (b.y - c.y) * inv, k1 = (c.y - a.y) * inv, k2 = -k0 - k1;
+        // Road polygons reach a little past their edges (Pose::seal_edges).
+        float e0 = 0, e1 = 0, e2 = 0;
+        if (fl.edge_slack > 0) {
+            const float s = -fl.edge_slack / std::fabs(area);
+            e0 = s * std::hypot(c.x - b.x, c.y - b.y);
+            e1 = s * std::hypot(a.x - c.x, a.y - c.y);
+            e2 = s * std::hypot(b.x - a.x, b.y - a.y);
+        }
         const int ya = std::max(t.y0, band0), yb = std::min(t.y1, band1 - 1);
         for (int y = ya; y <= yb; ++y) {
             const float py = float(y) + 0.5f;
@@ -431,9 +445,9 @@ void Renderer::fill_rows(int band0, int band1) {
                     else if (k < -1e-9f) hi = std::min(hi, -m / k);
                     else if (m < -1e-3f) empty = true;
                 };
-                bound(k0, m0);
-                bound(k1, m1);
-                bound(k2, m2);
+                bound(k0, m0 - e0);
+                bound(k1, m1 - e1);
+                bound(k2, m2 - e2);
                 if (empty) continue;
                 // px = x + 0.5, with a pixel to spare either side
                 if (lo > -1e29f) x0 = std::max(x0, int(std::floor(std::min(lo, 1e8f))) - 2);
@@ -446,7 +460,7 @@ void Renderer::fill_rows(int band0, int band1) {
                 const float w0 = ((b.x - px) * (c.y - py) - (b.y - py) * (c.x - px)) * inv;
                 const float w1 = ((c.x - px) * (a.y - py) - (c.y - py) * (a.x - px)) * inv;
                 const float w2 = 1.0f - w0 - w1;
-                if (w0 < 0 || w1 < 0 || w2 < 0) continue;
+                if (w0 < e0 || w1 < e1 || w2 < e2) continue;
                 const float iz = w0 * a.iz + w1 * b.iz + w2 * c.iz;
                 float& dz = drow[x];
                 // Coplanar surfaces (road decals on the road, shadows) are resolved like the

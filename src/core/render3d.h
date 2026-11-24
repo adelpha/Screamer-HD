@@ -72,6 +72,10 @@ struct Pose {
     // whole objects and never depth-tests, so a car's shadow (a flat quad tilted with the car)
     // always lies on the road; a bias keeps it from sinking into slopes here.
     float depth_bias = 0;
+    // Road pieces (track placements of slot 0): they meet edge to edge but are transformed
+    // separately, and the hairline cracks between them would show the sky; their polygons
+    // reach a third of an original pixel past their edges.
+    bool seal_edges = false;
 };
 
 // The flat ground pieces of the scenery are tested and written as if this much further away,
@@ -149,6 +153,7 @@ private:
         uint8_t flat;
         bool use_texels, writes_depth;
         float depth_bias;       // in units of d = 128 - z
+        float edge_slack;       // pixels the polygon reaches past its edges
     };
     struct Tri {
         Scr a, b, c;
@@ -174,6 +179,7 @@ private:
     // view frustum planes in camera space (unit normals, offsets), for sphere_visible
     std::array<std::array<float, 4>, 4> planes_{};
     int plane_count_ = 0;
+    float edge_slack_ = 0;  // for the polygons of the model being drawn
     std::unique_ptr<WorkerPool> pool_;
     std::vector<float> wx_, wy_, wz_;
     std::vector<std::array<int, 2>> env_uv_;
