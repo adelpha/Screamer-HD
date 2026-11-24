@@ -132,8 +132,14 @@ void Renderer::draw_placements() {
     for (const Placement& p : track_->placements) {
         const float dx = float(p.x) - cam_->x, dz = float(p.z) - cam_->z;
         if (std::fabs(dx) > cam_->far_distance || std::fabs(dz) > cam_->far_distance) continue;
-        draw_model(track_->objects[size_t(p.object)],
-                   Pose{float(p.x), float(p.y), float(p.z), float(p.ax), float(p.ay), float(p.az), p.animation, p.reflection});
+        const Model& m = track_->objects[size_t(p.object)];
+        Pose pose{float(p.x), float(p.y), float(p.z), float(p.ax), float(p.ay), float(p.az), p.animation, p.reflection};
+        // The original draws whole objects far to near (cell by cell) without a depth buffer,
+        // and the track relies on the order: flat ground quads beside the road are drawn
+        // before the road and its verges, which cover them where the quad pokes through.
+        // (Only ground below the eye: flat ceilings overhead keep their depth.)
+        if (p.slot != 0 && m.flat && float(p.y + m.flat_y) < cam_->y) pose.depth_bias = -kFlatGroundBias;
+        draw_model(m, pose);
     }
 }
 
@@ -427,7 +433,7 @@ void Renderer::fill_rows(int band0, int band1) {
                 float& dz = drow[x];
                 // Coplanar surfaces (road decals on the road, shadows) are resolved like the
                 // original's painter's order: the later polygon wins near-ties.
-                const float tz = fl.depth_bias > 0 ? iz / std::max(1e-3f, 1.0f - fl.depth_bias * iz) : iz;
+                const float tz = fl.depth_bias != 0 ? iz / std::max(1e-3f, 1.0f - fl.depth_bias * iz) : iz;
                 if (tz * 1.0005f < dz) continue;
                 uint8_t& dst = row[x];
                 if (mode == Mode::Darken) {
@@ -455,7 +461,7 @@ void Renderer::fill_rows(int band0, int band1) {
                         continue;
                     }
                 }
-                if (fl.writes_depth) dz = iz;
+                if (fl.writes_depth) dz = tz;
                 dst = col;
             }
         }

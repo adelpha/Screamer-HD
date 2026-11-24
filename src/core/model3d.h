@@ -68,6 +68,10 @@ struct Model {
     // Bounding sphere around the object's origin that holds every part however it is placed;
     // radius < 0: unknown.
     float radius = -1;
+    // Every vertex at the same height: a flat piece of ground (the grass and earth filler
+    // quads around the road).
+    bool flat = false;
+    int flat_y = 0;
 };
 
 // Fills in Part::center/radius and Model::radius (parse_model does this).

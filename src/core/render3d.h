@@ -68,11 +68,16 @@ struct Pose {
     // until the first car_apply_surface).
     EnvScroll* env = nullptr;
     float env_rate = 0.008f;
-    // Drawn as if this many units nearer the camera in the depth test. The original sorts
+    // Drawn as if this many units nearer the camera in the depth test (negative: further). The original sorts
     // whole objects and never depth-tests, so a car's shadow (a flat quad tilted with the car)
     // always lies on the road; a bias keeps it from sinking into slopes here.
     float depth_bias = 0;
 };
+
+// The flat ground pieces of the scenery are tested and written as if this much further away,
+// so the road and its verges, drawn after them in the original, stay on top where the
+// ground pokes up through them.
+constexpr float kFlatGroundBias = 4096.0f;
 
 // Material frame shown by cell_begin + mat*_draw: frames * phase >> 14, where the phase is
 // animation >> 2, or the low 14 bits of the global animation counter for animation < 0.

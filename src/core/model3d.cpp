@@ -109,6 +109,18 @@ std::optional<Model> parse_model(const uint8_t* d, size_t size) {
 
 void compute_bounds(Model& model) {
     model.radius = 0;
+    model.flat = false;
+    bool any = false, flat = true;
+    int flat_y = 0;
+    for (const Part& part : model.parts)
+        for (const Vec3i16& v : part.vertices) {
+            const int y = v.y + part.offset[1];
+            if (!any) flat_y = y;
+            else if (y != flat_y || part.angles != std::array<int32_t, 3>{}) flat = false;
+            any = true;
+        }
+    model.flat = any && flat;
+    model.flat_y = flat_y;
     for (Part& part : model.parts) {
         if (part.vertices.empty()) {
             part.center = {};
