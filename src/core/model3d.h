@@ -10,6 +10,8 @@
 //         { int32 ?, angle x, angle y, angle z, x, y, z } - where the part sits in the object
 //         (car wheels; zero for most parts)
 //   +0x10 int32 vertex count (informational), +0x14 int32 face count
+//   +0x18 int32 flags (0x2000: environment-mapped, see Part::vertex_normals)
+//   +0x20 int32 vertex normal list offset (object-relative, 0x2000 parts only)
 //   +0x1c int32 vertex list offset (object-relative): int16 x, y, z per vertex, ends with x == 0x7fff
 //   +0x24 int32 uv list offset (object-relative): int16 u, v at the same byte offset as each vertex
 //   +0x28 int32 draw-order offsets[16] (part-relative, one per view direction): int16 face
@@ -51,6 +53,10 @@ struct Part {
     std::vector<Vec3i16> vertices;
     std::vector<std::array<int16_t, 2>> uvs;  // per vertex, 0..255 across the texture (texel = uv * size / 256)
     std::vector<Face> faces;
+    int32_t flags = 0;  // +0x18; 0x2000: environment-mapped (object_transform_float)
+    // +0x20 (object-relative) for 0x2000 parts: int32 count, float x, y, z per vertex - the
+    // vertex normals used for the car glass reflections.
+    std::vector<std::array<float, 3>> vertex_normals;
 };
 
 struct Model {

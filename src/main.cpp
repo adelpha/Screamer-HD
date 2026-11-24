@@ -266,6 +266,8 @@ int main(int argc, char** argv) {
         scr::Model model;
         std::vector<scr::Model> cpu_models;  // per CPU car
         scr::ChaseCamera camera;
+        scr::EnvScroll env;                // glass reflection scroll of the player car
+        std::vector<scr::EnvScroll> cpu_env;
     };
     std::optional<Player> player;
     if (drive) {
@@ -422,6 +424,10 @@ int main(int argc, char** argv) {
                     pose.az = float(int((c.roll + c.lean_roll) * kToUnits) & 0x7ff);
                     pose.animation = int32_t(c.render_animation());
                     pose.reflection = c.surface_render_flag;
+                    // car_apply_surface sets the (global) scroll rate from the player's surface.
+                    const float env_rate = c.marker_flags == 0 ? 0.002f : 0.03f;
+                    pose.env = &player->env;
+                    pose.env_rate = env_rate;
                     scr::Pose sh = pose;
                     sh.y = float(c.ground_y - 2);
                     if (shadow) renderer3d.draw_model(*shadow, sh);
@@ -439,6 +445,10 @@ int main(int argc, char** argv) {
                         op.animation = int32_t(uint32_t(o.setup.animation) | (o.catching_up ? 0u : 0x4000u) |
                                                (o.speed <= 4000.0f ? 0x2000u : 0u));
                         op.reflection = int32_t(o.render_flags);
+                        if (player->cpu_env.size() < player->race.opponents.size())
+                            player->cpu_env.resize(player->race.opponents.size());
+                        op.env = &player->cpu_env[i];
+                        op.env_rate = env_rate;
                         scr::Pose osh = op;
                         osh.y = float(o.ground_y - 2);
                         osh.ax = 0;

@@ -96,6 +96,25 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
     const MaterialLibrary* lib = track_->materials ? &*track_->materials : nullptr;
     std::vector<ClipVert> poly;
     ++stats_.objects;
+    // The glass scroll: movement since the last frame, in camera space, times the rate;
+    // rounded to nearest (FIST) and wrapped to the 256-texel reflection map.
+    int env_off_x = 0, env_off_z = 0;
+    if (pose.env) {
+        EnvScroll& e = *pose.env;
+        const int px = int(pose.x), py = int(pose.y), pz = int(pose.z);
+        if (!e.started) {
+            e.prev[0] = px; e.prev[1] = py; e.prev[2] = pz;
+            e.started = true;
+        }
+        float cx, cy, cz;
+        apply(view_, float(px - e.prev[0]), float(py - e.prev[1]), float(pz - e.prev[2]), cx, cy, cz);
+        e.acc[0] = cx * pose.env_rate + e.acc[0];
+        e.acc[1] = cy * pose.env_rate + e.acc[1];
+        e.acc[2] = cz * pose.env_rate + e.acc[2];
+        env_off_x = int(std::lrint(e.acc[0])) & 0xff;
+        env_off_z = int(std::lrint(e.acc[2])) & 0xff;
+        e.prev[0] = px; e.prev[1] = py; e.prev[2] = pz;
+    }
     for (size_t pi = 0; pi < model.parts.size(); ++pi) {
         if (part_mask && (pi >= part_mask->size() || !(*part_mask)[pi])) continue;
         const Part& part = model.parts[pi];
@@ -114,6 +133,23 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
             apply(prot, part.vertices[i].x, part.vertices[i].y, part.vertices[i].z, rx, ry, rz);
             apply(view_, rx + ox, ry + oy, rz + oz, wx_[i], wy_[i], wz_[i]);
         }
+        // Reflection UVs (object_transform_float): the view direction to the vertex reflected
+        // off the vertex normal, u from its x and v from its z, 127 * component + 127 - scroll.
+        const bool env = (part.flags & 0x2000) && part.vertex_normals.size() >= nv;
+        if (env) {
+            env_uv_.resize(nv);
+            for (size_t i = 0; i < nv; ++i) {
+                const auto& n0 = part.vertex_normals[i];
+                float rnx, rny, rnz, nx, ny, nz;
+                apply(prot, n0[0], n0[1], n0[2], rnx, rny, rnz);
+                apply(view_, rnx, rny, rnz, nx, ny, nz);
+                const double len = std::sqrt(double(wx_[i]) * wx_[i] + double(wy_[i]) * wy_[i] + double(wz_[i]) * wz_[i]);
+                const double vx = len > 0 ? wx_[i] / len : 0, vy = len > 0 ? wy_[i] / len : 0, vz = len > 0 ? wz_[i] / len : 0;
+                const double d2 = 2.0 * (vx * nx + vy * ny + vz * nz);
+                const double rx = double(nx) * d2 - vx, rz = double(nz) * d2 - vz;
+                env_uv_[i] = {int(std::lrint(rx * 127.0)) + 127 - env_off_x, int(std::lrint(rz * 127.0)) + 127 - env_off_z};
+            }
+        }
         for (const Face& f : part.faces) {
             // Back-face test like object_build_polygons: dot(vertex - eye, normal) >= 0 draws.
             float nx, ny, nz;
@@ -129,7 +165,10 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
                 const size_t vi = f.vtx[size_t(i)];
                 if (vi >= nv) { poly.clear(); break; }
                 ClipVert cv{wx_[vi], wy_[vi], wz_[vi], 0, 0};
-                if (mat && vi < part.uvs.size()) {
+                if (mat && env && (mat->type >> 1) == 5) {
+                    cv.u = float(env_uv_[vi][0]) * float(mat->width) / 256.0f;
+                    cv.v = float(env_uv_[vi][1]) * float(mat->height) / 256.0f;
+                } else if (mat && vi < part.uvs.size()) {
                     cv.u = float(part.uvs[vi][0]) * float(mat->width) / 256.0f;  // (u * width) >> 5 with 3 fraction bits
                     cv.v = float(part.uvs[vi][1]) * float(mat->height) / 256.0f;
                 }

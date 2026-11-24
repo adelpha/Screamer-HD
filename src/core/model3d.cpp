@@ -27,6 +27,19 @@ std::optional<Model> parse_model(const uint8_t* d, size_t size) {
         if (!rd(d, size, p + 0x1c, voff) || !rd(d, size, p + 0x24, uvoff) || !rd(d, size, p + 0x28, order0)) return std::nullopt;
         Part part;
         for (size_t i = 0; i < 24 && p + 0x68 + i < size && d[p + 0x68 + i]; ++i) part.name.push_back(char(d[p + 0x68 + i]));
+        rd(d, size, p + 0x18, part.flags);
+        int32_t normals = 0, count = 0;
+        if ((part.flags & 0x2000) && rd(d, size, p + 0x20, normals) && normals > 0 && rd(d, size, size_t(normals), count) &&
+            count > 0 && count < 20000) {
+            for (int32_t i = 0; i < count; ++i) {
+                std::array<float, 3> n{};
+                for (size_t c = 0; c < 3; ++c) {
+                    const size_t o = size_t(normals) + 4 + size_t(i) * 12 + c * 4;
+                    if (o + 4 <= size) std::memcpy(&n[c], d + o, 4);
+                }
+                part.vertex_normals.push_back(n);
+            }
+        }
         // Part placement (copied into the instance by engine_object_instance_init):
         // +0x0c -> { int32 ?, angle x, angle y, angle z, x, y, z }.
         int32_t xf = 0;
