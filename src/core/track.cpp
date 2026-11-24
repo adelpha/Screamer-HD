@@ -2,6 +2,7 @@
 
 #include "core/archive.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace scr {
@@ -31,6 +32,8 @@ std::optional<MaterialLibrary> MaterialLibrary::parse(std::vector<uint8_t> mlb) 
             m.frames = le32(mlb, size_t(desc));
             m.color = uint8_t(le32(mlb, size_t(desc) + 4));
             m.pixels = uint32_t(le32(mlb, size_t(desc) + 8));
+            for (int f = 0; f < m.frames && f < 64 && size_t(desc) + 12 + 4 * size_t(f) <= mlb.size(); ++f)
+                m.frame_pixels.push_back(uint32_t(le32(mlb, size_t(desc) + 8 + 4 * size_t(f))));
         }
         lib.materials_.push_back(m);
     }
@@ -43,13 +46,14 @@ const Material* MaterialLibrary::find(uint16_t offset) const {
     return i < materials_.size() ? &materials_[i] : nullptr;
 }
 
-uint8_t MaterialLibrary::texel(const Material& m, int u, int v) const {
+uint8_t MaterialLibrary::texel(const Material& m, int u, int v, int frame) const {
     if (m.width <= 0 || m.height <= 0) return m.color;
     u %= m.width;
     if (u < 0) u += m.width;
     v %= m.height;
     if (v < 0) v += m.height;
-    const size_t o = size_t(m.pixels) + size_t(v) * 256 + size_t(u);
+    const uint32_t base = m.frame_pixels.empty() ? m.pixels : m.frame_pixels[size_t(frame) % m.frame_pixels.size()];
+    const size_t o = size_t(base) + size_t(v) * 256 + size_t(u);
     return o < data_.size() ? data_[o] : m.color;
 }
 
@@ -105,6 +109,34 @@ std::optional<std::vector<Placement>> parse_mmp(const std::vector<uint8_t>& mmp,
     return out;
 }
 
+std::array<uint8_t, 256> build_darken_table(const uint8_t* rgb6, float factor) {
+    std::array<uint8_t, 256> out{};
+    for (int i = 0; i < 256; ++i) {
+        float t[3];
+        for (int c = 0; c < 3; ++c) t[c] = std::min(255.0f, float(rgb6[3 * i + c]) * factor);
+        float best = 2.21e7f;
+        int best_j = 0;
+        for (int j = 0; j < 256; ++j) {
+            float d = 0;
+            for (int c = 0; c < 3; ++c) {
+                const float e = float(rgb6[3 * j + c]) - t[c];
+                d += e * e;
+            }
+            if (d < best) { best = d; best_j = j; }
+        }
+        out[size_t(i)] = uint8_t(best_j);
+    }
+    return out;
+}
+
+std::optional<Model> load_object(const std::string& dat_path, const std::string& file_name) {
+    auto a = Archive::open(dat_path);
+    if (!a) return std::nullopt;
+    auto bytes = a->read(file_name);
+    if (!bytes) return std::nullopt;
+    return parse_model(bytes->data(), bytes->size());
+}
+
 std::optional<Track> load_track(const std::string& dat_path, const std::string& name) {
     auto a = Archive::open(dat_path);
     if (!a) return std::nullopt;
@@ -123,6 +155,8 @@ std::optional<Track> load_track(const std::string& dat_path, const std::string& 
     t.materials = MaterialLibrary::parse(std::move(*mlb));
     if (!t.materials) return std::nullopt;
     t.palette = palette_from_vga(col->data());
+    t.darken = build_darken_table(col->data(), 0.6f);
+    if (auto smg = a->read(name + ".SMG"); smg && smg->size() >= 64 * 256) t.shade_table = std::move(*smg);
     if (auto bck = a->read(name + ".BCK")) t.background = decode_pcx(*bck);
     return t;
 }

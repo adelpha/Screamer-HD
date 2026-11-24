@@ -27,6 +27,15 @@ std::optional<Model> parse_model(const uint8_t* d, size_t size) {
         if (!rd(d, size, p + 0x1c, voff) || !rd(d, size, p + 0x24, uvoff) || !rd(d, size, p + 0x28, order0)) return std::nullopt;
         Part part;
         for (size_t i = 0; i < 24 && p + 0x68 + i < size && d[p + 0x68 + i]; ++i) part.name.push_back(char(d[p + 0x68 + i]));
+        // Part placement (copied into the instance by engine_object_instance_init):
+        // +0x0c -> { int32 ?, angle x, angle y, angle z, x, y, z }.
+        int32_t xf = 0;
+        if (rd(d, size, p + 0x0c, xf) && xf > 0) {
+            for (size_t i = 0; i < 3; ++i) {
+                rd(d, size, size_t(xf) + 4 + 4 * i, part.angles[i]);
+                rd(d, size, size_t(xf) + 16 + 4 * i, part.offset[i]);
+            }
+        }
 
         if (voff <= 0) return std::nullopt;
         for (size_t v = size_t(voff);; v += 6) {
@@ -54,7 +63,9 @@ std::optional<Model> parse_model(const uint8_t* d, size_t size) {
             const size_t f = p + size_t(fo);
             Face face;
             uint16_t n = 0;
-            if (!rd(d, size, f + 4, face.material) || !rd(d, size, f + 6, n)) return std::nullopt;
+            uint16_t color = 0;
+            if (!rd(d, size, f + 4, face.material) || !rd(d, size, f + 6, n) || !rd(d, size, f + 2, color)) return std::nullopt;
+            face.color = uint8_t(color);
             if (n < 3 || n > 6) continue;
             face.count = uint8_t(n);
             bool ok = true;
