@@ -114,4 +114,16 @@ void parse_mmp_track_lines(const std::vector<uint8_t>& mmp, std::vector<TrackPoi
 // below `below_y` whose outline contains the point. Empty when there is no road there.
 std::optional<float> ground_height(const Track& track, float x, float z, float below_y = 1e9f);
 
+struct GroundHit {
+    int y = 0;           // integer height, like collision_test_object_faces
+    char surface = 0;    // 4th letter of the road part's name ('e' = bumpy)
+};
+// collision_query_cells: the ground under x, z, or empty off the road (the game treats that
+// as a wall).
+std::optional<GroundHit> ground_query(const Track& track, int x, int z);
+
+// track_find_nearest_point: nearest centre-line point (slot 2) and cross-section (slot 3).
+const TrackPoint* nearest_track_point(const Track& track, int x, int z);
+const TrackSection* nearest_track_section(const Track& track, int x, int z);
+
 } // namespace scr

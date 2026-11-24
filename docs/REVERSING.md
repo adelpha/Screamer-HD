@@ -181,6 +181,17 @@ code when they form tables (a lone fixup there is usually an instruction operand
     names not starting with 'A'/'a'; it also picks one of three entries of the object by
     distance (probably detail levels, not used here);
   * no distance fog anywhere in the renderer.
+* Float code: Ghidra drops most x87 math in this binary (values kept on the FPU stack across
+  `__CHP`, `sin`, `cos`). `tools/ghidra/x87_lift.py FUNC_ADDR` follows the FPU stack through
+  the dump's disassembly and prints each store, compare and conversion as an expression, with
+  `PlayerCar` fields named and constants read from the executable. Read it next to the
+  decompiler output (which keeps the integer logic and control flow).
+* Player car (`src/core/car.cpp`): race_frame runs car_integrate_motion, car_update_driving
+  (engine/gearbox, throttle, brake, steering), car_update_dynamics (wheel loads, skid) and
+  car_update_track_contact (corner probes, wheel ground heights, track heading, body pose)
+  in that order. Walls are wherever the corner probes find no road face; the push comes from
+  the nearest slot 3 cross-section. Smoothing goes through `lerp_toward` with the per-fps
+  `g_frame_pow_table`. Crashes, spins, opponents, checkpoints and sounds are not ported yet.
 * Ground and track lines: `collision_query_cells` tests the faces of slot 0 (road) objects in
   the 3x3 cells around a probe, and the 4th letter of the part name is the surface type.
   `track_find_nearest_point` uses slot 2 (centre-line points with heading) and slot 3 (road

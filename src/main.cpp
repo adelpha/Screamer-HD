@@ -8,6 +8,8 @@
 // --dump-fb produce reproducible images the test harness compares.
 
 #include "core/archive.h"
+#include "core/car.h"
+#include "core/dtr.h"
 #include "core/framebuffer.h"
 #include "core/gamedata.h"
 #include "core/image.h"
@@ -48,7 +50,10 @@ struct Options {
     int fb_width = 320, fb_height = 200;  // internal render size (--render-size)
     bool flat = false;              // --scene track: no textures
     std::vector<std::string> cars;  // --scene track: NAME[,X,Y,Z,YAW] per car
-    std::string detail = "H";       // --detail: H (high, GFX/MAPnH.DAT) or L (low, MAPnL.DAT)
+    std::string detail = "H";
+    int car_index = 0;              // --scene drive: CARS_DATA record (0..12)
+    std::string start;              // --scene drive: X,Z start position
+    std::string hold;               // --scene drive: keys held in every frame (accel,brake,left,right)       // --detail: H (high, GFX/MAPnH.DAT) or L (low, MAPnL.DAT)
 };
 
 void print_usage() {
@@ -58,8 +63,11 @@ void print_usage() {
         "  --data DIR           original game directory (default: $SCREAMER_DATA or build-time path)\n"
         "  --headless           no visible window, software renderer, dummy audio\n"
         "  --frames N           exit after N simulation frames (2 ticks of the game's 100 Hz clock each)\n"
-        "  --scene NAME         title (default when the game files are found), track or testpattern\n"
-        "  --track NAME         track for --scene track (MAP1..MAP6, default MAP2)\n"
+        "  --scene NAME         title (default when the game files are found), track, drive or testpattern\n"
+        "  --track NAME         track for --scene track / drive (MAP1..MAP6, default MAP2)\n"
+        "  --car-index N        --scene drive: car from CARS_DATA (0..12, default 0)\n"
+        "  --start X,Z          --scene drive: start position (default: the intro demo's grid)\n"
+        "  --hold KEYS          --scene drive: controls held every frame, e.g. accel,left (headless runs)\n"
         "  --detail high|low    track detail: GFX/MAPnH.DAT (default, as the game's high detail) or MAPnL.DAT\n"
         "  --camera X,Y,Z,YAW,PITCH[,ROLL]  camera for --scene track (game units, angles 0..2047)\n"
         "  --render-size WxH    internal resolution for 3D scenes (default 320x200)\n"
@@ -101,6 +109,9 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--camera") o.camera = next("--camera");
         else if (a == "--flat") o.flat = true;
         else if (a == "--car") o.cars.push_back(next("--car"));
+        else if (a == "--car-index") o.car_index = std::atoi(next("--car-index"));
+        else if (a == "--start") o.start = next("--start");
+        else if (a == "--hold") o.hold = next("--hold");
         else if (a == "--detail") o.detail = std::string(next("--detail")) == "low" ? "L" : "H";
         else if (a == "--render-size") {
             if (std::sscanf(next("--render-size"), "%dx%d", &o.fb_width, &o.fb_height) != 2 || o.fb_width <= 0 || o.fb_height <= 0) {
@@ -198,7 +209,8 @@ int main(int argc, char** argv) {
     // A track viewed from a fixed camera (the first step of the 3D renderer).
     std::optional<scr::Track> track;
     scr::Camera cam;
-    if (opt.scene == "track") {
+    const bool drive = opt.scene == "drive";
+    if (opt.scene == "track" || drive) {
         if (game_dir) {
             if (auto path = scr::resolve_game_file(*game_dir, "GFX/" + opt.track + opt.detail + ".DAT")) track = scr::load_track(*path, opt.track);
         }
@@ -246,6 +258,42 @@ int main(int argc, char** argv) {
         pose.animation = int32_t(animation);
         cars.push_back({std::move(*model), pose});
     }
+    // --scene drive: the player car with the ported physics and the chase camera.
+    struct Player {
+        scr::Car car;
+        scr::Model model;
+        scr::ChaseCamera camera;
+    };
+    std::optional<Player> player;
+    if (drive) {
+        auto gen = scr::resolve_game_file(*game_dir, "DATA/GEN.DAT");
+        auto ga = gen ? scr::Archive::open(*gen) : std::nullopt;
+        auto text = ga ? ga->read("CARS.DTR") : std::nullopt;
+        size_t n = 0;
+        auto cars_data = text ? scr::DtrFile(std::string(text->begin(), text->end())).pack_section("CARS_DATA", 0x40, 0x40, &n)
+                              : std::nullopt;
+        if (!cars_data || n == 0) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "cannot read CARS_DATA from DATA/GEN.DAT");
+            return 1;
+        }
+        const size_t idx = size_t(std::clamp(opt.car_index, 0, int(n) - 1));
+        const uint8_t* rec = cars_data->data() + idx * 0x40;
+        const std::string name(reinterpret_cast<const char*>(rec));
+        auto path = scr::resolve_game_file(*game_dir, "GFX/" + opt.track + opt.detail + ".DAT");
+        auto model = path ? scr::load_object(*path, name + ".3DX") : std::nullopt;
+        if (!model) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "cannot load car %s", name.c_str());
+            return 1;
+        }
+        if (!shadow) shadow = scr::load_object(*path, "SHADOW.3DX");
+        player.emplace();
+        player->model = std::move(*model);
+        int sx = 44000, sz = 4550;  // the intro demo's grid, MAP2
+        if (!opt.start.empty()) std::sscanf(opt.start.c_str(), "%d,%d", &sx, &sz);
+        player->car.reset(scr::car_setup(rec, player->model), *track, sx, sz);
+        SDL_Log("driving %s (CARS_DATA %zu)", name.c_str(), idx);
+    }
+    SDL_Gamepad* pad = nullptr;
     scr::Renderer renderer3d;
     renderer3d.set_textures(!opt.flat);
 
@@ -273,7 +321,10 @@ int main(int argc, char** argv) {
                 }
                 break;
             case SDL_EVENT_GAMEPAD_ADDED:
-                if (SDL_Gamepad* pad = SDL_OpenGamepad(ev.gdevice.which)) SDL_Log("gamepad connected: %s", SDL_GetGamepadName(pad));
+                if (SDL_Gamepad* p = SDL_OpenGamepad(ev.gdevice.which)) {
+                    SDL_Log("gamepad connected: %s", SDL_GetGamepadName(p));
+                    if (!pad) pad = p;
+                }
                 break;
             default: break;
             }
@@ -297,8 +348,55 @@ int main(int argc, char** argv) {
             if (track) {
                 fb.palette() = track->palette;
                 renderer3d.set_anim_counter(clock.anim_counter());
+                if (player) {
+                    scr::CarInput in;
+                    const bool* keys = SDL_GetKeyboardState(nullptr);
+                    auto held = [&](const char* k) { return opt.hold.find(k) != std::string::npos; };
+                    if (keys[SDL_SCANCODE_UP] || held("accel")) in.accel = 1023;
+                    if (keys[SDL_SCANCODE_DOWN] || held("brake")) in.brake = 1023;
+                    if (keys[SDL_SCANCODE_LEFT] || held("left")) in.steer_left = 1023;
+                    if (keys[SDL_SCANCODE_RIGHT] || held("right")) in.steer_right = 1023;
+                    if (pad) {
+                        const int rt = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
+                        const int lt = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+                        const int lx = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX);
+                        if (rt > 1000) in.accel = std::max(in.accel, rt * 1023 / 32767);
+                        if (lt > 1000) in.brake = std::max(in.brake, lt * 1023 / 32767);
+                        if (std::abs(lx) > 4000 && !in.steer_left && !in.steer_right) {
+                            in.analog_steer = true;
+                            in.steer = lx * 1023 / 32767;
+                        }
+                    }
+                    player->car.update(*track, in, clock.frame_time(), clock.pow_table_row());
+                    player->camera.update(player->car, clock.frame_time(), clock.pow_table_row());
+                    constexpr float kToUnits = 1024.0f / 3.1415927410125732f;
+                    cam.x = float(player->camera.x);
+                    cam.y = float(player->camera.y);
+                    cam.z = float(player->camera.z);
+                    cam.pitch = float(int(player->camera.pitch * kToUnits) & 0x7ff);
+                    cam.yaw = float(int(player->camera.yaw * kToUnits) & 0x7ff);
+                    cam.roll = float(int(player->camera.roll * kToUnits) & 0x7ff);
+                }
                 renderer3d.begin(*track, cam, fb);
                 renderer3d.draw_placements();
+                if (player) {
+                    // car_sync_render_object: body at the car, angles in 2048 units; the
+                    // shadow sits on the ground just below.
+                    const scr::Car& c = player->car;
+                    constexpr float kToUnits = 1024.0f / 3.1415927410125732f;
+                    scr::Pose pose;
+                    pose.x = float(c.pos_x);
+                    pose.y = float(c.pos_y + c.body_lift);
+                    pose.z = float(c.pos_z);
+                    pose.ax = float(int((c.pitch + c.lean_pitch) * kToUnits) & 0x7ff);
+                    pose.ay = float(int((c.yaw + c.drift_angle) * kToUnits) & 0x7ff);
+                    pose.az = float(int((c.roll + c.lean_roll) * kToUnits) & 0x7ff);
+                    pose.animation = int32_t(c.render_animation());
+                    scr::Pose sh = pose;
+                    sh.y = float(c.ground_y - 2);
+                    if (shadow) renderer3d.draw_model(*shadow, sh);
+                    renderer3d.draw_model(player->model, pose);
+                }
                 for (const auto& c : cars) {
                     if (shadow) renderer3d.draw_model(*shadow, c.pose);
                     renderer3d.draw_model(c.model, c.pose);
@@ -335,6 +433,11 @@ int main(int argc, char** argv) {
         SDL_RenderTexture(renderer, tex, nullptr, &dst);
 
         const bool last_frame = opt.frames && frame >= opt.frames;
+        if (last_frame && player) {
+            const scr::Car& c = player->car;
+            SDL_Log("car: pos %d,%d,%d yaw %.3f speed %.0f gear %d rpm %.0f wall %d", c.pos_x, c.pos_y, c.pos_z, double(c.yaw),
+                    double(c.speed), c.gear, double(c.engine_rpm), int(c.wall_contact));
+        }
         if (last_frame) {
             if (!opt.screenshot.empty()) {
                 scr::SurfacePtr s(SDL_RenderReadPixels(renderer, nullptr));

@@ -1,6 +1,7 @@
 # Engine-side code that is independent of the window/frontend. Unit tests link this.
 add_library(screamer_core STATIC
   core/archive.cpp
+  core/car.cpp
   core/dtr.cpp
   core/framebuffer.cpp
   core/gamedata.cpp
