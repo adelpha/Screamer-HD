@@ -78,6 +78,8 @@ struct Pose {
 // so the road and its verges, drawn after them in the original, stay on top where the
 // ground pokes up through them.
 constexpr float kFlatGroundBias = 4096.0f;
+// Car wheels (Part::wheel) are tested as if this much nearer.
+constexpr float kWheelBias = 64.0f;
 
 // Material frame shown by cell_begin + mat*_draw: frames * phase >> 14, where the phase is
 // animation >> 2, or the low 14 bits of the global animation counter for animation < 0.

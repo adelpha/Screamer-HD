@@ -181,9 +181,20 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
         const Part& part = model.parts[pi];
         // Part placement inside the object, then the object's.
         const bool placed = part.angles != std::array<int32_t, 3>{};
-        const Mat3 prot = placed ? multiply(rot, rotation(float(part.angles[0]), float(part.angles[1]), float(part.angles[2]))) : rot;
+        Mat3 prot = placed ? multiply(rot, rotation(float(part.angles[0]), float(part.angles[1]), float(part.angles[2]))) : rot;
         float ox, oy, oz;
         apply(rot, float(part.offset[0]), float(part.offset[1]), float(part.offset[2]), ox, oy, oz);
+        if (!part.frames.empty()) {
+            // A part of an animated object (object_load_bbox): this frame's matrix (stored by
+            // columns; it also swaps y and z, which is why the game flips its back-face test
+            // for these objects) and position, following the global animation counter.
+            const auto& fr = part.frames[size_t((int64_t(part.frames.size()) * (anim_counter_ & 0xffff)) >> 16) % part.frames.size()];
+            Mat3 pm{};
+            for (int r = 0; r < 3; ++r)
+                for (int c = 0; c < 3; ++c) pm.m[r][c] = float(fr[size_t(c * 3 + r)]) / 16384.0f;
+            prot = multiply(rot, pm);
+            apply(rot, float(fr[9]), float(fr[10]), float(fr[11]), ox, oy, oz);
+        }
         ox += pose.x - cam_->x;
         oy += pose.y - cam_->y;
         oz += pose.z - cam_->z;
@@ -193,6 +204,10 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
             apply(view_, rx + ox, ry + oy, rz + oz, cx, cy, cz);
             if (!sphere_visible(cx, cy, cz, part.radius)) continue;
         }
+        // A car's wheels: the original sorts an object's parts by distance and draws the
+        // nearer wheels after the body, over the dark wheel-arch faces just outside them, and
+        // the hub disc (..x, on the outside) after the tyre (..i).
+        const float bias = pose.depth_bias + (part.wheel ? kWheelBias + (part.name.back() == 'x' ? 16.0f : 0.0f) : 0.0f);
         const size_t nv = part.vertices.size();
         wx_.resize(nv); wy_.resize(nv); wz_.resize(nv);
         for (size_t i = 0; i < nv; ++i) {
@@ -224,7 +239,10 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
             float cnx, cny, cnz;
             apply(view_, nx, ny, nz, cnx, cny, cnz);
             const size_t v0 = f.vtx[0];
-            if (v0 >= nv || wx_[v0] * cnx + wy_[v0] * cny + wz_[v0] * cnz < 0) continue;
+            // (render_patch_cull_jge: the animated objects' parts keep the other side.)
+            if (v0 >= nv) continue;
+            const float facing = wx_[v0] * cnx + wy_[v0] * cny + wz_[v0] * cnz;
+            if (part.frames.empty() ? facing < 0 : facing >= 0) continue;
             const Material* mat = lib ? lib->find(f.material) : nullptr;
             size_t n = 0;
             float depth = 0;
@@ -247,11 +265,11 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
             const Mode mode = material_mode(mat);
             if (mode == Mode::Translucent || mode == Mode::Darken) {
                 deferred_.push_back({uint32_t(deferred_verts_.size()), uint32_t(n), mat, f.color, pose.animation,
-                                     pose.reflection, depth, pose.depth_bias});
+                                     pose.reflection, depth, bias});
                 deferred_verts_.insert(deferred_verts_.end(), poly.begin(), poly.begin() + ptrdiff_t(n));
                 continue;
             }
-            draw_polygon(poly.data(), n, mat, f.color, pose.animation, pose.reflection, pose.depth_bias);
+            draw_polygon(poly.data(), n, mat, f.color, pose.animation, pose.reflection, bias);
         }
     }
 }

@@ -57,14 +57,25 @@ struct Part {
     // +0x20 (object-relative) for 0x2000 parts: int32 count, float x, y, z per vertex - the
     // vertex normals used for the car glass reflections.
     std::vector<std::array<float, 3>> vertex_normals;
+    // Animated objects: per frame, the part's matrix (row-major, 2.14) and position. They are
+    // stored with y and z swapped on the output side (and the game flips its back-face test
+    // for them): the part's transform is v' = P (M v + t) with P swapping y and z.
+    std::vector<std::array<int16_t, 12>> frames;
     // Bounding sphere of the vertices (part space), for skipping parts outside the view;
     // radius < 0: unknown (never skipped).
     std::array<float, 3> center{};
     float radius = -1;
+    // One of a car's wheel parts (the names in the table at 0x101d58: flx fli blx rli frx fri
+    // brx rri).
+    bool wheel = false;
 };
 
 struct Model {
     std::vector<Part> parts;
+    // Animated objects (object header +0x10 >= 0): the number of frames; each part then has
+    // a matrix and position per frame (Part::frames), the frame following the global
+    // animation counter (frames * counter >> 16).
+    int frames = 0;
     // Bounding sphere around the object's origin that holds every part however it is placed;
     // radius < 0: unknown.
     float radius = -1;

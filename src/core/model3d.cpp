@@ -21,6 +21,10 @@ std::optional<Model> parse_model(const uint8_t* d, size_t size) {
     int32_t nparts = 0;
     if (!rd(d, size, 0x14, nparts) || nparts < 0 || nparts > 64) return std::nullopt;
     Model m;
+    // +0x10: frame count of an animated object (the MAP1 helmet, the MAP2 waterwheel), else -1
+    int32_t frames = -1;
+    rd(d, size, 0x10, frames);
+    if (frames > 0 && frames < 4096) m.frames = frames;
     for (int32_t k = 0; k < nparts; ++k) {
         int32_t po = 0;
         if (!rd(d, size, 0x18 + 4 * size_t(k), po) || po <= 0 || size_t(po) >= size) return std::nullopt;
@@ -49,6 +53,16 @@ std::optional<Model> parse_model(const uint8_t* d, size_t size) {
             for (size_t i = 0; i < 3; ++i) {
                 rd(d, size, size_t(xf) + 4 + 4 * i, part.angles[i]);
                 rd(d, size, size_t(xf) + 16 + 4 * i, part.offset[i]);
+            }
+            // Animated objects (object_load_bbox): from +0x1c, 0x30 bytes per frame, the part's
+            // matrix (9 int16, 2.14) and position (3 int16), then their inverse.
+            int32_t head = 0;
+            rd(d, size, size_t(xf), head);
+            const int32_t nframes = head == m.frames && size_t(xf) + 0x1c + size_t(m.frames) * 0x30 <= size ? m.frames : 0;
+            for (int32_t f = 0; f < nframes; ++f) {
+                std::array<int16_t, 12> fr{};
+                for (size_t i = 0; i < 12; ++i) rd(d, size, size_t(xf) + 0x1c + size_t(f) * 0x30 + i * 2, fr[i]);
+                part.frames.push_back(fr);
             }
         }
 
@@ -122,6 +136,8 @@ void compute_bounds(Model& model) {
     model.flat = any && flat;
     model.flat_y = flat_y;
     for (Part& part : model.parts) {
+        static const char* const kWheels[] = {"flx", "fli", "blx", "rli", "frx", "fri", "brx", "rri"};
+        part.wheel = std::find(std::begin(kWheels), std::end(kWheels), part.name) != std::end(kWheels);
         if (part.vertices.empty()) {
             part.center = {};
             part.radius = 0;
