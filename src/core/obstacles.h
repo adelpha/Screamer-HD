@@ -7,7 +7,8 @@
 // the track: MAPnOST.SPL in races, MAPnCNG.SPL in Cone Carnage, MAPnSLA.SPL in Slalom; each
 // knot is one obstacle at (x, z) and its +0xc field is the OSTACLES row.
 // An obstacle sits on the ground, turned to the track heading and tilted with the ground.
-// Only the special modes let the player knock them over (car_collide_obstacles): a hit throws
+// The player knocks them over in every race (car_check_obstacle_hits, from car_collide_vs_cpu and
+// car_collide_obstacles): a hit throws
 // it along the car's heading at 1.4 x the car's speed; it spins, bounces (0.8 of the speed back
 // up, gravity 500 per frame per second), slides to a stop, and ends lying on its side - or
 // disappears when it lands off the road.

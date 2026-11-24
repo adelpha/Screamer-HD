@@ -911,14 +911,17 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     else
                         player->race.player.update(*track, in, clock.frame_time(), clock.pow_table_row());
                     race_audio.update(player->race, clock.frame_time());
+                    if (player->cpu_cars && player->race.started && !player->race.finished && !player->race.failed) {
+                        // car_check_obstacle_hits: in every race the player knocks cones and
+                        // barriers flying (car_collide_vs_cpu in races, car_collide_obstacles in
+                        // the special modes); Cone Carnage gives a second for each
+                        scr::Race& rr = player->race;
+                        const int hits = obstacles.collide(rr.player);
+                        for (int i = 0; i < hits; ++i) mixer.play(5);
+                        if (rr.mode == 0x20) rr.time_left += float(hits);
+                    }
                     if (player->race.mode == 4 || player->race.mode == 0x20 || player->race.mode == 0x40) {
                         scr::Race& rr = player->race;
-                        // car_collide_obstacles; Cone Carnage gives a second per obstacle
-                        if (rr.started && !rr.finished && !rr.failed) {
-                            const int hits = obstacles.collide(rr.player);
-                            for (int i = 0; i < hits; ++i) mixer.play(5);
-                            if (rr.mode == 0x20) rr.time_left += float(hits);
-                        }
                         if (rr.gate_sound) mixer.play(9);
                         if (rr.mode == 4 && rr.timing_started && !rr.finished) {
                             const scr::Car& pc = rr.player;
