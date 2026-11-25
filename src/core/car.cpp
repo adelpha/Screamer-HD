@@ -651,6 +651,7 @@ constexpr ViewDef kViews[4] = {{0, 200, 2}, {0, 132, 1}, {1, 200, 2}, {9, 200, 2
 
 void ViewCamera::select(int v) {
     if (v < 0 || v > 3 || v == view) return;
+    old_view_ = view;
     view = v;
     pending_viewport_ = kViews[v].viewport;
     pending_hud_ = kViews[v].hud;
@@ -692,9 +693,14 @@ void ViewCamera::update(const Car& car, int camera_hi, float frame_time, int pow
     float p, yw, r;
     int cx, cy, cz;
     if (start_blend_) {
-        // Remember the old camera, then blend from it (camera_interpolate).
-        const float op = pitch, oyw = yaw, orl = roll;
-        const int ox = x, oy = y, oz = z;
+        // camera_handle_view_keys: the old view's camera for this frame (camera_update_view
+        // before the switch), then the new one; camera_interpolate blends from the difference.
+        float op, oyw, orl;
+        int ox, oy, oz;
+        const int new_view = view;
+        view = old_view_;
+        base(car, camera_hi, frame_time, pow_row, op, oyw, orl, ox, oy, oz);
+        view = new_view;
         chase_.snap = true;
         base(car, camera_hi, frame_time, pow_row, p, yw, r, cx, cy, cz);
         off_pos_[0] = ox - cx; off_pos_[1] = oy - cy; off_pos_[2] = oz - cz;

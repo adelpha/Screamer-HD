@@ -226,6 +226,7 @@ private:
               int& cx, int& cy, int& cz);
     ChaseCamera chase_;
     bool blending_ = false, start_blend_ = false;
+    int old_view_ = 2;
     float off_angle_[3]{};
     int off_pos_[3]{};
     int pending_viewport_ = 200, pending_hud_ = 2;
