@@ -468,7 +468,6 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             return 1;
         }
         const size_t idx = size_t(std::clamp(opt.car_index, 0, int(n) - 1));
-        player->car_index = int(idx);
         const uint8_t* rec = cars_data->data() + idx * 0x40;
         const std::string name(reinterpret_cast<const char*>(rec));
         auto path = scr::resolve_game_file(*game_dir, "GFX/" + opt.track + opt.detail + ".DAT");
@@ -482,6 +481,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         player.emplace();
         player->model = std::move(*model);
         player->model_parts = scr::find_car_parts(player->model);
+        player->car_index = int(idx);
         const scr::CarSetup setup = scr::car_setup(rec, player->model);
         // CPU cars: the racing lines and OPPONENTS of DATA/<track>.DAT; each takes the next
         // CARS_DATA record, skipping the player's (opponent_car_load).
