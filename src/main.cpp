@@ -64,6 +64,7 @@ struct Options {
     std::string aspect = "4:3";     // 4:3 | stretch | square
     std::string scene;              // title | track | testpattern; empty = title when game data is found
     std::string track = "MAP2";     // --scene track: which track
+    bool reversed = false;          // tracks 7-12: the track driven the other way (DATA/MAPnI.DAT)
     std::string camera;             // --scene track: x,y,z,yaw,pitch[,roll]
     int fb_width = 320, fb_height = 200;  // internal render size (--render-size)
     bool flat = false;              // --scene track: no textures
@@ -101,6 +102,7 @@ void print_usage() {
         "  --scene NAME         menu (default when the game files are found), title, track, drive or testpattern\n"
         "  --menu-keys LIST     --scene menu: keys pressed at frames, e.g. 40:down,60:enter (headless runs)\n"
         "  --track NAME         track for --scene track / drive (MAP1..MAP6, default MAP2)\n"
+        "  --reversed           drive the track the other way (tracks 7-12 of the menu)\n"
         "  --car-index N        --scene drive: car from CARS_DATA (0..12, default 0)\n"
         "  --start X,Z          --scene drive: start position (default: the intro demo's grid)\n"
         "  --hold KEYS          --scene drive: controls held every frame, e.g. accel,left (headless runs)\n"
@@ -182,6 +184,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--aspect") o.aspect = next("--aspect");
         else if (a == "--scene") o.scene = next("--scene");
         else if (a == "--track") o.track = next("--track");
+        else if (a == "--reversed") o.reversed = true;
         else if (a == "--camera") o.camera = next("--camera");
         else if (a == "--flat") o.flat = true;
         else if (a == "--car") o.cars.push_back(next("--car"));
@@ -324,8 +327,17 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             return 1;
         }
         SDL_Log("track %s: %zu objects, %zu placements", opt.track.c_str(), track->objects.size(), track->placements.size());
+        // Tracks 7-12 (g_race_options & 8): the same scenery, driven the other way. The racing
+        // lines, markers, obstacles and the rest come from DATA/MAPnI.DAT, and
+        // track_find_nearest_point turns the centre line's heading round.
+        const std::string data_name = "DATA/" + opt.track + (opt.reversed ? "I" : "") + ".DAT";
+        if (opt.reversed)
+            for (scr::TrackPoint& tp : track->points) {
+                tp.heading += 3.1415927410125732f;
+                if (6.2831854820251465f <= tp.heading) tp.heading += -6.2831854820251465f;
+            }
         // Moving scenery (track_load_animations).
-        auto data = scr::resolve_game_file(*game_dir, "DATA/" + opt.track + ".DAT");
+        auto data = scr::resolve_game_file(*game_dir, data_name);
         auto gfx = scr::resolve_game_file(*game_dir, "GFX/" + opt.track + opt.detail + ".DAT");
         gfx_path = gfx;
         if (data && gfx) obstacles.load(*data, *gfx, opt.track, "OST", *track);
@@ -433,7 +445,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         const scr::CarSetup setup = scr::car_setup(rec, player->model);
         // CPU cars: the racing lines and OPPONENTS of DATA/<track>.DAT; each takes the next
         // CARS_DATA record, skipping the player's (opponent_car_load).
-        auto data = scr::resolve_game_file(*game_dir, "DATA/" + opt.track + ".DAT");
+        auto data = scr::resolve_game_file(*game_dir, "DATA/" + opt.track + (opt.reversed ? "I" : "") + ".DAT");
         player->cpu_cars = opt.start.empty() && data && player->race.load(*data, opt.track, char('A' + opt.level));
         player->race.laps = opt.laps;
         player->race.mode = opt.game_mode;
@@ -445,7 +457,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             if (opt.game_mode == 0x40) player->race.loads_gates(*data, opt.track);
             if (gfx_path) obstacles.load(*data, *gfx_path, opt.track, opt.game_mode == 0x20 ? "CNG" : opt.game_mode == 0x40 ? "SLA" : "OST", *track);
             if (opt.game_mode == 4) {
-                ghost.path = opt.ghost_dir + opt.track + ".ghost";
+                ghost.path = opt.ghost_dir + opt.track + (opt.reversed ? "I" : "") + ".ghost";
                 ghost.car = int(idx);
                 if (opt.ghost) ghost.load();
             }
@@ -1361,6 +1373,7 @@ int main(int argc, char** argv) {
             // frontend_start_race: the race the menu chose, then back to the menu
             opt.scene = "drive";
             opt.track = "MAP" + std::to_string(shared.race->map);
+            opt.reversed = shared.race->mirrored;
             opt.car_index = shared.race->car;
             opt.laps = shared.race->laps;
             opt.level = shared.race->level;
