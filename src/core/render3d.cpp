@@ -177,7 +177,13 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
 
     // The game turns objects the other way round from the camera: negate the yaw (checked
     // against the original: walls facing the road, cars seen from behind in the intro).
-    const Mat3 rot = rotation(pose.ax, -pose.ay, pose.az);
+    Mat3 rot = rotation(pose.ax, -pose.ay, pose.az);
+    if (pose.billboard) {
+        // the inverse of the view rotation: the model's x/y plane ends up across the view
+        // and turned half round about its y so its front faces the camera
+        for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 3; ++c) rot.m[r][c] = view_.m[c][r] * (c == 1 ? 1.0f : -1.0f);
+    }
     const MaterialLibrary* lib = track_->materials ? &*track_->materials : nullptr;
     std::array<ClipVert, 6> poly;
     for (size_t pi = 0; pi < model.parts.size(); ++pi) {

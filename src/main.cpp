@@ -1409,6 +1409,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                             spose.z = float(sp.z);
                             spose.animation = sp.animation;
                             spose.depth_bias = kShadowBias;  // on the road, not in it
+                            spose.billboard = true;  // always facing the camera (ours)
                             renderer3d.draw_model(*smoke_model, spose);
                         }
                     // the car's part table (lean, suspension, steering, wheel roll)

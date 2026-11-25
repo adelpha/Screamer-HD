@@ -72,6 +72,9 @@ struct Pose {
     // whole objects and never depth-tests, so a car's shadow (a flat quad tilted with the car)
     // always lies on the road; a bias keeps it from sinking into slopes here.
     float depth_bias = 0;
+    // Turned to face the camera whatever its angles (the tyre smoke: ours; the original's
+    // puffs keep the angles they were made with and look thin from the side).
+    bool billboard = false;
     // Per-part placements for this frame (cars: lean, suspension, steering, wheel roll), by
     // part index; parts beyond the end or without flags keep the file's.
     const std::vector<PartPose>* parts = nullptr;
