@@ -62,6 +62,7 @@ struct Options {
     bool perf = false;              // print the 3D render time per frame at the end
     bool lod = false;               // the original's distant versions of objects (off: full detail)
     int threads = 0;                // renderer threads (0: one per hardware thread)
+    std::string fill;               // --fill: the pixel filler's build (sse2 | avx2; empty: the widest the CPU has)
     bool fullscreen = false;
     uint64_t frames = 0;            // 0 = run until quit
     std::string screenshot;         // rendered output after the last frame
@@ -119,6 +120,7 @@ void print_usage() {
         "  --perf               print how long the 3D view takes to draw\n"
         "  --lod                draw distant objects in the original's simpler versions (default: full detail)\n"
         "  --threads N          threads drawing the 3D view (default: one per CPU thread)\n"
+        "  --fill sse2|avx2     the build of the pixel filler (default: avx2 when the CPU has it; same picture)\n"
         "  --frames N           exit after N simulation frames (2 ticks of the game's 100 Hz clock each)\n"
         "  --scene NAME         menu (default when the game files are found), title, track, drive or testpattern\n"
         "  --menu-keys LIST     --scene menu: keys pressed at frames, e.g. 40:down,60:enter (headless runs)\n"
@@ -265,6 +267,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--perf") o.perf = true;
         else if (a == "--lod") o.lod = true;
         else if (a == "--threads") o.threads = std::atoi(next("--threads"));
+        else if (a == "--fill") o.fill = next("--fill");
         else if (a == "--fullscreen") o.fullscreen = true;
         else if (a == "--frames") o.frames = std::strtoull(next("--frames"), nullptr, 10);
         else if (a == "--screenshot") o.screenshot = next("--screenshot");
@@ -704,6 +707,12 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     scr::Renderer renderer3d;
     renderer3d.set_textures(!opt.flat);
     renderer3d.set_threads(opt.threads);
+    if (!renderer3d.set_fill_path(opt.fill == "sse2"   ? scr::Renderer::FillPath::Sse2
+                                  : opt.fill == "avx2" ? scr::Renderer::FillPath::Avx2
+                                                       : scr::Renderer::FillPath::Auto)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "--fill %s: this CPU cannot run it", opt.fill.c_str());
+        return 2;
+    }
     renderer3d.set_lod(opt.lod);
 
     // --scene menu: the front end (kept by main across races)
@@ -1359,7 +1368,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     view_cam.far_depth = 43808.0f * opt.view_distance;
                     view_cam.fade_depth = view_cam.far_depth * 0.75f;
                 }
-                renderer3d.begin(*track, view_cam, fb);
+                renderer3d.begin(*track, view_cam, fb, 0, true);
                 renderer3d.draw_placements();
                 for (size_t oi = 0; oi < obstacles.list.size(); ++oi) {
                     const scr::Obstacle& o = obstacles.list[oi];
@@ -1527,9 +1536,12 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         if (shadow) renderer3d.draw_model(*shadow, osh);
                         // opponent_sync_render_object's part table: the body sections lean
                         // (pitch_ofs, roll_ofs), every wheel rolls by speed / 15 a frame
-                        if (player->cpu_parts.size() <= i) player->cpu_parts.resize(i + 1);
-                        if (player->cpu_roll.size() <= i) player->cpu_roll.resize(i + 1, 0);
-                        if (player->cpu_poses.size() <= i) player->cpu_poses.resize(i + 1);
+                        // (all at once: the renderer keeps pointers to the poses until the
+                        // frame is drawn, so the lists must not grow while the cars are drawn)
+                        const size_t cpu_count = player->race.opponents.size();
+                        if (player->cpu_parts.size() < cpu_count) player->cpu_parts.resize(cpu_count);
+                        if (player->cpu_roll.size() < cpu_count) player->cpu_roll.resize(cpu_count, 0);
+                        if (player->cpu_poses.size() < cpu_count) player->cpu_poses.resize(cpu_count);
                         {
                             const scr::Model& cm = player->cpu_models[i];
                             if (player->cpu_parts[i].body.empty() && player->cpu_parts[i].wheels.empty())
@@ -1557,6 +1569,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     if (shadow) renderer3d.draw_model(*shadow, c.pose);
                     renderer3d.draw_model(c.model, c.pose);
                 }
+                renderer3d.flush_geometry();
                 mark(scr::prof::Geometry);
                 renderer3d.finish();
                 mark(scr::prof::Fill);
