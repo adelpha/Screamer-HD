@@ -111,10 +111,19 @@ void Renderer::begin(const Track& track, const Camera& cam, Framebuffer& fb, uin
     plane(-f, 0, float(w) - cx);
     plane(0, f, cy);
     plane(0, -f, float(h) - cy);
+    // the view-distance fade (d = 128 - z = 128 + depth)
+    fade_ = cam.far_depth < 1e29f;
+    if (fade_) {
+        const float start = std::min(cam.fade_depth, cam.far_depth);
+        fade_iz_ = 1.0f / (128.0f + start);
+        fade_start_ = start;
+        fade_range_ = std::max(1.0f, cam.far_depth - start);
+    }
 }
 
 bool Renderer::sphere_visible(float x, float y, float z, float r) const {
     if (z - r > -kNear) return false;  // wholly in front of the near plane
+    if (-z - r > cam_->far_depth) return false;  // wholly beyond the far clip (view distance)
     for (int i = 0; i < plane_count_; ++i) {
         const auto& p = planes_[size_t(i)];
         if (p[0] * x + p[1] * y + p[2] * z + p[3] > r) return false;
@@ -507,8 +516,19 @@ struct Renderer::Span {
     float e0, e1, e2;
     uint8_t* row;
     float* drow;
-    int x0, x1;
+    int x0, x1, y;
 };
+
+namespace {
+// 4x4 ordered-dither thresholds (Bayer), (n + 0.5) / 16, each row twice so four lanes can be
+// read from any column.
+alignas(16) const float kBayer[4][8] = {
+    {0.03125f, 0.53125f, 0.15625f, 0.65625f, 0.03125f, 0.53125f, 0.15625f, 0.65625f},
+    {0.78125f, 0.28125f, 0.90625f, 0.40625f, 0.78125f, 0.28125f, 0.90625f, 0.40625f},
+    {0.21875f, 0.71875f, 0.09375f, 0.59375f, 0.21875f, 0.71875f, 0.09375f, 0.59375f},
+    {0.96875f, 0.46875f, 0.84375f, 0.34375f, 0.96875f, 0.46875f, 0.84375f, 0.34375f},
+};
+} // namespace
 
 
 template <Renderer::Kind K>
@@ -586,6 +606,17 @@ void Renderer::span(Span& s, const Fill& fl, const MaterialLibrary* lib, bool bi
         if (left < 4) in &= (1 << left) - 1;
         if (!in) continue;
         const __m128 iz = _mm_add_ps(_mm_set1_ps(s.iz), _mm_mul_ps(diz, n));
+        if (fade_) {
+            // the view distance: past fade_depth, fewer pixels the further, none past far_depth
+            const __m128 beyond = _mm_cmplt_ps(iz, _mm_set1_ps(fade_iz_));
+            if (in & _mm_movemask_ps(beyond)) {
+                const __m128 depth = _mm_sub_ps(_mm_div_ps(one, iz), _mm_set1_ps(128.0f));
+                const __m128 frac = _mm_div_ps(_mm_sub_ps(depth, _mm_set1_ps(fade_start_)), _mm_set1_ps(fade_range_));
+                const __m128 thr = _mm_loadu_ps(&kBayer[s.y & 3][x & 3]);
+                in &= _mm_movemask_ps(_mm_or_ps(_mm_cmplt_ps(frac, thr), _mm_andnot_ps(beyond, _mm_castsi128_ps(_mm_set1_epi32(-1)))));
+                if (!in) continue;
+            }
+        }
         // Coplanar surfaces (road decals on the road, shadows) are resolved like the
         // original's painter's order: the later polygon wins near-ties.
         const __m128 tz = bias ? _mm_div_ps(iz, _mm_max_ps(small, _mm_sub_ps(one, _mm_mul_ps(vbias, iz)))) : iz;
@@ -684,7 +715,7 @@ void Renderer::fill_rows(int band0, int band1, const std::vector<uint32_t>& tris
             sp.dvz = k0 * a.vz + k1 * b.vz + k2 * c.vz;
             sp.e0 = e0; sp.e1 = e1; sp.e2 = e2;
             sp.row = row; sp.drow = drow;
-            sp.x0 = x0; sp.x1 = x1;
+            sp.x0 = x0; sp.x1 = x1; sp.y = y;
             // the inner loop specialised for the fill's mode (no per-pixel decisions)
             const bool textured = mode != Mode::Flat && fl.use_texels;
             const bool bias = fl.depth_bias != 0;

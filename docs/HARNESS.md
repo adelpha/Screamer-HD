@@ -37,6 +37,7 @@ no manual steps.
 | `--render-size WxH` | Framebuffer size for the 3D scene (default 320x200), e.g. `1280x800`. |
 | `--threads N` | Threads that fill the 3D view (default: one per CPU thread). The picture is the same for any number. |
 | `--perf` | Profile the main loop (core/profiler.h): pictures and game steps per second, and the time per picture in each part (events, game step, blending, 3D geometry, 3D fill, HUD, texture upload, present), every 5 seconds and at exit. |
+| `--view-distance X` | How far the 3D view reaches, in multiples of the original's far clip on HI detail (43,808 units); the last quarter fades out in a 4x4 ordered dither. Default 2; 0 draws everything. In a race F9 / Shift+F9 step through 1, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8. |
 | `--tween-test` | Headless: one tick per loop, so every other picture is drawn between game steps (checks the blending; with `--perf`, measures the cost per picture). `--capture-from N` starts `--capture-every` at frame N. |
 | `--lod` | Draw distant objects in the original's simpler versions (from 4000/7000 units, cars from 12000/16000). Off by default: full detail everywhere. |
 | `--reversed` | Drive the track the other way (the menu's tracks 7-12): racing lines and the rest from `DATA/MAPnI.DAT`. |

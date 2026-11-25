@@ -31,6 +31,8 @@ struct Camera {
     float center_y = 130.0f;              // projection centre row at 200 lines (g_render_camera:
                                           // x 160, y 130 for the 320x200 race view)
     float far_distance = 300000.0f;
+    float far_depth = 1e30f;  // view distance: nothing further away (camera depth) is drawn
+    float fade_depth = 1e30f; // from here to far_depth, pixels fade out in an ordered dither (ours)
 };
 
 struct RenderStats {
@@ -214,6 +216,9 @@ private:
     bool textures_ = true;
     bool lod_ = false;
     bool skip_ = false;
+    bool fade_ = false;            // the view-distance fade is on this frame
+    float fade_iz_ = 0;            // 1 / (128 + fade_depth): pixels with a smaller 1/z are in the fade
+    float fade_start_ = 0, fade_range_ = 1;
     int32_t anim_counter_ = 0;
 };
 

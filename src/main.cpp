@@ -76,6 +76,7 @@ struct Options {
     bool reversed = false;          // tracks 7-12: the track driven the other way (DATA/MAPnI.DAT)
     bool attract = false;           // the intro demo (attract_mode_run): CPU cars, TV camera, credits
     std::string replay_file;        // play this .RPL back (the race runs again from its inputs)
+    float view_distance = 2.0f;     // --view-distance: times the original's far clip (43,808); 0: no limit
     uint64_t capture_from = 0;      // --capture-from: --capture-every starts at this frame
     bool tween_test = false;        // --tween-test: headless, one tick a loop, so every other picture is drawn between steps
     std::string save_dir;           // --save-dir: our saves here instead of the pref path
@@ -279,6 +280,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--record") o.record_file = next("--record");
         else if (a == "--save-dir") o.save_dir = next("--save-dir");
         else if (a == "--tween-test") o.tween_test = true;
+        else if (a == "--view-distance") o.view_distance = float(std::atof(next("--view-distance")));
         else if (a == "--capture-from") o.capture_from = std::strtoull(next("--capture-from"), nullptr, 10);
         else if (a == "--positions") o.positions_file = next("--positions");
         else if (a == "--race-options") o.race_options = int(std::strtol(next("--race-options"), nullptr, 0));
@@ -808,6 +810,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
 
     uint64_t frame = 0;
     float end_timer = 0;
+    float view_note_timer = 0;  // F9: "VIEW DISTANCE 2X" shown for a moment
     // Drawing between steps (interactive races): the state of the step before the last one.
     bool have_prev = false;
     scr::Camera prev_cam, step_cam;
@@ -897,6 +900,18 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             switch (ev.type) {
             case SDL_EVENT_QUIT: running = false; break;
             case SDL_EVENT_KEY_DOWN:
+                if (track && !menu && !ev.key.repeat && ev.key.key == SDLK_F9) {
+                    // F9 / Shift+F9: the next / previous view distance (ours)
+                    static constexpr float kSteps[] = {1.0f, 1.5f, 2.0f, 2.5f, 3.0f, 3.5f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f};
+                    constexpr int n = int(std::size(kSteps));
+                    int i = 0;
+                    for (int k = 1; k < n; ++k)
+                        if (std::fabs(kSteps[k] - opt.view_distance) < std::fabs(kSteps[i] - opt.view_distance)) i = k;
+                    i = (ev.key.mod & SDL_KMOD_SHIFT) ? (i + n - 1) % n : (i + 1) % n;
+                    opt.view_distance = kSteps[i];
+                    view_note_timer = 2.0f;
+                    break;
+                }
                 if (track && !menu && !paused && prompt < 0 && !ev.key.repeat &&
                     (ev.key.key == SDLK_F8 || (freecam && ev.key.key == SDLK_ESCAPE))) {
                     set_freecam(!freecam);
@@ -1331,7 +1346,14 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 }
                 mark(scr::prof::Tween);
                 const auto perf_t0 = std::chrono::steady_clock::now();
-                renderer3d.begin(*track, draw_cam, fb);
+                scr::Camera view_cam = draw_cam;
+                if (opt.view_distance > 0.0f) {
+                    // the view distance (ours): the original's far clip (HI detail) times the
+                    // setting; the last quarter fades out in an ordered dither
+                    view_cam.far_depth = 43808.0f * opt.view_distance;
+                    view_cam.fade_depth = view_cam.far_depth * 0.75f;
+                }
+                renderer3d.begin(*track, view_cam, fb);
                 renderer3d.draw_placements();
                 for (size_t oi = 0; oi < obstacles.list.size(); ++oi) {
                     const scr::Obstacle& o = obstacles.list[oi];
@@ -1632,6 +1654,14 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                             hs.radar_lines.push_back({ts.left_x, ts.left_z, ts.right_x, ts.right_z});
                     hud->draw(fb, hs, track->darken075, clock.frame_time(), clock.pow_table_row(), player->camera.hud_view,
                               radar, step);
+                }
+                if (view_note_timer > 0.0f && hud) {
+                    // F9's note: the new view distance
+                    if (step) view_note_timer -= clock.frame_time();
+                    char note[48];
+                    std::snprintf(note, sizeof note, "VIEW DISTANCE %gX", double(opt.view_distance));
+                    scr::HudSurface hsurf(fb);
+                    hsurf.text(hud->fonts, (320 - hsurf.measure(hud->fonts, note, 1)) / 2, 0x50, note, 1, 0);
                 }
             } else if (menu) {
                 scr::MenuKeys mk;
