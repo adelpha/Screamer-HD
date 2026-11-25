@@ -17,9 +17,9 @@
 // Page tables (0x102de4): per item { text index, action, value, max }; the text shown is
 // MENU.TXT[index + value]; action 1234 (0x4d2) cycles the value (options).
 //   0 main: NORMAL GAME, CHAMPIONSHIP, SPECIAL MODES, NETWORK GAME, OPTIONS
-//   1 options: detail, difficulty, laps, speech, music, VIEW RECORDS
+//   1 options: detail, difficulty, laps, speech, music, (ours: SOUND), VIEW RECORDS
 //   2 network, 3 championship (new/resume), 4 special modes, 5 network (new/resume),
-//   6 records (the six tracks)
+//   6 records (the six tracks), 7 (ours) SOUND: the four volumes, Enter / left / right
 
 #include "core/hud.h"
 #include "core/model3d.h"
@@ -73,8 +73,13 @@ private:
 //   +0x28 the replay number), +0x42c cars unlocked, +0x430 view, +0x438 speech, +0x43c music,
 //   +0x444..0x44c music/sfx/cd volume, +0x450 radar, +0x454 tracks unlocked, +0x458 tracks
 //   seen, +0x45c difficulty max.
+// Ours follow the 0x460 bytes (the original reads only those): "SCRX", int32 count, then that
+// many int32 settings - so far the four volumes of the SOUND page (announcer, engine,
+// effects, music; 0..kVolumeMax). A file without them (the original's) gets the defaults.
+constexpr int kVolumeMax = 10;
 struct ChoiceFile {
     std::array<uint8_t, 0x460> raw{};
+    std::array<int32_t, 4> volume{kVolumeMax, kVolumeMax, kVolumeMax, kVolumeMax};
     ChoiceFile();  // the defaults read_choice_dat uses without a file
     bool load(const std::string& path);
     bool save(const std::string& path) const;
@@ -151,6 +156,10 @@ public:
         int text, action, value, max;
     };
     std::vector<std::vector<Entry>> pages;
+    // Ours: the SOUND page (OPTIONS > SOUND) - announcer, player's engine, other effects and
+    // music volumes, 0..kVolumeMax (saved after CHOICE.DAT's own bytes).
+    std::array<int, 4> volumes() const;
+    void set_volumes(const std::array<int, 4>& v);
     int page = 0;                    // DAT_0011fb5c
     std::array<int, 20> selected{};  // DAT_0011fb04: selected line per page
     std::vector<int> page_stack;     // DAT_0012034c
@@ -234,6 +243,8 @@ private:
     void champ_advance();
     void setup_records_page();
     int option(int item) const;
+    std::string entry_text(const Entry& e) const;
+    void change_volume(int sel, int step);
 
     MenuAssets& a_;
     const PcxImage* backdrop_ = nullptr;
@@ -260,6 +271,7 @@ private:
     std::array<uint8_t, 256> darken_{};  // build_darken_tables for the dialog's backdrop
     struct Block {
         int row = 0, ypos = 0, start = 0, centred = 1, turned = 0;
+        int y_adjust = 0;  // ours: added to y (pages of more than six lines)
         int x0 = 0, y0 = 0, z0 = 0, sx = 0, sy = 0;
         float spin = 0.09f, phase = 0;
     } block_;

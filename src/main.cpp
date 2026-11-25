@@ -101,6 +101,7 @@ struct Options {
     int view = 2;                   // --scene drive: starting view 0..3 (F1..F4)
     bool mute = false;              // no audio device
     int sfx_volume = 100, music_volume = 70;  // 0..100
+    std::string volumes;            // --volumes A,E,F,M: the SOUND page's settings for this run
     bool music = true, speech = true;
     std::string music_source = "auto";  // cd | midi | auto (CD audio when the image is there)
     bool audio_smooth = true;       // linear interpolation (false: the driver's nearest sample)
@@ -160,6 +161,8 @@ void print_usage() {
         "  --mute               no sound\n"
         "  --sfx-volume N       sound effects volume 0..100 (default 100)\n"
         "  --music-volume N     CD music volume 0..100 (default 70)\n"
+        "  --volumes A,E,F,M    the SOUND options (0..10 each): announcer, your engine, other effects, music\n"
+        "                       (default: as saved, else 10)\n"
         "  --no-music           no CD music (from the CD image: SCREAM.cue/.bin, or SCREAM.DAT/.gog as Steam and GOG ship it)\n"
         "  --no-speech          no announcer\n"
         "  --music-source SRC   cd, midi (the FM synth versions in DATA/MUSIC.DAT) or auto (default: CD if found)\n"
@@ -307,6 +310,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--mute") o.mute = true;
         else if (a == "--sfx-volume") o.sfx_volume = std::clamp(std::atoi(next("--sfx-volume")), 0, 100);
         else if (a == "--music-volume") o.music_volume = std::clamp(std::atoi(next("--music-volume")), 0, 100);
+        else if (a == "--volumes") o.volumes = next("--volumes");
         else if (a == "--no-music") o.music = false;
         else if (a == "--no-speech") o.speech = false;
         else if (a == "--music-source") o.music_source = next("--music-source");
@@ -376,6 +380,8 @@ struct Shared {
     };
     std::vector<Outcome> outcomes;      // the races since the menu (PLAY AGAIN repeats it)
     std::string choice_path;            // our copy of CONFIG/CHOICE.DAT
+    // the SOUND page: announcer, the player's engine, other effects, music (0..kVolumeMax)
+    std::array<int, 4> volumes{scr::kVolumeMax, scr::kVolumeMax, scr::kVolumeMax, scr::kVolumeMax};
     bool back_to_menu = false;          // the race asks to return to the menu
     bool attract_done = false;          // the intro demo is over (a key, or the credits ended)
     bool to_demo = false;               // the menu was left alone: the intro demo again
@@ -562,6 +568,11 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     mixer.sfx_volume = float(opt.sfx_volume) / 100.0f;
     mixer.music_volume = float(opt.music_volume) / 100.0f;
     mixer.smooth = opt.audio_smooth;
+    auto apply_group_volumes = [&]() {
+        for (int g = 0; g < scr::kSoundGroups; ++g)
+            mixer.set_group_volume(scr::SoundGroup(g), float(shared.volumes[size_t(g)]) / float(scr::kVolumeMax));
+    };
+    apply_group_volumes();
     int radar = 1;                // M cycles 0 (off) .. 3 (DAT_0011d2a0)
     if (drive) {
         auto gen = scr::resolve_game_file(*game_dir, "DATA/GEN.DAT");
@@ -746,6 +757,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             if (!choice.load(shared.choice_path))
                 if (auto orig = scr::resolve_game_file(*game_dir, "CONFIG/CHOICE.DAT")) choice.load(*orig);
             shared.menu->load_choice(choice);
+            shared.menu->set_volumes(shared.volumes);  // as main read them (or --volumes)
         }
         menu = &*shared.menu;
         menu->quit = false;
@@ -1739,6 +1751,12 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     mk.right |= k == "right";
                 }
                 menu->update(mk, clock.frame_time());
+                if (menu->volumes() != shared.volumes) {
+                    // the SOUND page: heard (the menu's music and clicks) and saved straight away
+                    shared.volumes = menu->volumes();
+                    apply_group_volumes();
+                    if (!shared.choice_path.empty()) menu->save_choice().save(shared.choice_path);
+                }
                 for (int sfx : menu->sounds) mixer.play(sfx);
                 menu->draw(fb, renderer3d);
                 if (menu->quit) {
@@ -1962,6 +1980,20 @@ int main(int argc, char** argv) {
             shared.choice_path = std::string(pref) + "CHOICE.DAT";
             shared.replay_dir = std::string(pref) + "REPLAYS/";
             SDL_free(pref);
+        }
+    }
+    // The SOUND page's volumes: saved after our CHOICE.DAT's own bytes, --volumes for this run.
+    if (!shared.choice_path.empty()) {
+        scr::ChoiceFile choice;
+        if (choice.load(shared.choice_path)) std::copy(choice.volume.begin(), choice.volume.end(), shared.volumes.begin());
+    }
+    if (!opt.volumes.empty()) {
+        size_t i = 0;
+        for (const char* p = opt.volumes.c_str(); *p && i < shared.volumes.size(); ++i) {
+            char* end = nullptr;
+            shared.volumes[i] = std::clamp(int(std::strtol(p, &end, 10)), 0, scr::kVolumeMax);
+            if (end == p) break;
+            p = *end == ',' ? end + 1 : end;
         }
     }
     int exit_code = 0;

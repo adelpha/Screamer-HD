@@ -112,13 +112,14 @@ void Mixer::start(Voice& v, int sample) {
     v.segment = f.loop_leng != 0;
 }
 
-int Mixer::play(int sample) {
+int Mixer::play(int sample, SoundGroup group) {
     std::lock_guard lock(mutex_);
     if (!bank_ || sample < 0 || size_t(sample) >= bank_->fx.size() || bank_->fx[size_t(sample)].data.empty()) return -1;
     for (size_t i = 0; i < voices_.size(); ++i) {
         Voice& v = voices_[i];
         if (v.sample >= 0) continue;
         start(v, sample);
+        v.group = group;
         generation_ = (generation_ + 1) & 0x07ffffff;
         v.generation = generation_;
         if (on_play) on_play(sample);
@@ -187,7 +188,7 @@ void Mixer::mix(float* out, int frames, int rate) {
     if (bank_ && sfx_gain > 0.0f) {
         for (Voice& v : voices_) {
             if (v.sample < 0) continue;
-            const float gain = float(v.volume) / 32767.0f * sfx_gain;
+            const float gain = float(v.volume) / 32767.0f * sfx_gain * group_volume[size_t(v.group)].load();
             float gl = gain, gr = gain;
             if (v.use_pan) {
                 gl *= std::min(1.0f, float(0x10000 - v.pan) / 32768.0f);
@@ -243,7 +244,7 @@ void Mixer::mix(float* out, int frames, int rate) {
         }
     }
     if (music_) {
-        const float mg = music_volume.load();
+        const float mg = music_volume.load() * group_volume[size_t(SoundGroup::Music)].load();
         if (mg > 0.0f) music_->mix(out, frames, rate, mg);
     }
     // A soft knee instead of hard clipping when many voices and the music add up.
