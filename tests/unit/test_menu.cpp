@@ -169,3 +169,30 @@ TEST_CASE("menu: championship steps, standings and qualifying") {
     run(m, 100);
     CHECK(m.champ_step == 52);  // LOSER!!
 }
+
+TEST_CASE("menu: cheats typed in the menus") {
+    if (!scr::find_game_dir()) SKIP("original game data not present");
+    auto a = load_menu();
+    REQUIRE(a.has_value());
+    scr::Menu m(*a);
+    m.show_title();
+    auto type = [&](const char* w) {
+        bool took = false;
+        for (const char* c = w; *c; ++c) took = m.type_letter(*c);
+        return took;
+    };
+    CHECK(!type("HELLO"));
+    CHECK(m.race_options == 0);
+    CHECK(type("MIRRO"));
+    CHECK(m.race_options == 0x10);
+    CHECK(type("xxUPDOW"));  // stray letters start the input again
+    CHECK(m.race_options == 0x30);
+    CHECK(type("MONTY"));    // sets the whole word: the mirror and upside down go
+    CHECK(m.race_options == 1);
+    CHECK(type("CLOCK"));
+    CHECK(m.race_options == 5);
+    CHECK(type("INVER"));
+    CHECK(m.tracks_unlocked == 9);
+    CHECK(type("TAZOR"));
+    CHECK(m.cars_unlocked == 1);
+}

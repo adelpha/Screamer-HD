@@ -734,6 +734,45 @@ void Menu::build_page_items(float dt) {
     }
 }
 
+bool Menu::type_letter(char c) {
+    // The table at 0x102e00 (names from MENU.DTR, in this order): what each cheat sets.
+    static const char* const kCheats[9] = {"TAZOR", "VTELO", "MONTY", "JOINT", "CLOCK", "ABURN", "INVER", "MIRRO", "UPDOW"};
+    c = char(std::toupper(static_cast<unsigned char>(c)));
+    if (c < 'A' || c > 'Z') return false;
+    // the letter goes at the end (the fifth place takes every further letter)
+    const int pos = std::clamp(cheat_len_, 0, 4);
+    cheat_buf_[size_t(pos)] = c;
+    if (cheat_len_ < 4) ++cheat_len_;
+    const int len = pos + 1;
+    int misses = 0;
+    for (int k = 0; k < 9; ++k) {
+        bool match = true;
+        for (int i = 0; i < len && match; ++i) match = kCheats[k][i] == cheat_buf_[size_t(i)];
+        if (!match) {
+            ++misses;
+            continue;
+        }
+        if (len == 5) {
+            switch (k) {
+            case 0: cars_unlocked = 1; break;           // TAZOR: the last car
+            case 1: tracks_unlocked = 3; break;         // VTELO: tracks up to 5
+            case 2: race_options = 1; break;            // MONTY: the second obstacles
+            case 3: race_options = 2; break;            // JOINT: the third obstacles
+            case 4: race_options ^= 4; break;           // CLOCK: the clock stands still
+            case 5: break;                              // ABURN: points at nothing
+            case 6: tracks_unlocked = 9; break;         // INVER: every track, reversed too
+            case 7: race_options ^= 0x10; break;        // MIRRO: the mirror world
+            case 8: race_options ^= 0x20; break;        // UPDOW: upside down
+            }
+            sounds.push_back(8);
+            cheat_len_ = 0;
+            return true;
+        }
+    }
+    if (misses == 9) cheat_len_ = 0;
+    return false;
+}
+
 void Menu::name_page_update(float dt) {
     // menu_letters_update: the selected letter tips towards the camera
     const int row = int(letter_) + 0x41;
@@ -895,6 +934,7 @@ void Menu::start_race() {
         r.map -= 6;
         r.mirrored = true;
     }
+    r.race_options = race_options;
     r.car = car;
     r.laps = kLaps[std::clamp(option(2), 0, 3)];
     r.level = option(1) == 3 ? 4 : option(1);

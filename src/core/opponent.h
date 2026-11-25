@@ -141,6 +141,7 @@ public:
     float countdown_timer = 0;
     int countdown_stage = -1;    // start light shown, -1 when the countdown is over
     bool timing_started = false;
+    bool clock_stopped = false;  // g_race_options & 4 (CLOCK): time_left does not run down
     float time_left = 15.0f;     // starts at 15 s, a timed checkpoint gives time_left / 5 + bonus
     float total_time = 0;        // PlayerCar 0x78c
     float lap_time = 0;          // PlayerCar 0x794

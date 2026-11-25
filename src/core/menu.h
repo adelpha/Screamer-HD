@@ -103,6 +103,10 @@ struct MenuRace {
     bool high_detail = true;  // DETAIL option (HI: GFX/MAPnH.DAT)
     bool speech = true, music = true;
     std::string name;
+    // g_race_options: bits 0-1 the obstacles' column of OSTACLES (MONTY 1, JOINT 2), 4 the
+    // clock stands still (CLOCK), 0x10 mirror (MIRRO: picture and steering), 0x20 upside down
+    // (UPDOW)
+    int race_options = 0;
 };
 
 class Menu {
@@ -111,6 +115,11 @@ public:
 
     // frontend_show_title
     void show_title();
+    // frontend_text_input: a letter typed anywhere in the menus. Five letters matching one
+    // of MENU.DTR's CHEATS (TAZOR VTELO MONTY JOINT CLOCK ABURN INVER MIRRO UPDOW) apply it
+    // (sound 8); a letter that fits none starts again. Returns true when a cheat took.
+    bool type_letter(char c);
+    int race_options = 0;  // g_race_options (the cheats; see MenuRace)
     // The saved state (read_choice_dat) and back (write_choice_dat).
     void load_choice(const ChoiceFile& c);
     ChoiceFile save_choice() const;
@@ -228,6 +237,8 @@ private:
     int next_mode_ = 0;       // DAT_0011fac8
     int after_name_ = 3;      // DAT_0011d234
     int name_cursor_ = 0;     // DAT_0011d240
+    std::array<char, 5> cheat_buf_{};  // DAT_00120828: the letters typed so far
+    int cheat_len_ = 0;       // DAT_00120878
     float letter_ = 0;        // DAT_0011d238
     int tracks_seen_ = 0;     // DAT_00120818
     uint32_t frame_ = 0;      // g_frame_counter (blinking)

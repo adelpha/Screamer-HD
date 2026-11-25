@@ -663,7 +663,7 @@ void Race::update(const Track& track, const CarInput& in_raw, float frame_time, 
                 total_time += frame_time;
                 lap_time += frame_time;
             }
-            time_left -= frame_time;
+            if (!clock_stopped) time_left -= frame_time;
             if (time_left < 0.0f) time_left = 0.0f;
         }
         if (finished || failed || time_left <= 0.0f) in.accel = 0;  // out of time: no throttle

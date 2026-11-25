@@ -66,6 +66,7 @@ struct Options {
     std::string scene;              // title | track | testpattern; empty = title when game data is found
     std::string track = "MAP2";     // --scene track: which track
     bool reversed = false;          // tracks 7-12: the track driven the other way (DATA/MAPnI.DAT)
+    int race_options = 0;           // g_race_options: the cheats (obstacle column, clock, mirror, upside down)
     std::string camera;             // --scene track: x,y,z,yaw,pitch[,roll]
     int fb_width = 320, fb_height = 200;  // internal render size (--render-size)
     bool flat = false;              // --scene track: no textures
@@ -105,6 +106,7 @@ void print_usage() {
         "  --menu-keys LIST     --scene menu: keys pressed at frames, e.g. 40:down,60:enter (headless runs)\n"
         "  --track NAME         track for --scene track / drive (MAP1..MAP6, default MAP2)\n"
         "  --reversed           drive the track the other way (tracks 7-12 of the menu)\n"
+        "  --race-options N     the cheats' g_race_options: 1/2 other obstacles, 4 clock stopped, 0x10 mirror, 0x20 upside down\n"
         "  --car-index N        --scene drive: car from CARS_DATA (0..12, default 0)\n"
         "  --start X,Z          --scene drive: start position (default: the intro demo's grid)\n"
         "  --hold KEYS          --scene drive: controls held every frame, e.g. accel,left (headless runs)\n"
@@ -188,6 +190,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--scene") o.scene = next("--scene");
         else if (a == "--track") o.track = next("--track");
         else if (a == "--reversed") o.reversed = true;
+        else if (a == "--race-options") o.race_options = int(std::strtol(next("--race-options"), nullptr, 0));
         else if (a == "--camera") o.camera = next("--camera");
         else if (a == "--flat") o.flat = true;
         else if (a == "--car") o.cars.push_back(next("--car"));
@@ -343,7 +346,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         auto data = scr::resolve_game_file(*game_dir, data_name);
         auto gfx = scr::resolve_game_file(*game_dir, "GFX/" + opt.track + opt.detail + ".DAT");
         gfx_path = gfx;
-        if (data && gfx) obstacles.load(*data, *gfx, opt.track, "OST", *track);
+        if (data && gfx) obstacles.load(*data, *gfx, opt.track, "OST", *track, opt.race_options & 3);
         if (data && gfx && anims.load(*data, opt.track)) {
             for (const scr::TrackAnimation& an : anims.list) {
                 std::string obj = an.name;
@@ -458,13 +461,16 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         player->cpu_cars = opt.start.empty() && data && player->race.load(*data, opt.track, char('A' + opt.level));
         player->race.laps = opt.laps;
         player->race.mode = opt.game_mode;
+        player->race.clock_stopped = (opt.race_options & 4) != 0;
         std::vector<scr::CarSetup> cpu_setups;
         const bool solo = opt.game_mode == 4 || opt.game_mode == 0x20 || opt.game_mode == 0x40;
         if (player->cpu_cars && solo) {
             // the special modes: no CPU cars, the first grid place, the mode's obstacles
             player->race.start(*track, setup, {});
             if (opt.game_mode == 0x40) player->race.loads_gates(*data, opt.track);
-            if (gfx_path) obstacles.load(*data, *gfx_path, opt.track, opt.game_mode == 0x20 ? "CNG" : opt.game_mode == 0x40 ? "SLA" : "OST", *track);
+            if (gfx_path)
+                obstacles.load(*data, *gfx_path, opt.track, opt.game_mode == 0x20 ? "CNG" : opt.game_mode == 0x40 ? "SLA" : "OST",
+                               *track, opt.race_options & 3);
             if (opt.game_mode == 4) {
                 ghost.path = opt.ghost_dir + opt.track + (opt.reversed ? "I" : "") + ".ghost";
                 ghost.car = int(idx);
@@ -727,6 +733,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     break;
                 }
                 if (freecam && ev.key.key != SDLK_F12) break;  // the race keys wait
+                // frontend_text_input: letters typed in the menus (the cheats)
+                if (menu && !ev.key.repeat && ev.key.key >= SDLK_A && ev.key.key <= SDLK_Z)
+                    menu->type_letter(char('A' + int(ev.key.key - SDLK_A)));
                 if (ev.key.key == SDLK_ESCAPE && !menu) {
                     if (paused) {
                         paused = false;  // Esc leaves the panel
@@ -928,6 +937,11 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                             in.analog_steer = true;
                             in.steer = lx * 1023 / 32767;
                         }
+                    }
+                    if (opt.race_options & 0x10) {
+                        // MIRRO: car_update_steering turns the steering round
+                        std::swap(in.steer_left, in.steer_right);
+                        in.steer = -in.steer;
                     }
                     if (player->cpu_cars)
                         player->race.update(*track, in, clock.frame_time(), clock.pow_table_row());
@@ -1145,6 +1159,14 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     renderer3d.draw_model(c.model, c.pose);
                 }
                 renderer3d.finish();
+                // MIRRO / UPDOW: race_frame flips the 3D picture (not the HUD) after drawing it
+                if (opt.race_options & 0x30) {
+                    const int fw = fb.width(), fh = fb.height();
+                    if (opt.race_options & 0x10)
+                        for (int y = 0; y < fh; ++y) std::reverse(&fb.at(0, y), &fb.at(0, y) + fw);
+                    if (opt.race_options & 0x20)
+                        for (int y = 0; y < fh / 2; ++y) std::swap_ranges(&fb.at(0, y), &fb.at(0, y) + fw, &fb.at(0, fh - 1 - y));
+                }
                 {
                     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - perf_t0).count();
                     perf_total += ms;
@@ -1414,6 +1436,7 @@ int main(int argc, char** argv) {
             opt.scene = "drive";
             opt.track = "MAP" + std::to_string(shared.race->map);
             opt.reversed = shared.race->mirrored;
+            opt.race_options = shared.race->race_options;
             opt.car_index = shared.race->car;
             opt.laps = shared.race->laps;
             opt.level = shared.race->level;

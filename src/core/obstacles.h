@@ -36,8 +36,9 @@ struct Obstacle {
 class Obstacles {
 public:
     // data_dat: DATA/MAPn.DAT, gfx_dat: GFX/MAPnH.DAT; spline: "OST", "CNG" or "SLA".
+    // column: which of each OSTACLES row's three names (g_race_options & 3: MONTY, JOINT)
     bool load(const std::string& data_dat, const std::string& gfx_dat, const std::string& track_name,
-              const std::string& spline, const Track& track);
+              const std::string& spline, const Track& track, int column = 0);
     // obstacles_update: the ones in the air or sliding
     void update(const Track& track, float frame_time);
     // car_check_obstacle_hits: returns how many were knocked over this time (sfx 5 each)
