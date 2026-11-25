@@ -3,6 +3,7 @@
 #include "core/worker_pool.h"
 
 #include <algorithm>
+#include <emmintrin.h>
 #include <cmath>
 
 namespace scr {
@@ -512,56 +513,108 @@ struct Renderer::Span {
 
 template <Renderer::Kind K>
 void Renderer::span(Span& s, const Fill& fl, const MaterialLibrary* lib, bool bias) const {
-    float w0 = s.w0, w1 = s.w1, w2 = s.w2, iz = s.iz, uz = s.uz, vz = s.vz;
+    // Four pixels at a time (SSE2): the edge tests, the depth test, the perspective divide and
+    // the texel coordinates in vector registers, then each passing pixel on its own (texel
+    // fetch, transparency, write).
+    // Everything the pixels need, in locals: the frame's bytes alias everything else, so
+    // the compiler would otherwise reload these after every pixel written.
     const Mode mode = Mode(fl.mode);
-    for (int x = s.x0; x <= s.x1; ++x, w0 += s.k0, w1 += s.k1, w2 += s.k2, iz += s.diz, uz += s.duz, vz += s.dvz) {
-        if (w0 < s.e0 || w1 < s.e1 || w2 < s.e2) continue;
-        float& dz = s.drow[x];
-        // Coplanar surfaces (road decals on the road, shadows) are resolved like the
-        // original's painter's order: the later polygon wins near-ties.
-        const float tz = bias ? iz / std::max(1e-3f, 1.0f - fl.depth_bias * iz) : iz;
-        if (tz * 1.0005f < dz) continue;
-        uint8_t& dst = s.row[x];
+    uint8_t* const row = s.row;
+    float* const drow = s.drow;
+    const uint8_t* const texels = fl.texels;
+    const int wmask = fl.wmask, hmask = fl.hmask;
+    const uint8_t flat = fl.flat;
+    const bool writes_depth = fl.writes_depth;
+    const uint8_t* const shade = track_->shade_table.data();
+    const uint8_t* const darken = track_->darken.data();
+    const Material* const mat = fl.mat;
+    const int frame = fl.frame;
+    auto pixel = [=](int x, float tz, int iu, int iv) {
+        uint8_t& dst = row[x];
         if constexpr (K == Kind::Darken) {
-            dst = track_->darken[dst];
-            continue;
+            (void)tz; (void)iu; (void)iv; (void)mode; (void)texels; (void)wmask; (void)hmask; (void)flat;
+            (void)writes_depth; (void)shade; (void)mat; (void)frame; (void)lib; (void)drow;
+            dst = darken[dst];
         } else {
-            uint8_t col = fl.flat;
-            if constexpr (K != Kind::Flat) {
-                const float rz = 1.0f / iz;
-                const float fu = uz * rz, fv = vz * rz;
-                int iu = int(fu), iv = int(fv);  // floor: truncate, one down below zero
-                iu -= fu < float(iu);
-                iv -= fv < float(iv);
-                if constexpr (K == Kind::Library) {
-                    col = lib->texel(*fl.mat, iu, iv, fl.frame);
-                } else if constexpr (K == Kind::Texels) {
-                    const Material& m = *fl.mat;
-                    if (fl.wmask >= 0) iu &= fl.wmask;
-                    else if ((iu %= m.width) < 0) iu += m.width;
-                    if (fl.hmask >= 0) iv &= fl.hmask;
-                    else if ((iv %= m.height) < 0) iv += m.height;
-                    col = fl.texels[size_t(iv) * 256 + size_t(iu)];
-                } else {
-                    col = fl.texels[size_t(iv & fl.hmask) * 256 + size_t(iu & fl.wmask)];
+            (void)darken;
+            uint8_t col = flat;
+            if constexpr (K == Kind::Library) {
+                col = lib->texel(*mat, iu, iv, frame);
+            } else if constexpr (K == Kind::Texels) {
+                if (wmask >= 0) iu &= wmask;
+                else if ((iu %= mat->width) < 0) iu += mat->width;
+                if (hmask >= 0) iv &= hmask;
+                else if ((iv %= mat->height) < 0) iv += mat->height;
+                col = texels[size_t(iv) * 256 + size_t(iu)];
+            } else if constexpr (K != Kind::Flat) {
+                col = texels[size_t(iv & hmask) * 256 + size_t(iu & wmask)];
+            } else {
+                (void)iu; (void)iv;
+            }
+            if constexpr (K == Kind::Library || K == Kind::Texels) {
+                if (mode == Mode::Transparent && col == 0) return;
+                if (mode == Mode::Translucent) {
+                    dst = shade[size_t(col & 63) * 256 + dst];
+                    return;
                 }
-                if constexpr (K == Kind::Library || K == Kind::Texels) {
-                    if (mode == Mode::Transparent && col == 0) continue;
-                    if (mode == Mode::Translucent) {
-                        dst = track_->shade_table[size_t(col & 63) * 256 + dst];
-                        continue;
-                    }
-                } else if constexpr (K == Kind::TransparentPow2) {
-                    if (col == 0) continue;
-                }
+            } else if constexpr (K == Kind::TransparentPow2) {
+                if (col == 0) return;
             }
             if constexpr (K == Kind::TranslucentPow2) {
-                dst = track_->shade_table[size_t(col & 63) * 256 + dst];
+                (void)tz; (void)writes_depth; (void)drow;
+                dst = shade[size_t(col & 63) * 256 + dst];
             } else {
-                if (fl.writes_depth) dz = tz;
+                if (writes_depth) drow[x] = tz;
                 dst = col;
             }
         }
+    };
+    const __m128 lane = _mm_setr_ps(0.0f, 1.0f, 2.0f, 3.0f);
+    const __m128 k0 = _mm_set1_ps(s.k0), k1 = _mm_set1_ps(s.k1), k2 = _mm_set1_ps(s.k2);
+    const __m128 diz = _mm_set1_ps(s.diz), duz = _mm_set1_ps(s.duz), dvz = _mm_set1_ps(s.dvz);
+    const __m128 e0 = _mm_set1_ps(s.e0), e1 = _mm_set1_ps(s.e1), e2 = _mm_set1_ps(s.e2);
+    const __m128 tie = _mm_set1_ps(1.0005f), one = _mm_set1_ps(1.0f), small = _mm_set1_ps(1e-3f);
+    const __m128 vbias = _mm_set1_ps(fl.depth_bias);
+    for (int x = s.x0; x <= s.x1; x += 4) {
+        // lane j is pixel x + j: start + step * (x - x0 + j)
+        const __m128 n = _mm_add_ps(_mm_set1_ps(float(x - s.x0)), lane);
+        const __m128 w0 = _mm_add_ps(_mm_set1_ps(s.w0), _mm_mul_ps(k0, n));
+        const __m128 w1 = _mm_add_ps(_mm_set1_ps(s.w1), _mm_mul_ps(k1, n));
+        const __m128 w2 = _mm_add_ps(_mm_set1_ps(s.w2), _mm_mul_ps(k2, n));
+        int in = _mm_movemask_ps(_mm_and_ps(_mm_and_ps(_mm_cmpge_ps(w0, e0), _mm_cmpge_ps(w1, e1)), _mm_cmpge_ps(w2, e2)));
+        const int left = s.x1 - x + 1;
+        if (left < 4) in &= (1 << left) - 1;
+        if (!in) continue;
+        const __m128 iz = _mm_add_ps(_mm_set1_ps(s.iz), _mm_mul_ps(diz, n));
+        // Coplanar surfaces (road decals on the road, shadows) are resolved like the
+        // original's painter's order: the later polygon wins near-ties.
+        const __m128 tz = bias ? _mm_div_ps(iz, _mm_max_ps(small, _mm_sub_ps(one, _mm_mul_ps(vbias, iz)))) : iz;
+        __m128 dz;
+        if (left >= 4) {
+            dz = _mm_loadu_ps(s.drow + x);
+        } else {
+            alignas(16) float d[4] = {0, 0, 0, 0};
+            for (int j = 0; j < left; ++j) d[j] = s.drow[x + j];
+            dz = _mm_load_ps(d);
+        }
+        const int pass = in & _mm_movemask_ps(_mm_cmpnlt_ps(_mm_mul_ps(tz, tie), dz));
+        if (!pass) continue;
+        alignas(16) float tzs[4];
+        alignas(16) int32_t ius[4] = {0, 0, 0, 0}, ivs[4] = {0, 0, 0, 0};
+        _mm_store_ps(tzs, tz);
+        if constexpr (K != Kind::Flat && K != Kind::Darken) {
+            const __m128 rz = _mm_div_ps(one, iz);
+            const __m128 fu = _mm_mul_ps(_mm_add_ps(_mm_set1_ps(s.uz), _mm_mul_ps(duz, n)), rz);
+            const __m128 fv = _mm_mul_ps(_mm_add_ps(_mm_set1_ps(s.vz), _mm_mul_ps(dvz, n)), rz);
+            // floor: truncate, then one down where that went up (below zero)
+            __m128i iu = _mm_cvttps_epi32(fu), iv = _mm_cvttps_epi32(fv);
+            iu = _mm_add_epi32(iu, _mm_castps_si128(_mm_cmplt_ps(fu, _mm_cvtepi32_ps(iu))));
+            iv = _mm_add_epi32(iv, _mm_castps_si128(_mm_cmplt_ps(fv, _mm_cvtepi32_ps(iv))));
+            _mm_store_si128(reinterpret_cast<__m128i*>(ius), iu);
+            _mm_store_si128(reinterpret_cast<__m128i*>(ivs), iv);
+        }
+        for (int j = 0; j < 4; ++j)
+            if (pass & (1 << j)) pixel(x + j, tzs[j], ius[j], ivs[j]);
     }
 }
 
