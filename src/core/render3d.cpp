@@ -612,6 +612,7 @@ void Renderer::draw_polygon(Geo& g, const ClipVert* in, size_t count, const Mate
     fill.writes_depth = mode != Mode::Translucent && mode != Mode::Darken;
     fill.depth_bias = depth_bias;
     fill.edge_slack = fill.writes_depth ? g.edge_slack : 0.0f;
+    fill.seal_behind = open_edges != 0xff;
     // A painted line of the road, far enough to be thinner than a pixel, would be drawn in
     // dots (a pixel is filled when its centre is inside): it reaches past all its edges by what
     // it lacks to a pixel's width, over the road faces beside it. Only to three times its
@@ -629,6 +630,7 @@ void Renderer::draw_polygon(Geo& g, const ClipVert* in, size_t count, const Mate
         if (width < 1.0f) {
             fill.edge_slack = (std::min(1.0f, width * kStripWiden) - width) * 0.5f;
             fill.depth_bias += kStripBias;
+            fill.seal_behind = false;
             sealed.fill(true);
         }
     }    // mat10_draw takes its frame from the instance's +0x3c word, the others from the
