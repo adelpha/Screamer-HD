@@ -23,6 +23,12 @@ public:
     // the 100 Hz clock since the last call (idle_timer_check).
     void update(const std::vector<Opponent>& cars, int ticks);
 
+    // Replays (camera_mode_trackside, view 3): the knots of MAPnRPL.SPL; the nearest one to
+    // the car, zoomed in to 1500 units from it.
+    void load_trackside(const std::vector<RacingLine>& lines);
+    bool has_trackside() const { return !trackside_.empty(); }
+    void trackside(int car_x, int car_y, int car_z);
+
     // The picture's camera (radians, the game's camera conventions).
     int x = 0, y = 0, z = 0;
     float pitch = 0, yaw = 0;
@@ -40,7 +46,7 @@ private:
         float pitch = 0, yaw = 0;
     };
     void track(const Opponent& o, PerCar& c);
-    std::vector<Point> points_;
+    std::vector<Point> points_, trackside_;
     std::vector<PerCar> cars_;
     int next_ = -1;          // DAT_00110a18
     int idle_ticks_ = 1000;  // idle_timer_check: a new car every 1000 ticks (the first at once)

@@ -22,6 +22,43 @@ void TvCamera::load(const std::vector<RacingLine>& lines) {
     idle_ticks_ = 1000;
 }
 
+void TvCamera::load_trackside(const std::vector<RacingLine>& lines) {
+    trackside_.clear();
+    for (const RacingLine& l : lines)
+        for (const SplineSegment& s : l.segments) trackside_.push_back({s.x, s.point, s.z});
+}
+
+void TvCamera::trackside(int car_x, int car_y, int car_z) {
+    if (trackside_.empty()) return;
+    int best = 0x7fffffff;
+    size_t k = 0;
+    for (size_t i = 0; i < trackside_.size(); ++i) {
+        const double dx = double(trackside_[i].x - car_x), dz = double(trackside_[i].z - car_z);
+        const double d = std::sqrt(dx * dx + dz * dz);
+        if (d != 0.0 && d < double(best)) {
+            best = chop(d);
+            k = i;
+        }
+    }
+    const Point& p = trackside_[k];
+    const float dx = float(p.x - car_x), dz = float(p.z - car_z), dy = float(p.y - car_y);
+    const float horiz = float(std::sqrt(double(dx * dx + dz * dz)));
+    float a = horiz > 0 ? float(std::acos(double(dx / horiz))) : 0.0f;
+    if (horiz > 0 && dz / horiz < 0.0f) a = kTwoPi - a;
+    yaw = a + kMinusHalfPi;
+    const double d3 = std::sqrt(double(dy * dy + dz * dz + dx * dx));
+    pitch = kTwoPi - (d3 > 0 ? float(std::fabs(std::acos(double(horiz) / d3))) : 0.0f);
+    x = p.x;
+    y = p.y;
+    z = p.z;
+    const int k3 = chop(d3 + -1500.0);
+    if (0 < k3) {
+        x = chop(std::sin(double(yaw)) * std::cos(double(pitch)) * double(k3) + double(x));
+        y = chop(std::sin(double(pitch)) * double(k3) + double(y));
+        z = chop(-std::cos(double(pitch)) * std::cos(double(yaw)) * double(k3) + double(z));
+    }
+}
+
 void TvCamera::track(const Opponent& o, PerCar& c) {
     // camera_tv_track_opponent: the nearest camera point (not the one exactly on the car)
     float best = 2.1474835e+09f;

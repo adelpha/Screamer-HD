@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 
 namespace scr {
 
@@ -326,14 +327,14 @@ ChoiceFile Menu::save_choice() const {
     return c;
 }
 
-void Menu::race_result(int map, float best_lap, float total_time, int laps, bool finished) {
+int Menu::race_result(int map, float best_lap, float total_time, int laps, bool finished, bool replay_saved) {
     // menu_replay_files: insert into the track's top five (lower is better)
-    if (map < 1 || map > 6) return;
+    if (map < 1 || map > 6) return 0;
     const size_t t = size_t(map - 1) * kRecordStride;
     auto insert = [&](size_t table, float time, size_t extra, int extra_value) {
         int pos = 0;
         while (pos < 5 && choice_.getf(table + t + size_t(pos) * 4) <= time) ++pos;
-        if (pos >= 5) return;
+        if (pos >= 5) return -1;
         for (int i = 3; pos <= i; --i) {
             choice_.setf(table + t + size_t(i + 1) * 4, choice_.getf(table + t + size_t(i) * 4));
             choice_.set(table + t + 0x28 + size_t(i + 1) * 4, choice_.get(table + t + 0x28 + size_t(i) * 4));
@@ -344,9 +345,26 @@ void Menu::race_result(int map, float best_lap, float total_time, int laps, bool
         choice_.set(table + t + 0x28 + size_t(pos) * 4, table == kLapRecords ? 1 : 0);
         choice_.set(table + t + extra + size_t(pos) * 4, extra_value);
         choice_.setstr(table + t + 0x14 + size_t(pos) * 4, name);
+        return pos;
     };
     if (best_lap < 10000.0f) insert(kLapRecords, best_lap, 0x3c, 0);
-    if (finished && laps == 3) insert(kTotalRecords, total_time, 0x3c, game_mode);
+    if (!finished || laps != 3) return 0;
+    const int pos = insert(kTotalRecords, total_time, 0x3c, game_mode);
+    if (pos < 0 || !replay_saved) return 0;
+    // the lowest number no other total of the track has
+    int n = 1;
+    for (int i = 0; i < 5; ++i)
+        if (i != pos && choice_.get(kTotalRecords + t + 0x28 + size_t(i) * 4) == n) {
+            ++n;
+            i = -1;
+        }
+    choice_.set(kTotalRecords + t + 0x28 + size_t(pos) * 4, n);
+    return n;
+}
+
+void Menu::show_records() {
+    init_state(6);
+    brightness = 0;
 }
 
 void Menu::draw_loading(Framebuffer& fb, int map) {
@@ -1009,6 +1027,26 @@ void Menu::activate() {
             fade_rate_ = 1.5f;
             mode = 1;
             next_mode_ = 2;
+        } else if (mode == 6) {
+            // frontend_activate_item on the records: the selected total's replay, if its file is there
+            const size_t at = kTotalRecords + size_t(records_track_) * kRecordStride + size_t(records_row_) * 4;
+            const int n = choice_.get(at + 0x28);
+            const std::string file = "REPLAY" + std::to_string(records_track_) + std::to_string(n) + ".RPL";
+            std::string path;
+            std::error_code ec;
+            for (const std::string& d : replay_dirs)
+                if (path.empty() && std::filesystem::exists(d + file, ec)) path = d + file;
+            if (n == 0 || path.empty()) return;
+            MenuRace r;
+            r.game_mode = choice_.get(at + 0x3c) | 0x80;
+            r.map = records_track_ + 1;
+            r.detail = std::clamp(option(0), 0, 2);
+            r.high_detail = r.detail >= 1;
+            r.speech = option(3) == 1;
+            r.music = option(4) == 1;
+            r.name = name;
+            r.replay = path;
+            race = r;
         } else if (mode == 4) {
             draw_mode_ = mode;
             brightness = 0;
@@ -1156,6 +1194,15 @@ void Menu::handle_keys(const MenuKeys& k) {
             } else if (key == 2 && sel < int(pages[size_t(page)].size()) - 1) {
                 ++sel;
                 sounds.push_back(1);
+            }
+        } else if (mode == 6) {
+            // the records page: which total's replay Enter plays
+            if (key == 1 && records_row_ != 0) {
+                --records_row_;
+                sounds.push_back(4);
+            } else if (key == 2 && records_row_ < 4) {
+                ++records_row_;
+                sounds.push_back(4);
             }
         } else if (mode == 4) {
             if (key == 1 && name_cursor_ != 0) {

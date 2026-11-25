@@ -17,6 +17,7 @@ add_executable(unit_tests
   unit/test_sound.cpp
   unit/test_fm_synth.cpp
   unit/test_menu.cpp
+  unit/test_replay.cpp
 )
 target_include_directories(unit_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(unit_tests PRIVATE screamer_core)

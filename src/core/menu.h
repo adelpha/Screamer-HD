@@ -108,6 +108,7 @@ struct MenuRace {
     // clock stands still (CLOCK), 0x10 mirror (MIRRO: picture and steering), 0x20 upside down
     // (UPDOW)
     int race_options = 0;
+    std::string replay;  // the records page: play this REPLAY<track><n>.RPL (game_mode | 0x80) instead
 };
 
 class Menu {
@@ -127,7 +128,13 @@ public:
     ChoiceFile save_choice() const;
     // After a race (menu_replay_files): the best lap and, for 3-lap races, the total time go
     // into the track's top five under the player's name.
-    void race_result(int map, float best_lap, float total_time, int laps, bool finished);
+    // With the race's replay saved, a new total record gets a replay number (1..5, one no
+    // other record of the track has); the replay becomes REPLAY<map-1><n>.RPL. Returns it, or 0.
+    int race_result(int map, float best_lap, float total_time, int laps, bool finished, bool replay_saved = false);
+    // Back to the records page after one of its replays.
+    void show_records();
+    // Where REPLAY<track><n>.RPL are looked for (the records page's "R"): ours, then the game's.
+    std::vector<std::string> replay_dirs;
     // frontend_start_race's loading screen: LOAD<n>L.PCX and "LOADING".
     void draw_loading(Framebuffer& fb, int map);
     // One frame of frontend_draw_frame (keys, camera, page) at frame time dt.

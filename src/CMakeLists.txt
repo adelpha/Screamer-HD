@@ -21,6 +21,7 @@ add_library(screamer_core STATIC
   core/worker_pool.cpp
   core/tv_camera.cpp
   core/attract.cpp
+  core/replay.cpp
   core/sim_clock.cpp
   core/testpattern.cpp
   core/track.cpp
