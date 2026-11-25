@@ -1,5 +1,6 @@
 #include "core/render3d.h"
 
+#include "core/mipmaps.h"
 #include "core/worker_pool.h"
 
 #include <algorithm>
@@ -102,9 +103,9 @@ uint8_t library_texel(const MaterialLibrary* lib, const Material* mat, int u, in
 
 void tri_edge_slack(const Tri& t, float slack, float area, float out[3]) {
     const float s = -slack / std::fabs(area);
-    out[0] = s * std::hypot(t.c.x - t.b.x, t.c.y - t.b.y);
-    out[1] = s * std::hypot(t.a.x - t.c.x, t.a.y - t.c.y);
-    out[2] = s * std::hypot(t.b.x - t.a.x, t.b.y - t.a.y);
+    out[0] = t.sealed & 1 ? s * std::hypot(t.c.x - t.b.x, t.c.y - t.b.y) : 0.0f;
+    out[1] = t.sealed & 2 ? s * std::hypot(t.a.x - t.c.x, t.a.y - t.c.y) : 0.0f;
+    out[2] = t.sealed & 4 ? s * std::hypot(t.b.x - t.a.x, t.b.y - t.a.y) : 0.0f;
 }
 } // namespace detail
 void Renderer::clear_rows(int y0, int y1) {
@@ -219,6 +220,7 @@ void Renderer::draw_placement_range(Geo& g, size_t i0, size_t i1) {
         // through. (Only ground below the eye: flat ceilings overhead keep their depth.)
         if (p.slot != 0 && m.flat && float(p.y + m.flat_y) < cam_->y) pose.depth_bias = -kFlatGroundBias;
         pose.seal_edges = p.slot == 0;
+        if (weld_joints_ && i < track_->welds.size() && !track_->welds[i].empty()) pose.shifts = &track_->welds[i];
         draw_model_into(g, m, pose, nullptr);
     }
 }
@@ -387,6 +389,14 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
             apply(prot, part.vertices[i].x, part.vertices[i].y, part.vertices[i].z, rx, ry, rz);
             apply(view_, rx + ox, ry + oy, rz + oz, g.wx[i], g.wy[i], g.wz[i]);
         }
+        if (pose.shifts && chosen == &full)
+            for (const VertexShift& sh : *pose.shifts) {
+                if (sh.part != pi || sh.vertex >= nv) continue;
+                const Vec3i16& v = part.vertices[sh.vertex];
+                float rx, ry, rz;
+                apply(prot, float(v.x) + sh.dx, float(v.y) + sh.dy, float(v.z) + sh.dz, rx, ry, rz);
+                apply(view_, rx + ox, ry + oy, rz + oz, g.wx[sh.vertex], g.wy[sh.vertex], g.wz[sh.vertex]);
+            }
         // Reflection UVs (object_transform_float): the view direction to the vertex reflected
         // off the vertex normal, u from its x and v from its z, 127 * component + 127 - scroll.
         const bool env = (part.flags & 0x2000) && part.vertex_normals.size() >= nv;
@@ -441,7 +451,7 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
                 g.deferred_verts.insert(g.deferred_verts.end(), poly.begin(), poly.begin() + ptrdiff_t(n));
                 continue;
             }
-            draw_polygon(g, poly.data(), n, mat, f.color, pose.animation, pose.reflection, bias);
+            draw_polygon(g, poly.data(), n, mat, f.color, pose.animation, pose.reflection, bias, seal_all_edges_ ? uint8_t(0xff) : uint8_t(f.open_edges | (f.strip ? 0x40 : 0)));
         }
     }
 }
@@ -455,7 +465,7 @@ RenderStats Renderer::finish() {
     std::stable_sort(g.deferred.begin(), g.deferred.end(),
                      [](const Deferred& a, const Deferred& b) { return a.depth > b.depth; });
     for (const Deferred& d : g.deferred)
-        draw_polygon(g, g.deferred_verts.data() + d.first, d.count, d.mat, d.color, d.animation, d.reflection, d.depth_bias);
+        draw_polygon(g, g.deferred_verts.data() + d.first, d.count, d.mat, d.color, d.animation, d.reflection, d.depth_bias, 0);
     g.deferred.clear();
     g.deferred_verts.clear();
     // Fill the pixels: bands of rows, several per thread so that the busy parts of the
@@ -476,6 +486,7 @@ RenderStats Renderer::finish() {
     ctx.fade_iz = fade_iz_;
     ctx.fade_start = fade_start_;
     ctx.fade_range = fade_range_;
+    ctx.mip_sharpness = mip_sharpness_;
     pool_->run(bands, [&](int b) {
         const int y0 = h * b / bands, y1 = h * (b + 1) / bands;
         // (cleared here, the band's rows are still in the cache when its polygons are filled)
@@ -551,19 +562,26 @@ void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Fram
 }
 
 void Renderer::draw_polygon(Geo& g, const ClipVert* in, size_t count, const Material* mat, uint8_t face_color, int32_t animation,
-                            int32_t reflection, float depth_bias) {
+                            int32_t reflection, float depth_bias, uint8_t open_edges) {
     const Framebuffer& fb = *fb_;
     const MaterialLibrary* lib = track_->materials ? &*track_->materials : nullptr;
     // Clip against the near plane (a convex polygon gains at most one corner).
     std::array<ClipVert, 8> poly;
+    std::array<bool, 8> sealed{};
     size_t n = 0;
     for (size_t i = 0; i < count; ++i) {
         const ClipVert& a = in[i];
         const ClipVert& b = in[(i + 1) % count];
         const bool ain = -a.z >= kNear, bin = -b.z >= kNear;
-        if (ain) poly[n++] = a;
+        // (the edge that leaves each corner keeps its seal; the edge along the near plane has none)
+        const bool open = (open_edges >> i) & 1;
+        if (ain) {
+            sealed[n] = open;
+            poly[n++] = a;
+        }
         if (ain != bin) {
             const float t = (-kNear - a.z) / (b.z - a.z);
+            sealed[n] = !ain && open;
             poly[n++] = {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, -kNear, a.u + (b.u - a.u) * t, a.v + (b.v - a.v) * t};
         }
     }
@@ -594,7 +612,26 @@ void Renderer::draw_polygon(Geo& g, const ClipVert* in, size_t count, const Mate
     fill.writes_depth = mode != Mode::Translucent && mode != Mode::Darken;
     fill.depth_bias = depth_bias;
     fill.edge_slack = fill.writes_depth ? g.edge_slack : 0.0f;
-    // mat10_draw takes its frame from the instance's +0x3c word, the others from the
+    // A painted line of the road, far enough to be thinner than a pixel, would be drawn in
+    // dots (a pixel is filled when its centre is inside): it reaches past all its edges by what
+    // it lacks to a pixel's width, over the road faces beside it. Only to three times its
+    // real width, though: further still the lines thin out again, or a road seen from far
+    // away would be more line than road.
+    if (fill.edge_slack > 0 && open_edges != 0xff && (open_edges & 0x40)) {
+        float area2 = 0, longest = 0;
+        for (size_t i = 0; i < n; ++i) {
+            const Scr& p = s[i];
+            const Scr& q = s[(i + 1) % n];
+            area2 += p.x * q.y - q.x * p.y;
+            longest = std::max(longest, std::hypot(q.x - p.x, q.y - p.y));
+        }
+        const float width = longest > 0 ? std::fabs(area2) * 0.5f / longest : 0.0f;
+        if (width < 1.0f) {
+            fill.edge_slack = (std::min(1.0f, width * kStripWiden) - width) * 0.5f;
+            fill.depth_bias += kStripBias;
+            sealed.fill(true);
+        }
+    }    // mat10_draw takes its frame from the instance's +0x3c word, the others from the
     // animation phase (cell_begin).
     fill.frame = !mat ? 0
                  : (mat->type >> 1) == 5 ? int((int64_t(mat->frames) * reflection) >> 16)
@@ -612,8 +649,15 @@ void Renderer::draw_polygon(Geo& g, const ClipVert* in, size_t count, const Mate
         fill.height = mat->height;
         fill.ubias = (16384 + mat->width - 1) / mat->width * mat->width;
         fill.vbias = (16384 + mat->height - 1) / mat->height * mat->height;
+        if (clamp_edges_) {
+            fill.clamp_uv = true;
+            for (size_t i = 0; i < count; ++i)
+                if (!(in[i].u >= 0 && in[i].u <= float(mat->width) && in[i].v >= 0 && in[i].v <= float(mat->height))) fill.clamp_uv = false;
+        }
         fill.umagic = 65536 / mat->width;
         fill.vmagic = 65536 / mat->height;
+        if (mipmaps_ && track_->mips && fill.texels && fill.use_texels && mode != Mode::Translucent)
+            fill.mip = track_->mips->find(size_t(mat - lib->materials().data()), fill.frame);
         if ((mat->width & (mat->width - 1)) == 0) fill.wmask = mat->width - 1;
         if ((mat->height & (mat->height - 1)) == 0) fill.hmask = mat->height - 1;
     }
@@ -632,7 +676,10 @@ void Renderer::draw_polygon(Geo& g, const ClipVert* in, size_t count, const Mate
         const int y0 = std::max(0, int(std::floor(std::min({a.y, b.y, c.y}))));
         const int y1 = std::min(fb.height() - 1, int(std::ceil(std::max({a.y, b.y, c.y}))));
         if (x0 > x1 || y0 > y1) continue;
-        g.tris.push_back({a, b, c, y0, y1, x0, x1, fill_index});
+        // (edge b-c is the polygon's edge t; c-a and a-b are its last and first edge in the
+        // last and first triangle of the fan, and cuts through the polygon otherwise)
+        const uint8_t seal = open_edges == 0xff ? uint8_t(7) : uint8_t((sealed[t] ? 1 : 0) | (t + 2 == n && sealed[n - 1] ? 2 : 0) | (t == 1 && sealed[0] ? 4 : 0));
+        g.tris.push_back({a, b, c, y0, y1, x0, x1, fill_index, seal});
         g.tri_rows.push_back({y0, y1});
         used = true;
     }

@@ -1,6 +1,7 @@
 #include "core/model3d.h"
 
 #include <algorithm>
+#include <map>
 #include <cmath>
 #include <cstring>
 #include <set>
@@ -185,6 +186,10 @@ CarParts find_car_parts(const Model& car) {
     return out;
 }
 
+// Faces narrower than this (model units) and at least five times as long are strips (the
+// road's painted lines are about 127 wide and 1100 long, its lanes 665 and more wide).
+constexpr double kStripWidth = 200.0;
+
 void compute_bounds(Model& model) {
     model.radius = 0;
     model.flat = false;
@@ -206,7 +211,41 @@ void compute_bounds(Model& model) {
             if (lp.present) all.push_back(&lp.part);
     for (Part* pp : all) {
         Part& part = *pp;
-        static const char* const kWheels[] = {"flx", "fli", "blx", "rli", "frx", "fri", "brx", "rri"};
+        // the edges that only one face has (by where their ends are: vertices can be doubled)
+        {
+            auto key = [&](uint16_t a, uint16_t b) {
+                auto at = [&](uint16_t i) {
+                    const Vec3i16 v = i < part.vertices.size() ? part.vertices[i] : Vec3i16{};
+                    return uint64_t(uint16_t(v.x)) | uint64_t(uint16_t(v.y)) << 16 | uint64_t(uint16_t(v.z)) << 32;
+                };
+                const uint64_t p = at(a), q = at(b);
+                return std::pair<uint64_t, uint64_t>(std::min(p, q), std::max(p, q));
+            };
+            std::map<std::pair<uint64_t, uint64_t>, int> uses;
+            for (const Face& f : part.faces)
+                for (int i = 0; i < f.count && i < 6; ++i) ++uses[key(f.vtx[size_t(i)], f.vtx[size_t((i + 1) % f.count)])];
+            for (Face& f : part.faces) {
+                // narrow: its area over its longest edge
+                {
+                    double ax = 0, ay = 0, az = 0, longest = 0;
+                    const int n = std::min<int>(f.count, 6);
+                    auto vert = [&](int i) { const uint16_t k = f.vtx[size_t(i % n)]; return k < part.vertices.size() ? part.vertices[k] : Vec3i16{}; };
+                    for (int i = 0; i < n; ++i) {
+                        const Vec3i16 p = vert(i), q = vert(i + 1), o = vert(0);
+                        const double px = p.x - o.x, py = p.y - o.y, pz = p.z - o.z, qx = q.x - o.x, qy = q.y - o.y, qz = q.z - o.z;
+                        ax += py * qz - pz * qy;
+                        ay += pz * qx - px * qz;
+                        az += px * qy - py * qx;
+                        longest = std::max(longest, std::sqrt(double(q.x - p.x) * (q.x - p.x) + double(q.y - p.y) * (q.y - p.y) + double(q.z - p.z) * (q.z - p.z)));
+                    }
+                    const double width = longest > 0 ? 0.5 * std::sqrt(ax * ax + ay * ay + az * az) / longest : 0;
+                    f.strip = n >= 3 && width < kStripWidth && longest > 5 * width;
+                }
+                f.open_edges = 0;
+                for (int i = 0; i < f.count && i < 6; ++i)
+                    if (uses[key(f.vtx[size_t(i)], f.vtx[size_t((i + 1) % f.count)])] < 2) f.open_edges |= uint8_t(1 << i);
+            }
+        }        static const char* const kWheels[] = {"flx", "fli", "blx", "rli", "frx", "fri", "brx", "rri"};
         part.wheel = std::find(std::begin(kWheels), std::end(kWheels), part.name) != std::end(kWheels);
         if (part.vertices.empty()) {
             part.center = {};

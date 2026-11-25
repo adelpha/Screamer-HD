@@ -44,6 +44,12 @@ struct Face {
     std::array<uint16_t, 6> vtx{};    // vertex indices
     std::array<int32_t, 3> normal{};  // 2.14 fixed point
     int32_t plane = 0;
+    // Bit i: the edge from vertex i to the next is not shared with another face of the part
+    // (compute_bounds works it out; all set until then). The renderer seals only these edges
+    // of road pieces against their neighbours (Pose::seal_edges).
+    uint8_t open_edges = 0x3f;
+    // A long narrow face (compute_bounds): on road pieces, a painted line.
+    bool strip = false;
 };
 
 struct Part {
@@ -99,6 +105,13 @@ struct Model {
     // quads around the road).
     bool flat = false;
     int flat_y = 0;
+};
+
+// A vertex of a placed object drawn a little away from where the file has it (Track::welds):
+// the shift is in the object's own axes.
+struct VertexShift {
+    uint16_t part = 0, vertex = 0;
+    float dx = 0, dy = 0, dz = 0;
 };
 
 // A part's placement set by the game for one frame (the instance's part table, f_10 in

@@ -87,6 +87,8 @@ struct Pose {
     bool seal_edges = false;
     // A car (object_compute_depth_dynamic: half the distance for the detail levels).
     bool dynamic = false;
+    // Vertices drawn a little away from the model's (Track::welds), or null.
+    const std::vector<VertexShift>* shifts = nullptr;
 };
 
 // The flat ground pieces of the scenery are tested and written as if this much further away,
@@ -95,6 +97,9 @@ struct Pose {
 constexpr float kFlatGroundBias = 4096.0f;
 // Car wheels (Part::wheel) are tested as if this much nearer.
 constexpr float kWheelBias = 64.0f;
+// The road's painted lines, where they are widened to a pixel, likewise: over the road beside them.
+constexpr float kStripBias = 32.0f;
+constexpr float kStripWiden = 3.0f;  // and to at most this many times their real width
 
 // Material frame shown by cell_begin + mat*_draw: frames * phase >> 14, where the phase is
 // animation >> 2, or the low 14 bits of the global animation counter for animation < 0.
@@ -120,6 +125,21 @@ public:
     void set_textures(bool on) { textures_ = on; }
     // The original's distant versions of objects (off: always the full detail).
     void set_lod(bool on) { lod_ = on; }
+    // Squeezed textures drawn from their smaller versions (Track::mips; ours). sharpness: a
+    // version is used once a pixel covers 1 / sharpness of its texels (1: only when a whole
+    // texel would be skipped; 2: as soon as texels are smaller than pixels).
+    // Polygons that show a piece of a texture (no repeats) keep to it at their edges; off: the
+    // texel coordinates wrap there, which lets rows from the far side of the texture show as
+    // specks along the edges of road pieces (how this renderer drew before).
+    void set_clamp_edges(bool on) { clamp_edges_ = on; }
+    // Road pieces reach past every edge of every face (how this renderer drew before) instead
+    // of only the edges a face shares with no other face of its part. Past shared edges the
+    // faces paint over their neighbours, which eats thin faces such as the painted lines.
+    void set_seal_all_edges(bool on) { seal_all_edges_ = on; }
+    // The track's placements drawn with the corners of neighbouring road pieces moved together
+    // (Track::welds); off: where the file puts them, with the lines stepping at the joints.
+    void set_weld_joints(bool on) { weld_joints_ = on; }
+    void set_mipmaps(bool on, float sharpness = 1.4f) { mipmaps_ = on; mip_sharpness_ = sharpness; }
     // Threads that fill pixels (<= 0: one per hardware thread, the default).
     void set_threads(int threads);
     // Which build of the pixel filler runs: Auto is the widest the CPU has. All give the same
@@ -170,6 +190,10 @@ private:
         float depth;
         float depth_bias;
     };
+    // Clips, projects and queues the polygon's triangles. open_edges: bit i set where the edge
+    // from corner i to the next gets the model's edge slack (seal_edges); 0xff: every edge of
+    // every triangle, as before the edges were told apart. Bit 6: a strip (Face::strip), kept at
+    // least a pixel wide.
     using Scr = detail::Scr;
     using Fill = detail::Fill;  // what a polygon's pixels are filled with
     using Tri = detail::Tri;
@@ -196,7 +220,7 @@ private:
     void draw_placement_range(Geo& g, size_t i0, size_t i1);
     void draw_model_into(Geo& g, const Model& model, const Pose& pose, const std::vector<bool>* part_mask);
     void draw_polygon(Geo& g, const ClipVert* poly, size_t count, const Material* mat, uint8_t face_color,
-                      int32_t animation, int32_t reflection, float depth_bias = 0);
+                      int32_t animation, int32_t reflection, float depth_bias, uint8_t open_edges);
     bool sphere_visible(float x, float y, float z, float r) const;
     // Rows y0 .. y1 - 1 before anything is drawn: no depth, the background or the sky colour.
     void clear_rows(int y0, int y1);
@@ -227,6 +251,11 @@ private:
     detail::FillRowsFn fill_rows_ = nullptr;  // null: not chosen yet (Auto)
     bool textures_ = true;
     bool lod_ = false;
+    bool mipmaps_ = false;
+    bool clamp_edges_ = true;
+    bool seal_all_edges_ = false;
+    bool weld_joints_ = true;
+    float mip_sharpness_ = 1.4f;
     bool skip_ = false;
     bool fade_ = false;            // the view-distance fade is on this frame
     float fade_iz_ = 0;            // 1 / (128 + fade_depth): pixels with a smaller 1/z are in the fade

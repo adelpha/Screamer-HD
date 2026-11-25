@@ -1,8 +1,10 @@
 #include "core/track.h"
 
 #include "core/archive.h"
+#include "core/mipmaps.h"
 
 #include <algorithm>
+#include <map>
 #include <climits>
 #include <cmath>
 #include <cstring>
@@ -303,6 +305,84 @@ const TrackSection* nearest_track_section(const Track& track, int x, int z) {
     return best;
 }
 
+void weld_road_joints(Track& t, double reach) {
+    t.welds.assign(t.placements.size(), {});
+    struct Corner {
+        double x, y, z;
+        int placement;
+        std::vector<std::pair<uint16_t, uint16_t>> vertices;  // (part, vertex): every vertex at this spot
+    };
+    std::vector<Corner> corners;
+    std::vector<std::array<double, 9>> turned(t.placements.size());
+    const double unit = 6.28318530717958647692 / 2048.0;
+    for (size_t pi = 0; pi < t.placements.size(); ++pi) {
+        const Placement& p = t.placements[pi];
+        if (p.slot != 0 || p.object < 0 || size_t(p.object) >= t.objects.size()) continue;
+        // the renderer's turn of a placed object: yaw about y (the other way round), pitch, roll
+        const double ax = p.ax * unit, ay = -p.ay * unit, az = p.az * unit;
+        const double cy = std::cos(ay), sy = std::sin(ay), cx = std::cos(ax), sx = std::sin(ax), cz = std::cos(az), sz = std::sin(az);
+        std::array<double, 9>& r = turned[pi];
+        r = {cy * cz + sy * sx * sz, -cy * sz + sy * sx * cz, sy * cx, cx * sz, cx * cz, -sx, -sy * cz + cy * sx * sz, sy * sz + cy * sx * cz, cy * cx};
+        std::map<std::array<int, 3>, size_t> seen;  // spot in the object -> its corner
+        const Model& m = t.objects[size_t(p.object)];
+        for (size_t part_index = 0; part_index < m.parts.size(); ++part_index) {
+            const Part& part = m.parts[part_index];
+            if (part.angles != std::array<int32_t, 3>{} || !part.frames.empty()) continue;
+            for (const Face& f : part.faces)
+                for (int i = 0; i < f.count && i < 6; ++i) {
+                    if (!((f.open_edges >> i) & 1)) continue;
+                    for (const uint16_t vi : {f.vtx[size_t(i)], f.vtx[size_t((i + 1) % f.count)]}) {
+                        if (vi >= part.vertices.size()) continue;
+                        const Vec3i16& v = part.vertices[vi];
+                        const std::array<int, 3> spot{v.x + part.offset[0], v.y + part.offset[1], v.z + part.offset[2]};
+                        auto [it, fresh] = seen.try_emplace(spot, corners.size());
+                        if (fresh)
+                            corners.push_back({r[0] * spot[0] + r[1] * spot[1] + r[2] * spot[2] + p.x, r[3] * spot[0] + r[4] * spot[1] + r[5] * spot[2] + p.y,
+                                               r[6] * spot[0] + r[7] * spot[1] + r[8] * spot[2] + p.z, int(pi), {}});
+                        auto& list = corners[it->second].vertices;
+                        const std::pair<uint16_t, uint16_t> ref{uint16_t(part_index), vi};
+                        if (std::find(list.begin(), list.end(), ref) == list.end()) list.push_back(ref);
+                    }
+                }
+        }
+    }
+    // each corner's nearest corner of another placement within reach
+    std::map<std::pair<int, int>, std::vector<int>> grid;
+    auto cell = [&](double v) { return int(std::floor(v / reach)); };
+    for (size_t i = 0; i < corners.size(); ++i) grid[{cell(corners[i].x), cell(corners[i].z)}].push_back(int(i));
+    std::vector<int> nearest(corners.size(), -1);
+    for (size_t i = 0; i < corners.size(); ++i) {
+        const Corner& a = corners[i];
+        double best = reach * reach;
+        for (int gx = cell(a.x) - 1; gx <= cell(a.x) + 1; ++gx)
+            for (int gz = cell(a.z) - 1; gz <= cell(a.z) + 1; ++gz) {
+                const auto it = grid.find({gx, gz});
+                if (it == grid.end()) continue;
+                for (const int j : it->second) {
+                    const Corner& b = corners[size_t(j)];
+                    if (b.placement == a.placement) continue;
+                    const double d = (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z);
+                    if (d < best) {
+                        best = d;
+                        nearest[i] = j;
+                    }
+                }
+            }
+    }
+    for (size_t i = 0; i < corners.size(); ++i) {
+        const int j = nearest[i];
+        if (j < 0 || nearest[size_t(j)] != int(i)) continue;
+        const Corner& a = corners[i];
+        const Corner& b = corners[size_t(j)];
+        // half way to the other, turned back into the object's axes
+        const double wx = (b.x - a.x) * 0.5, wy = (b.y - a.y) * 0.5, wz = (b.z - a.z) * 0.5;
+        if (wx == 0 && wy == 0 && wz == 0) continue;
+        const std::array<double, 9>& r = turned[size_t(a.placement)];
+        const float dx = float(r[0] * wx + r[3] * wy + r[6] * wz), dy = float(r[1] * wx + r[4] * wy + r[7] * wz), dz = float(r[2] * wx + r[5] * wy + r[8] * wz);
+        for (const auto& [part, vertex] : a.vertices) t.welds[size_t(a.placement)].push_back({part, vertex, dx, dy, dz});
+    }
+}
+
 std::optional<Track> load_track(const std::string& dat_path, const std::string& name) {
     auto a = Archive::open(dat_path);
     if (!a) return std::nullopt;
@@ -328,6 +408,8 @@ std::optional<Track> load_track(const std::string& dat_path, const std::string& 
     t.darken075 = build_darken_table(col->data(), 0.75f);
     if (auto smg = a->read(name + ".SMG"); smg && smg->size() >= 64 * 256) t.shade_table = std::move(*smg);
     if (auto bck = a->read(name + ".BCK")) t.background = decode_pcx(*bck);
+    t.mips = std::make_shared<const MipSet>(build_mipmaps(*t.materials, t.palette));
+    weld_road_joints(t);
     return t;
 }
 

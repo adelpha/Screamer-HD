@@ -65,6 +65,11 @@ struct Options {
     std::string upload;             // --upload: how the picture gets to the renderer (index | rgba; empty: index when the renderer can)
     bool perf = false;              // print the 3D render time per frame at the end
     bool lod = false;               // the original's distant versions of objects (off: full detail)
+    bool mipmaps = true;            // --mipmaps on|off: squeezed textures from their smaller versions (ours; F10 in a race)
+    float mip_sharpness = 1.4f;     // --mip-sharpness
+    bool clamp_edges = true;        // --texture-edges clamp|wrap
+    bool seal_all = false;          // --seal-edges all|open
+    bool weld_joints = true;        // --weld-joints on|off
     int threads = 0;                // renderer threads (0: one per hardware thread)
     std::string fill;               // --fill: the pixel filler's build (sse2 | avx2; empty: the widest the CPU has)
     bool fullscreen = false;
@@ -129,6 +134,11 @@ void print_usage() {
         "  --perf               print how long the 3D view takes to draw\n"
         "  --lod                draw distant objects in the original's simpler versions (default: full detail)\n"
         "  --threads N          threads drawing the 3D view (default: one per CPU thread)\n"
+        "  --mipmaps on|off     draw squeezed (distant) textures from averaged smaller versions: steadier, softer\n"
+        "                       (default on; F10 switches in a race). --mip-sharpness X: 1 sharper .. 2 softer (1.4)\n"
+        "  --weld-joints off    road pieces where the track file puts them (their lines step at every joint)\n"
+        "  --seal-edges all     road pieces reach past every face edge, as before (the painted lines break up)\n"
+        "  --texture-edges wrap texel coordinates wrap at the edges of every polygon, as before\n"
         "  --fill sse2|avx2     the build of the pixel filler (default: avx2 when the CPU has it; same picture)\n"
         "  --frames N           exit after N simulation frames (2 ticks of the game's 100 Hz clock each)\n"
         "  --scene NAME         menu (default when the game files are found), title, track, drive or testpattern\n"
@@ -280,6 +290,11 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--upload") o.upload = next("--upload");
         else if (a == "--perf") o.perf = true;
         else if (a == "--lod") o.lod = true;
+        else if (a == "--mipmaps") o.mipmaps = std::string(next("--mipmaps")) != "off";
+        else if (a == "--texture-edges") o.clamp_edges = std::string(next("--texture-edges")) != "wrap";
+        else if (a == "--seal-edges") o.seal_all = std::string(next("--seal-edges")) == "all";
+        else if (a == "--weld-joints") o.weld_joints = std::string(next("--weld-joints")) != "off";
+        else if (a == "--mip-sharpness") o.mip_sharpness = float(std::atof(next("--mip-sharpness")));
         else if (a == "--threads") o.threads = std::atoi(next("--threads"));
         else if (a == "--fill") o.fill = next("--fill");
         else if (a == "--fullscreen") o.fullscreen = true;
@@ -747,6 +762,10 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         return 2;
     }
     renderer3d.set_lod(opt.lod);
+    renderer3d.set_mipmaps(opt.mipmaps, opt.mip_sharpness);
+    renderer3d.set_clamp_edges(opt.clamp_edges);
+    renderer3d.set_seal_all_edges(opt.seal_all);
+    renderer3d.set_weld_joints(opt.weld_joints);
 
     // --scene menu: the front end (kept by main across races)
     scr::Menu* menu = nullptr;
@@ -868,6 +887,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     uint64_t frame = 0;
     float end_timer = 0;
     float view_note_timer = 0;  // F9: "VIEW DISTANCE 2X" shown for a moment
+    bool note_mipmaps = false;  // (F10: "MIPMAPS ON" instead)
     // Drawing between steps (interactive races): the state of the step before the last one.
     bool have_prev = false;
     scr::Camera prev_cam, step_cam;
@@ -967,6 +987,15 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     i = (ev.key.mod & SDL_KMOD_SHIFT) ? (i + n - 1) % n : (i + 1) % n;
                     opt.view_distance = kSteps[i];
                     view_note_timer = 2.0f;
+                    note_mipmaps = false;
+                    break;
+                }
+                if (track && !menu && !ev.key.repeat && ev.key.key == SDLK_F10) {
+                    // F10: squeezed textures from their smaller versions, or as they are (ours)
+                    opt.mipmaps = !opt.mipmaps;
+                    renderer3d.set_mipmaps(opt.mipmaps, opt.mip_sharpness);
+                    view_note_timer = 2.0f;
+                    note_mipmaps = true;
                     break;
                 }
                 if (track && !menu && !paused && prompt < 0 && !ev.key.repeat &&
@@ -1720,7 +1749,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     // F9's note: the new view distance
                     if (step) view_note_timer -= clock.frame_time();
                     char note[48];
-                    std::snprintf(note, sizeof note, "VIEW DISTANCE %gX", double(opt.view_distance));
+                    if (note_mipmaps) std::snprintf(note, sizeof note, "MIPMAPS %s", opt.mipmaps ? "ON" : "OFF");
+                    else std::snprintf(note, sizeof note, "VIEW DISTANCE %gX", double(opt.view_distance));
                     scr::HudSurface hsurf(fb);
                     hsurf.text(hud->fonts, (320 - hsurf.measure(hud->fonts, note, 1)) / 2, 0x50, note, 1, 0);
                 }

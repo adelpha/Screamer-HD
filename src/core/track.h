@@ -31,6 +31,7 @@
 #include "core/pcx.h"
 
 #include <array>
+#include <memory>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -87,6 +88,8 @@ private:
     std::vector<Material> materials_;
 };
 
+struct MipSet;
+
 struct Track {
     std::vector<Model> objects;
     std::vector<Placement> placements;
@@ -96,7 +99,11 @@ struct Track {
     std::vector<TrackPoint> points;
     std::vector<TrackSection> sections;
     std::optional<MaterialLibrary> materials;
-    std::optional<PcxImage> background;
+    // Smaller versions of the materials' textures (core/mipmaps.h), in this palette; may be null.
+    std::shared_ptr<const MipSet> mips;
+    // Per placement (or empty): the corners of road pieces moved to meet the neighbouring
+    // piece's (weld_road_joints). For drawing only; the game's own sums use the file's vertices.
+    std::vector<std::vector<VertexShift>> welds;    std::optional<PcxImage> background;
     Palette palette{};
     std::vector<uint8_t> shade_table;          // MAPn.SMG, 64 x 256 (empty if missing)
     std::array<uint8_t, 256> darken{};        // build_darken_tables' x0.6 table (types 12/13)
@@ -106,6 +113,14 @@ struct Track {
 // Palette remap to the nearest colour at `factor` brightness, as build_darken_tables does
 // with the 6-bit VGA palette (first match wins).
 std::array<uint8_t, 256> build_darken_table(const uint8_t* rgb6, float factor);
+
+// The track files place the road as pieces with whole-number positions and angles (2048 to
+// the turn), and the ends of neighbouring pieces miss each other by some twenty units: the
+// painted lines step sideways at every joint. This pairs each corner on the outline of a road
+// piece (MMP slot 0) with the nearest corner of another piece, where each is the other's
+// nearest and they are within reach units, and notes for both the shift to the point half
+// way between (Track::welds).
+void weld_road_joints(Track& track, double reach = 48.0);
 
 // Loads MAPn.UNR/.MMP/.MLB/.COL from the given graphics archive (e.g. GFX/MAP2L.DAT).
 std::optional<Track> load_track(const std::string& dat_path, const std::string& name);
