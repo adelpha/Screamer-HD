@@ -1377,7 +1377,10 @@ void Menu::update(const MenuKeys& keys, float dt) {
     // frontend_run ends: the intro demo again
     if (mode == 0) {
         idle_ += dt;
-        if (30.0f < idle_) want_demo = true;
+        if (30.0f < idle_) {
+            want_demo = true;
+            idle_ = 0;  // (the menu is kept while the demo runs: the next wait starts afresh)
+        }
     }
     // frontend_update_page
     switch (mode) {

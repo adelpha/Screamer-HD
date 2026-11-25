@@ -1797,6 +1797,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     // frontend_run ends after 30 idle seconds: the intro demo again
                     running = false;
                     shared.to_demo = true;
+                    menu->want_demo = false;  // (taken: back in the menu, the 30 seconds start again)
                     if (!shared.choice_path.empty()) menu->save_choice().save(shared.choice_path);
                 }
                 if (menu->race) {
