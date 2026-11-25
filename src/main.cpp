@@ -730,6 +730,12 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         }
         menu = &*shared.menu;
         menu->quit = false;
+        // frontend_load, back from a race: the main page, nothing to go back to (Esc there
+        // quits); a records page replay goes back to its page
+        if (shared.race && shared.race->replay.empty()) {
+            menu->page = 0;
+            menu->page_stack.clear();
+        }
         if (!shared.outcomes.empty() && shared.race) {
             for (const auto& o : shared.outcomes) {
                 std::error_code ec;
