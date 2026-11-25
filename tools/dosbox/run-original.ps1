@@ -59,6 +59,8 @@ Get-ChildItem $OutDir -File -ErrorAction SilentlyContinue | Remove-Item -Force
 
 # The CD image is optional (CD audio + any data read from disc).
 $cue = Get-ChildItem $GameDir -Filter *.cue -ErrorAction SilentlyContinue | Select-Object -First 1
+# A copy of the game (-GameDir) without the disc image uses the original's (mounted read-only).
+if (-not $cue) { $cue = Get-ChildItem (Join-Path $root 'SCREAMER') -Filter *.cue -ErrorAction SilentlyContinue | Select-Object -First 1 }
 
 $mapper = Join-Path $OutDir 'harness.map'
 @'

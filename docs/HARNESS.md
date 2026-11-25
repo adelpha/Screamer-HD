@@ -36,7 +36,9 @@ no manual steps.
 | `--camera X,Y,Z,YAW,PITCH[,ROLL]` | Camera for `--scene track` in game units (angles 0..2047). Default: the first placement. `48459,196,7124,472,2005,0` is the intro race at the start gate. |
 | `--render-size WxH` | Framebuffer size for the 3D scene (default 320x200), e.g. `1280x800`. |
 | `--threads N` | Threads that fill the 3D view (default: one per CPU thread). The picture is the same for any number. |
-| `--perf` | Print the average and worst time the 3D view took to draw, at exit. |
+| `--perf` | Profile the main loop (core/profiler.h): pictures and game steps per second, and the time per picture in each part (events, game step, blending, 3D geometry, 3D fill, HUD, texture upload, present), every 5 seconds and at exit. |
+| `--view-distance X` | How far the 3D view reaches, in multiples of the original's far clip on HI detail (43,808 units); the last quarter fades out in a 4x4 ordered dither. Default 2; 0 draws everything. In a race F9 / Shift+F9 step through 1, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8. |
+| `--tween-test` | Headless: one tick per loop, so every other picture is drawn between game steps (checks the blending; with `--perf`, measures the cost per picture). `--capture-from N` starts `--capture-every` at frame N. |
 | `--lod` | Draw distant objects in the original's simpler versions (from 4000/7000 units, cars from 12000/16000). Off by default: full detail everywhere. |
 | `--reversed` | Drive the track the other way (the menu's tracks 7-12): racing lines and the rest from `DATA/MAPnI.DAT`. |
 | `--race-options N` | The cheats' `g_race_options`: 1 / 2 the other obstacles (MONTY / JOINT), 4 the clock stops (CLOCK), 0x10 mirror world (MIRRO), 0x20 upside down (UPDOW). In the menus the cheats are typed as words. |
@@ -56,7 +58,8 @@ no manual steps.
 | `--record-audio FILE.wav` | Write the run's sound (effects, announcer and CD music) to a 44.1 kHz WAV, one 1/50 s block per frame, so headless runs give the same file every time. |
 | `--music-source cd\|midi\|auto` | Music from the CD image, or the MIDI versions in DATA/MUSIC.DAT on the built-in FM synth (auto: CD when the image is found). |
 | `--audio-log` | Log every sample that starts, with its frame: `frame 300: sound 19 go`. |
-| `--mute`, `--sfx-volume N`, `--music-volume N`, `--no-music`, `--no-speech`, `--audio-filter linear\|nearest` | Sound options (volumes 0..100). The music is the CD audio, read from the CD image in the game directory (`SCREAM.cue`/`.bin`, or `SCREAM.DAT`/`SCREAM.gog` as the Steam and GOG releases name them). |
+| `--mute`, `--sfx-volume N`, `--music-volume N`, `--no-music`, `--no-speech`, `--audio-filter linear\|nearest` | Sound options (volumes 0..100: the car-stereo panel's FX and CD/MU levels). The music is the CD audio, read from the CD image in the game directory (`SCREAM.cue`/`.bin`, or `SCREAM.DAT`/`SCREAM.gog` as the Steam and GOG releases name them). |
+| `--volumes A,E,F,M` | The OPTIONS > SOUND settings for this run, 0..10 each: announcer, the player's engine, all other effects (CPU engines, skids, crashes, scenery, menu clicks) and music. Without it they come from `CHOICE.DAT`, which keeps them after the original's 0x460 bytes (`SCRX`, a count, then the values); the original's own file gives 10 for all. |
 
 ## Test types
 

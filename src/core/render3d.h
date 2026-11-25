@@ -31,6 +31,8 @@ struct Camera {
     float center_y = 130.0f;              // projection centre row at 200 lines (g_render_camera:
                                           // x 160, y 130 for the 320x200 race view)
     float far_distance = 300000.0f;
+    float far_depth = 1e30f;  // view distance: nothing further away (camera depth) is drawn
+    float fade_depth = 1e30f; // from here to far_depth, pixels fade out in an ordered dither (ours)
 };
 
 struct RenderStats {
@@ -72,6 +74,9 @@ struct Pose {
     // whole objects and never depth-tests, so a car's shadow (a flat quad tilted with the car)
     // always lies on the road; a bias keeps it from sinking into slopes here.
     float depth_bias = 0;
+    // Turned to face the camera whatever its angles (the tyre smoke: ours; the original's
+    // puffs keep the angles they were made with and look thin from the side).
+    bool billboard = false;
     // Per-part placements for this frame (cars: lean, suspension, steering, wheel roll), by
     // part index; parts beyond the end or without flags keep the file's.
     const std::vector<PartPose>* parts = nullptr;
@@ -115,6 +120,9 @@ public:
     void set_lod(bool on) { lod_ = on; }
     // Threads that fill pixels (<= 0: one per hardware thread, the default).
     void set_threads(int threads);
+    WorkerPool* pool() { return pool_.get(); }
+    // Skipped frames (a game step that is not shown): begin .. finish do nothing.
+    void set_skip(bool skip) { skip_ = skip; }  // the fill threads, for other per-pixel work
     void set_anim_counter(int32_t counter) { anim_counter_ = counter; }  // SimClock::anim_counter()
 
     // Clears, draws the background panorama and every placement of the track.
@@ -168,30 +176,49 @@ private:
         uint32_t fill;
     };
     // Clips, projects and queues the polygon's triangles.
-    void draw_polygon(const ClipVert* poly, size_t count, const Material* mat, uint8_t face_color, int32_t animation,
-                      int32_t reflection, float depth_bias = 0);
+    // What drawing produces before the pixels are filled: one set per thread while the
+    // placements are drawn, joined in order afterwards.
+    struct Geo {
+        std::vector<Deferred> deferred;
+        std::vector<ClipVert> deferred_verts;
+        std::vector<Fill> fills;
+        std::vector<Tri> tris;
+        std::vector<float> wx, wy, wz;
+        std::vector<std::array<int, 2>> env_uv;
+        float edge_slack = 0;  // for the polygons of the model being drawn
+        RenderStats stats{};
+        void clear();
+        void append(const Geo& o);
+    };
+    void draw_model_into(Geo& g, const Model& model, const Pose& pose, const std::vector<bool>* part_mask);
+    void draw_polygon(Geo& g, const ClipVert* poly, size_t count, const Material* mat, uint8_t face_color,
+                      int32_t animation, int32_t reflection, float depth_bias = 0);
     bool sphere_visible(float x, float y, float z, float r) const;
-    void fill_rows(int y0, int y1);
+    void fill_rows(int y0, int y1, const std::vector<uint32_t>& tris);
+    enum class Kind { Darken, Flat, Library, Texels, TexturedPow2, TransparentPow2, TranslucentPow2 };
+    struct Span;
+    template <Kind K>
+    void span(Span& s, const Fill& fl, const MaterialLibrary* lib, bool bias) const;
 
     const Track* track_ = nullptr;
     const Camera* cam_ = nullptr;
     Framebuffer* fb_ = nullptr;
     Mat3 view_{};
-    RenderStats stats_{};
     std::vector<float> depth_;  // 1/z per pixel
-    std::vector<Deferred> deferred_;
-    std::vector<ClipVert> deferred_verts_;
-    std::vector<Fill> fills_;
-    std::vector<Tri> tris_;
+    Geo geo_;
+    std::vector<Geo> chunk_geo_;
+    std::vector<std::vector<uint32_t>> band_tris_;  // per band of rows, the triangles reaching it (in order)
+    std::vector<int> row_band_;
     // view frustum planes in camera space (unit normals, offsets), for sphere_visible
     std::array<std::array<float, 4>, 4> planes_{};
     int plane_count_ = 0;
-    float edge_slack_ = 0;  // for the polygons of the model being drawn
     std::unique_ptr<WorkerPool> pool_;
-    std::vector<float> wx_, wy_, wz_;
-    std::vector<std::array<int, 2>> env_uv_;
     bool textures_ = true;
     bool lod_ = false;
+    bool skip_ = false;
+    bool fade_ = false;            // the view-distance fade is on this frame
+    float fade_iz_ = 0;            // 1 / (128 + fade_depth): pixels with a smaller 1/z are in the fade
+    float fade_start_ = 0, fade_range_ = 1;
     int32_t anim_counter_ = 0;
 };
 

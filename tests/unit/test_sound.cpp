@@ -117,6 +117,41 @@ TEST_CASE("sound: the mixer plays samples at their pitch and loops them") {
     CHECK(m.play(1) == -1);
 }
 
+TEST_CASE("sound: volume groups scale their voices and leave the others alone") {
+    const scr::SoundBank bank = test_bank();
+    scr::Mixer m;
+    m.smooth = false;
+    m.set_bank(&bank);
+    std::vector<float> buf(2);
+    auto level = [&](scr::SoundGroup g) {
+        m.stop_all();
+        const int h = m.play(1, g);  // the square wave's first byte: 255
+        m.mix(buf.data(), 1, scr::kSampleRate);
+        m.stop(h);
+        return buf[0];
+    };
+    const float full = level(scr::SoundGroup::Effects);
+    REQUIRE(full > 0.1f);
+    m.set_group_volume(scr::SoundGroup::Engine, 0.5f);
+    CHECK(std::fabs(level(scr::SoundGroup::Engine) - full * 0.5f) < 1e-6f);
+    CHECK(level(scr::SoundGroup::Effects) == full);
+    CHECK(level(scr::SoundGroup::Announcer) == full);
+    // silent, but it still plays on and ends when it would (the announcer waits for its lines)
+    m.set_group_volume(scr::SoundGroup::Announcer, 0.0f);
+    CHECK(level(scr::SoundGroup::Announcer) == 0.0f);
+    const int h = m.play(0, scr::SoundGroup::Announcer);
+    CHECK(frames_until_done(m, h) == 100);
+    // sfx_play_continue keeps the group
+    m.stop_all();
+    const int e = m.play(1, scr::SoundGroup::Announcer);
+    m.continue_with(e, 0);
+    for (int i = 0; i < 12; ++i) m.mix(buf.data(), 1, scr::kSampleRate);
+    CHECK(m.sample_of(e) == 0);
+    CHECK(buf[0] == 0.0f);
+    m.set_group_volume(scr::SoundGroup::Music, 2.0f);  // clamped to 0..1
+    CHECK(m.group_volume[size_t(scr::SoundGroup::Music)].load() == 1.0f);
+}
+
 TEST_CASE("sound: cue sheets of the CD image") {
     const auto dir = std::filesystem::temp_directory_path() / "scr_cd_test";
     std::filesystem::create_directories(dir);
@@ -214,6 +249,25 @@ TEST_CASE("sound: a race on MAP1 - engines, countdown and announcer") {
     scr::RaceAudio audio;
     audio.start(mixer, bank, race, 0, 0);
     CHECK(mixer.active_voices() == 1);  // the player's engine
+    {
+        // it is the ENGINE volume's, nothing else's
+        std::vector<float> b(2 * 441);
+        auto loud = [&] {
+            mixer.mix(b.data(), 441, 22050);
+            float m = 0;
+            for (float v : b) m = std::max(m, std::fabs(v));
+            return m;
+        };
+        CHECK(loud() > 0.0f);
+        mixer.set_group_volume(scr::SoundGroup::Announcer, 0.0f);
+        mixer.set_group_volume(scr::SoundGroup::Effects, 0.0f);
+        mixer.set_group_volume(scr::SoundGroup::Music, 0.0f);
+        CHECK(loud() > 0.0f);
+        mixer.set_group_volume(scr::SoundGroup::Engine, 0.0f);
+        CHECK(loud() == 0.0f);
+        CHECK(mixer.active_voices() == 1);  // still running
+        for (int g = 0; g < scr::kSoundGroups; ++g) mixer.set_group_volume(scr::SoundGroup(g), 1.0f);
+    }
     scr::SimClock clock;
     scr::CarInput in;
     in.accel = 1023;
@@ -235,6 +289,22 @@ TEST_CASE("sound: a race on MAP1 - engines, countdown and announcer") {
     run(1);
     // "three" straight away, the engine, and three CPU engines (the nearest).
     CHECK(mixer.active_voices() == 1 + 1 + 3);
+    // "three" is the ANNOUNCER volume's (the CPU engines EFFECTS')
+    mixer.set_group_volume(scr::SoundGroup::Engine, 0.0f);
+    mixer.set_group_volume(scr::SoundGroup::Effects, 0.0f);
+    {
+        std::vector<float> b(2 * 2205);  // 0.1 s of "three"
+        mixer.mix(b.data(), 2205, 22050);
+        float m = 0;
+        for (float v : b) m = std::max(m, std::fabs(v));
+        CHECK(m > 0.01f);
+        mixer.set_group_volume(scr::SoundGroup::Announcer, 0.0f);
+        mixer.mix(b.data(), 2205, 22050);
+        m = 0;
+        for (float v : b) m = std::max(m, std::fabs(v));
+        CHECK(m == 0.0f);
+    }
+    for (int g = 0; g < scr::kSoundGroups; ++g) mixer.set_group_volume(scr::SoundGroup(g), 1.0f);
     run(400);  // past "go"
     CHECK(race.started);
     run(300);

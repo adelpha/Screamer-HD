@@ -20,6 +20,7 @@ add_library(screamer_core STATIC
   core/render3d.cpp
   core/worker_pool.cpp
   core/tv_camera.cpp
+  core/profiler.cpp
   core/attract.cpp
   core/replay.cpp
   core/sim_clock.cpp

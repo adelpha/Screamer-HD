@@ -35,18 +35,31 @@ std::vector<std::string> text_lines(const Archive& a, const std::string& name) {
     return out;
 }
 
+// Ours: text indices from kOwnText are kOwnTexts, not MENU.TXT; the actions open the SOUND
+// page and change a volume (Enter or right: up, wrapping to 0; left: down).
+constexpr int kOwnText = 1000, kActionSound = 2000, kActionVolume = 2001;
+constexpr int kSoundPage = 7;
+
 // The page tables at 0x102de4 (text index, action, value, max).
 std::vector<std::vector<Menu::Entry>> default_pages() {
     return {
         {{0, 0, 0, 0}, {1, 1, 0, 0}, {2, 2, 0, 0}, {3, 3, 0, 0}, {4, 4, 0, 0}},
-        {{5, 1234, 2, 2}, {8, 1234, 1, 2}, {13, 1234, 0, 3}, {17, 1234, 1, 1}, {19, 1234, 1, 1}, {21, 21, 0, 0}},
+        // (SOUND is ours: the volume page)
+        {{5, 1234, 2, 2}, {8, 1234, 1, 2}, {13, 1234, 0, 3}, {17, 1234, 1, 1}, {19, 1234, 1, 1},
+         {kOwnText, kActionSound, 0, 0}, {21, 21, 0, 0}},
         {{3, 3, 0, 0}, {23, 23, 0, 0}},
         {{24, 24, 0, 0}, {25, 25, 0, 0}},
         {{28, 28, 0, 0}, {29, 29, 0, 0}, {30, 30, 0, 0}},
         {{26, 26, 0, 0}, {27, 27, 0, 0}},
         {{31, 31, 0, 0}, {32, 31, 0, 1}, {33, 31, 0, 2}, {34, 31, 0, 3}, {35, 31, 0, 4}, {36, 31, 0, 5}},
+        // 7 (ours) SOUND: the four volumes
+        {{kOwnText + 1, kActionVolume, kVolumeMax, kVolumeMax}, {kOwnText + 2, kActionVolume, kVolumeMax, kVolumeMax},
+         {kOwnText + 3, kActionVolume, kVolumeMax, kVolumeMax}, {kOwnText + 4, kActionVolume, kVolumeMax, kVolumeMax}},
     };
 }
+
+// The lines of our own pages (MENU.TXT has none for them).
+const char* const kOwnTexts[] = {"SOUND", "ANNOUNCER", "ENGINE", "EFFECTS", "MUSIC"};
 
 // Fly-in variants (0x102218): start x, y, z and the spiral radii.
 constexpr int kVariants[8][5] = {
@@ -192,6 +205,7 @@ enum : int { kChampPos = 0, kChampTrack = 1, kChampTime = 2, kChampScore = 3, kC
 
 namespace {
 constexpr size_t kLapRecords = 0x6c, kTotalRecords = 0x24c, kRecordStride = 0x50;
+constexpr char kExtMagic[4] = {'S', 'C', 'R', 'X'};  // our settings after the original's 0x460 bytes
 }
 
 ChoiceFile::ChoiceFile() {
@@ -235,16 +249,34 @@ bool ChoiceFile::load(const std::string& path) {
     if (!f) return false;
     std::array<uint8_t, 0x460> buf{};
     const size_t n = std::fread(buf.data(), 1, buf.size(), f);
-    std::fclose(f);
-    if (n != buf.size()) return false;
+    if (n != buf.size()) {
+        std::fclose(f);
+        return false;
+    }
     raw = buf;
+    // our settings after the original's bytes
+    volume.fill(kVolumeMax);
+    char magic[4]{};
+    int32_t count = 0;
+    if (std::fread(magic, 1, 4, f) == 4 && std::memcmp(magic, kExtMagic, 4) == 0 &&
+        std::fread(&count, 4, 1, f) == 1 && count > 0) {
+        for (size_t i = 0; i < size_t(count) && i < volume.size(); ++i) {
+            int32_t v = 0;
+            if (std::fread(&v, 4, 1, f) != 1) break;
+            volume[i] = std::clamp(v, 0, kVolumeMax);
+        }
+    }
+    std::fclose(f);
     return true;
 }
 
 bool ChoiceFile::save(const std::string& path) const {
     std::FILE* f = std::fopen(path.c_str(), "wb");
     if (!f) return false;
-    const bool ok = std::fwrite(raw.data(), 1, raw.size(), f) == raw.size();
+    bool ok = std::fwrite(raw.data(), 1, raw.size(), f) == raw.size();
+    const int32_t count = int32_t(volume.size());
+    ok = ok && std::fwrite(kExtMagic, 1, 4, f) == 4 && std::fwrite(&count, 4, 1, f) == 1 &&
+         std::fwrite(volume.data(), 4, volume.size(), f) == volume.size();
     std::fclose(f);
     return ok;
 }
@@ -286,6 +318,7 @@ void Menu::load_choice(const ChoiceFile& c) {
     pages[1][2].value = std::clamp(c.get(0x014), 0, 3);
     pages[1][3].value = c.get(0x438) ? 1 : 0;
     pages[1][4].value = c.get(0x43c) ? 1 : 0;
+    for (size_t i = 0; i < c.volume.size(); ++i) pages[kSoundPage][i].value = std::clamp(c.volume[i], 0, kVolumeMax);
     cars_unlocked = std::clamp(c.get(0x42c), 0, 2);
     tracks_unlocked = std::clamp(c.get(0x454), 0, 9);
     tracks_seen_ = c.get(0x458);
@@ -311,6 +344,8 @@ ChoiceFile Menu::save_choice() const {
     c.set(0x014, pages[1][2].value);
     c.set(0x438, pages[1][3].value);
     c.set(0x43c, pages[1][4].value);
+    const auto v = volumes();
+    std::copy(v.begin(), v.end(), c.volume.begin());
     c.set(0x45c, pages[1][1].max);
     c.set(0x42c, cars_unlocked);
     c.set(0x454, tracks_unlocked);
@@ -579,6 +614,27 @@ void Menu::setup_name_page() {
     }
 }
 
+std::string Menu::entry_text(const Entry& e) const {
+    if (e.text >= kOwnText) {
+        const size_t i = size_t(e.text - kOwnText);
+        std::string s = i < std::size(kOwnTexts) ? kOwnTexts[i] : "";
+        if (e.action == kActionVolume) s += " " + std::to_string(e.value);
+        return s;
+    }
+    const int t = e.text + e.value;
+    return size_t(t) < a_.texts.size() ? a_.texts[size_t(t)] : std::string();
+}
+
+std::array<int, 4> Menu::volumes() const {
+    std::array<int, 4> v{};
+    for (size_t i = 0; i < v.size(); ++i) v[i] = pages[kSoundPage][i].value;
+    return v;
+}
+
+void Menu::set_volumes(const std::array<int, 4>& v) {
+    for (size_t i = 0; i < v.size(); ++i) pages[kSoundPage][i].value = std::clamp(v[i], 0, kVolumeMax);
+}
+
 void Menu::draw_text(const std::string& s) {
     // menu_item_draw_text: letters 0x280 apart, centred on the page, rows 0x180 apart.
     int x;
@@ -588,7 +644,7 @@ void Menu::draw_text(const std::string& s) {
         const int len = int(s.size());
         x = 0x1200 - int(unsigned((len - 1) * -0x280 + 0x2400) >> 1);
     }
-    const int y = block_.ypos * -0x180 + 0x820;
+    const int y = block_.ypos * -0x180 + 0x820 + block_.y_adjust;
     size_t slot = 0;
     for (unsigned char c : s) {
         if (c < 0x20 || c > 0x7f) return;
@@ -720,6 +776,12 @@ void Menu::build_page_items(float dt) {
         for (Item& it : items) it.ch = -1;
         block_.row = 0;
         block_.ypos = 8 - int(entries.size());
+        block_.y_adjust = 0;
+        // ours: more than the original's six lines (OPTIONS with SOUND) share the six lines'
+        // height, closer together, so the top one stays clear of the logo
+        const int n = int(entries.size());
+        const int squeeze = n > 6 ? 0x300 - 0x300 * 5 / (n - 1) : 0;
+        if (n > 6) block_.ypos = 2;
         block_.centred = 1;
         block_.phase = 0;
         block_.x0 = kVariants[variant_][0];
@@ -730,11 +792,12 @@ void Menu::build_page_items(float dt) {
         block_.sy = kVariants[variant_][4];
         for (size_t i = 0; i < entries.size(); ++i) {
             block_.turned = int(i) != selected[size_t(page)];
-            const int t = entries[i].text + entries[i].value;
-            draw_text(size_t(t) < a_.texts.size() ? a_.texts[size_t(t)] : std::string());
+            draw_text(entry_text(entries[i]));
             ++block_.row;
             block_.ypos += 2;
+            block_.y_adjust += squeeze;
         }
+        block_.y_adjust = 0;
         if (++variant_ > 7) variant_ = 0;
     }
     // menu_hide_page_items: the selected line faces front
@@ -1108,6 +1171,10 @@ void Menu::activate() {
     case 2: push(4); break;   // special modes
     case 4: push(1); break;   // options
     case 21: push(6); break;  // view records
+    case kActionSound: push(kSoundPage); break;  // ours: the volumes
+    case kActionVolume:
+        change_volume(sel, 1);
+        break;
     case 31:                  // a track's records
         init_state(6);
         sounds.push_back(3);
@@ -1123,6 +1190,17 @@ void Menu::activate() {
         break;
     default: break;
     }
+}
+
+void Menu::change_volume(int sel, int step) {
+    // like menu_cycle_option: the line flips over to its new text (up past the top wraps to 0)
+    if (flipping_ != 0) return;
+    Entry& e = pages[size_t(page)][size_t(sel)];
+    e.value += step;
+    if (e.value > e.max) e.value = 0;
+    if (e.value < 0) e.value = 0;
+    flipping_ = 1;
+    sounds.push_back(2);
 }
 
 void Menu::handle_keys(const MenuKeys& k) {
@@ -1216,7 +1294,16 @@ void Menu::handle_keys(const MenuKeys& k) {
         return;
     }
     // left / right
-    if (mode == 2 || mode == 3) {
+    if (mode == 0) {
+        // ours: a volume of the SOUND page goes down / up (no wrapping)
+        const int sel = selected[size_t(page)];
+        const auto& entries = pages[size_t(page)];
+        if (sel >= 0 && size_t(sel) < entries.size() && entries[size_t(sel)].action == kActionVolume) {
+            last_key_ = key;
+            const Entry& e = entries[size_t(sel)];
+            if (key == 4 ? e.value > 0 : e.value < e.max) change_volume(sel, key == 4 ? -1 : 1);
+        }
+    } else if (mode == 2 || mode == 3) {
         const bool left = key == 4;
         const int step = mode == 2 ? 4000 : 40000;
         int& sel = mode == 2 ? car : track;

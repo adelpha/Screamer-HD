@@ -62,14 +62,16 @@ set_tests_properties(smoke.headless_run PROPERTIES LABELS "smoke" PASS_REGULAR_E
 # --- Car physics against recordings of the original (tools/dosbox/record-race.ps1) ---
 # The recordings stay in artifacts/traces (git-ignored); a test exists only when its recording
 # does. Allowed differences: bumps from CPU cars (not ported yet) and +-1 ground height on slopes.
-foreach(trace accel:1 steer:0 wall:0 skid:0 fast:4)
+# Bit for bit (--exact): only frames where a CPU car bumps the player (not in these
+# player-only recordings) may differ.
+foreach(trace accel:1 steer:0 wall:0 skid:0 fast:2)
   string(REPLACE ":" ";" parts ${trace})
   list(GET parts 0 name)
   list(GET parts 1 allowed)
   set(file ${CMAKE_SOURCE_DIR}/artifacts/traces/${name}.trace)
   if(EXISTS ${file} AND EXISTS ${SCREAMER_DATA_DIR}/GFX/MAP1H.DAT)
     add_test(NAME physics.${name}
-      COMMAND tracecmp ${file} ${SCREAMER_DATA_DIR}/GFX/MAP1H.DAT MAP1 --max-diff ${allowed})
+      COMMAND tracecmp ${file} ${SCREAMER_DATA_DIR}/GFX/MAP1H.DAT MAP1 --exact --max-diff ${allowed})
     set_tests_properties(physics.${name} PROPERTIES LABELS "physics")
   endif()
 endforeach()
@@ -78,8 +80,29 @@ foreach(name opp_start opp_300 opp_700 tunnel)
   set(file ${CMAKE_SOURCE_DIR}/artifacts/traces/${name}.trace)
   if(EXISTS ${file} AND EXISTS ${SCREAMER_DATA_DIR}/GFX/MAP1H.DAT)
     add_test(NAME physics.${name}
-      COMMAND tracecmp ${file} ${SCREAMER_DATA_DIR}/GFX/MAP1H.DAT MAP1 --data ${SCREAMER_DATA_DIR}/DATA/MAP1.DAT)
+      COMMAND tracecmp ${file} ${SCREAMER_DATA_DIR}/GFX/MAP1H.DAT MAP1 --data ${SCREAMER_DATA_DIR}/DATA/MAP1.DAT --exact)
     set_tests_properties(physics.${name} PROPERTIES LABELS "physics")
+  endif()
+endforeach()
+
+# The original's replays (the user's REPLAYS folder) played in ours against recordings of the
+# original playing them (tools/dosbox/record-replay.ps1): positions of the player and every
+# CPU car, bit for bit, every frame. name:replay:track:offset:frames
+foreach(spec replay01:REPLAY01:MAP1:0:5640 replay11a:REPLAY11:MAP2:0:7810 replay11b:REPLAY11:MAP2:5400:7810)
+  string(REPLACE ":" ";" parts ${spec})
+  list(GET parts 0 name)
+  list(GET parts 1 rpl)
+  list(GET parts 2 track)
+  list(GET parts 3 offset)
+  list(GET parts 4 frames)
+  set(file ${CMAKE_SOURCE_DIR}/artifacts/traces/${name}.trace)
+  if(EXISTS ${file} AND EXISTS ${SCREAMER_DATA_DIR}/REPLAYS/${rpl}.RPL)
+    add_test(NAME physics.${name}
+      COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:screamer> -DTRACECMP=$<TARGET_FILE:tracecmp>
+        -DDATA_DIR=${SCREAMER_DATA_DIR} -DRPL=${SCREAMER_DATA_DIR}/REPLAYS/${rpl}.RPL -DTRACK=${track}
+        -DTRACE=${file} -DOFFSET=${offset} -DFRAMES=${frames} -DOUTPUT=${TEST_OUT_DIR}/${name}.positions
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/replay_positions.cmake)
+    set_tests_properties(physics.${name} PROPERTIES LABELS "physics" TIMEOUT 900)
   endif()
 endforeach()
 

@@ -21,6 +21,7 @@
 // Mixer stands in for the SOS driver: voices with a sample, pitch, volume, pan and loop, mixed
 // in software. It has no SDL dependency; the frontend pulls stereo float frames from it.
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <functional>
@@ -66,6 +67,15 @@ public:
     virtual void mix(float* out, int frames, int rate, float gain) = 0;
 };
 
+// The volume groups of the options menu (ours): every voice belongs to one, the music to the last.
+enum class SoundGroup : uint8_t {
+    Announcer,  // the SPFX lines
+    Engine,     // the player's engine
+    Effects,    // everything else: CPU engines, skids, crashes, scenery, the menu's sounds
+    Music,      // CD audio or the MIDI tunes
+};
+constexpr int kSoundGroups = 4;
+
 class Mixer {
 public:
     static constexpr int kVoices = 16;
@@ -73,7 +83,8 @@ public:
     void set_bank(const SoundBank* bank);
 
     // sfx_play: starts a sample with its SOUND_FX settings; returns a handle, -1 if none free.
-    int play(int sample);
+    // The group only picks the volume setting it is mixed at (sfx_play_continue keeps it).
+    int play(int sample, SoundGroup group = SoundGroup::Effects);
     // sfx_stop: returns -1 (what the game stores back into its handle).
     int stop(int handle);
     void stop_all();
@@ -87,7 +98,12 @@ public:
     int active_voices() const;
 
     // Options: master volumes 0..1, linear interpolation instead of the driver's nearest sample.
+    // sfx_volume and music_volume are the race's car-stereo panel (and photo mode's silence);
+    // group_volume the options menu's settings, on top of them. A voice at volume 0 still
+    // plays on (and ends when it would), it is only not heard.
     std::atomic<float> sfx_volume{1.0f}, music_volume{0.7f};
+    std::array<std::atomic<float>, kSoundGroups> group_volume{1.0f, 1.0f, 1.0f, 1.0f};
+    void set_group_volume(SoundGroup g, float v) { group_volume[size_t(g)] = std::clamp(v, 0.0f, 1.0f); }
     std::atomic<bool> smooth{true};
     void set_music(std::shared_ptr<AudioSource> music);
     // Called on every play (sample index), for logging.
@@ -106,6 +122,7 @@ private:
         bool use_pan = false;
         int loops_left = 0;    // -1 forever
         bool segment = false;  // loops the loop_start..loop_leng segment
+        SoundGroup group = SoundGroup::Effects;
     };
     Voice* voice(int handle);
     const Voice* voice(int handle) const;

@@ -9,6 +9,7 @@
 
 #include "core/animations.h"
 #include "core/attract.h"
+#include "core/profiler.h"
 #include "core/replay.h"
 #include "core/tv_camera.h"
 #include "core/archive.h"
@@ -75,8 +76,12 @@ struct Options {
     bool reversed = false;          // tracks 7-12: the track driven the other way (DATA/MAPnI.DAT)
     bool attract = false;           // the intro demo (attract_mode_run): CPU cars, TV camera, credits
     std::string replay_file;        // play this .RPL back (the race runs again from its inputs)
+    float view_distance = 2.0f;     // --view-distance: times the original's far clip (43,808); 0: no limit
+    uint64_t capture_from = 0;      // --capture-from: --capture-every starts at this frame
+    bool tween_test = false;        // --tween-test: headless, one tick a loop, so every other picture is drawn between steps
     std::string save_dir;           // --save-dir: our saves here instead of the pref path
     std::string record_file;        // --record: save the race's replay here when the run ends
+    std::string positions_file;     // --positions: player and CPU positions every frame (vs tools/dosbox/record-replay.ps1)
     bool instant_replay = false;    // the replay right after a single race: PLAY AGAIN? at its end
     bool moving_scenery = true;     // track_load_animations runs above LOW detail (DAT_0010cf54)
     int race_options = 0;           // g_race_options: the cheats (obstacle column, clock, mirror, upside down)
@@ -91,6 +96,7 @@ struct Options {
     int view = 2;                   // --scene drive: starting view 0..3 (F1..F4)
     bool mute = false;              // no audio device
     int sfx_volume = 100, music_volume = 70;  // 0..100
+    std::string volumes;            // --volumes A,E,F,M: the SOUND page's settings for this run
     bool music = true, speech = true;
     std::string music_source = "auto";  // cd | midi | auto (CD audio when the image is there)
     bool audio_smooth = true;       // linear interpolation (false: the driver's nearest sample)
@@ -145,6 +151,8 @@ void print_usage() {
         "  --mute               no sound\n"
         "  --sfx-volume N       sound effects volume 0..100 (default 100)\n"
         "  --music-volume N     CD music volume 0..100 (default 70)\n"
+        "  --volumes A,E,F,M    the SOUND options (0..10 each): announcer, your engine, other effects, music\n"
+        "                       (default: as saved, else 10)\n"
         "  --no-music           no CD music (from the CD image: SCREAM.cue/.bin, or SCREAM.DAT/.gog as Steam and GOG ship it)\n"
         "  --no-speech          no announcer\n"
         "  --music-source SRC   cd, midi (the FM synth versions in DATA/MUSIC.DAT) or auto (default: CD if found)\n"
@@ -182,6 +190,57 @@ bool write_wav(const std::string& path, const std::vector<float>& stereo, int ra
     }
     std::fclose(f);
     return true;
+}
+
+// Drawing between game steps: the picture is blended from the previous step's state to the
+// current one (rendering only; the game itself always runs in whole 1/50 s steps).
+float tween_angle(float a, float b, float t, float turn) {
+    float d = std::fmod(b - a, turn);
+    if (d > turn * 0.5f) d -= turn;
+    if (d < -turn * 0.5f) d += turn;
+    return a + d * t;
+}
+int tween_int(int a, int b, float t) { return a + int(std::lround(double(b - a) * double(t))); }
+constexpr float kTwoPiF = 6.2831853071795862f;
+void tween_car(scr::Car& out, const scr::Car& a, const scr::Car& b, float t) {
+    out = b;
+    if (std::abs(b.pos_x - a.pos_x) + std::abs(b.pos_z - a.pos_z) > 8000) return;  // put back on the track
+    out.pos_x = tween_int(a.pos_x, b.pos_x, t);
+    out.pos_y = tween_int(a.pos_y, b.pos_y, t);
+    out.pos_z = tween_int(a.pos_z, b.pos_z, t);
+    out.ground_y = tween_int(a.ground_y, b.ground_y, t);
+    out.body_ofs_y = tween_int(a.body_ofs_y, b.body_ofs_y, t);
+    out.pitch = tween_angle(a.pitch, b.pitch, t, kTwoPiF);
+    out.yaw = tween_angle(a.yaw, b.yaw, t, kTwoPiF);
+    out.roll = tween_angle(a.roll, b.roll, t, kTwoPiF);
+    out.drift_angle = tween_angle(a.drift_angle, b.drift_angle, t, kTwoPiF);
+    out.body_pitch_ofs = tween_angle(a.body_pitch_ofs, b.body_pitch_ofs, t, kTwoPiF);
+    out.body_roll_ofs = tween_angle(a.body_roll_ofs, b.body_roll_ofs, t, kTwoPiF);
+}
+void tween_opponent(scr::Opponent& out, const scr::Opponent& a, const scr::Opponent& b, float t) {
+    out = b;
+    if (std::abs(b.pos_x - a.pos_x) + std::abs(b.pos_z - a.pos_z) > 8000) return;
+    out.pos_x = tween_int(a.pos_x, b.pos_x, t);
+    out.pos_y = tween_int(a.pos_y, b.pos_y, t);
+    out.pos_z = tween_int(a.pos_z, b.pos_z, t);
+    out.ground_y = tween_int(a.ground_y, b.ground_y, t);
+    out.pitch = tween_angle(a.pitch, b.pitch, t, kTwoPiF);
+    out.draw_yaw = tween_angle(a.draw_yaw, b.draw_yaw, t, kTwoPiF);
+    out.roll = tween_angle(a.roll, b.roll, t, kTwoPiF);
+}
+scr::Camera tween_camera(const scr::Camera& a, const scr::Camera& b, float t) {
+    scr::Camera c = b;
+    // a cut (another camera, a view switch with no blend): no blending across it
+    const float dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+    auto turn = [](float p, float q) { float d = std::fmod(std::fabs(q - p), 2048.0f); return std::min(d, 2048.0f - d); };
+    if (dx * dx + dy * dy + dz * dz > 5000.0f * 5000.0f || turn(a.yaw, b.yaw) > 256 || turn(a.pitch, b.pitch) > 256) return c;
+    c.x = a.x + dx * t;
+    c.y = a.y + dy * t;
+    c.z = a.z + dz * t;
+    c.yaw = std::fmod(tween_angle(a.yaw, b.yaw, t, 2048.0f) + 2048.0f, 2048.0f);
+    c.pitch = std::fmod(tween_angle(a.pitch, b.pitch, t, 2048.0f) + 2048.0f, 2048.0f);
+    c.roll = std::fmod(tween_angle(a.roll, b.roll, t, 2048.0f) + 2048.0f, 2048.0f);
+    return c;
 }
 
 // replay_load: the race a .RPL was recorded in (car, laps, level, mode, options)
@@ -223,6 +282,10 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--replay") o.replay_file = next("--replay");
         else if (a == "--record") o.record_file = next("--record");
         else if (a == "--save-dir") o.save_dir = next("--save-dir");
+        else if (a == "--tween-test") o.tween_test = true;
+        else if (a == "--view-distance") o.view_distance = float(std::atof(next("--view-distance")));
+        else if (a == "--capture-from") o.capture_from = std::strtoull(next("--capture-from"), nullptr, 10);
+        else if (a == "--positions") o.positions_file = next("--positions");
         else if (a == "--race-options") o.race_options = int(std::strtol(next("--race-options"), nullptr, 0));
         else if (a == "--camera") o.camera = next("--camera");
         else if (a == "--flat") o.flat = true;
@@ -234,6 +297,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--mute") o.mute = true;
         else if (a == "--sfx-volume") o.sfx_volume = std::clamp(std::atoi(next("--sfx-volume")), 0, 100);
         else if (a == "--music-volume") o.music_volume = std::clamp(std::atoi(next("--music-volume")), 0, 100);
+        else if (a == "--volumes") o.volumes = next("--volumes");
         else if (a == "--no-music") o.music = false;
         else if (a == "--no-speech") o.speech = false;
         else if (a == "--music-source") o.music_source = next("--music-source");
@@ -303,6 +367,8 @@ struct Shared {
     };
     std::vector<Outcome> outcomes;      // the races since the menu (PLAY AGAIN repeats it)
     std::string choice_path;            // our copy of CONFIG/CHOICE.DAT
+    // the SOUND page: announcer, the player's engine, other effects, music (0..kVolumeMax)
+    std::array<int, 4> volumes{scr::kVolumeMax, scr::kVolumeMax, scr::kVolumeMax, scr::kVolumeMax};
     bool back_to_menu = false;          // the race asks to return to the menu
     bool attract_done = false;          // the intro demo is over (a key, or the credits ended)
     bool to_demo = false;               // the menu was left alone: the intro demo again
@@ -324,8 +390,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     scr::TvCamera tv_camera;               // the intro demo's camera
     scr::Replay replay;                    // playing back (opt.replay_file) or recording
     size_t replay_pos = 0;
-    bool replay_views = false;             // F1-F4 pressed in a replay: the player's views
     const bool replaying = !opt.replay_file.empty() && replay.load(opt.replay_file);
+    std::FILE* positions = opt.positions_file.empty() || opt.scene != "drive" ? nullptr : std::fopen(opt.positions_file.c_str(), "wb");
     scr::AttractOverlay attract;           // the intro demo's logo and credits
     std::optional<std::string> gfx_path;  // GFX/MAPn?.DAT
     // Time attack: the ghost of the best lap (ghost_record_frame / ghost_update), kept as
@@ -489,6 +555,11 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     mixer.sfx_volume = float(opt.sfx_volume) / 100.0f;
     mixer.music_volume = float(opt.music_volume) / 100.0f;
     mixer.smooth = opt.audio_smooth;
+    auto apply_group_volumes = [&]() {
+        for (int g = 0; g < scr::kSoundGroups; ++g)
+            mixer.set_group_volume(scr::SoundGroup(g), float(shared.volumes[size_t(g)]) / float(scr::kVolumeMax));
+    };
+    apply_group_volumes();
     int radar = 1;                // M cycles 0 (off) .. 3 (DAT_0011d2a0)
     if (drive) {
         auto gen = scr::resolve_game_file(*game_dir, "DATA/GEN.DAT");
@@ -667,9 +738,16 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             if (!choice.load(shared.choice_path))
                 if (auto orig = scr::resolve_game_file(*game_dir, "CONFIG/CHOICE.DAT")) choice.load(*orig);
             shared.menu->load_choice(choice);
+            shared.menu->set_volumes(shared.volumes);  // as main read them (or --volumes)
         }
         menu = &*shared.menu;
         menu->quit = false;
+        // frontend_load, back from a race: the main page, nothing to go back to (Esc there
+        // quits); a records page replay goes back to its page
+        if (shared.race && shared.race->replay.empty()) {
+            menu->page = 0;
+            menu->page_stack.clear();
+        }
         if (!shared.outcomes.empty() && shared.race) {
             for (const auto& o : shared.outcomes) {
                 std::error_code ec;
@@ -750,6 +828,14 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
 
     uint64_t frame = 0;
     float end_timer = 0;
+    float view_note_timer = 0;  // F9: "VIEW DISTANCE 2X" shown for a moment
+    // Drawing between steps (interactive races): the state of the step before the last one.
+    bool have_prev = false;
+    scr::Camera prev_cam, step_cam;
+    scr::Car prev_player, draw_player;
+    std::vector<scr::Opponent> prev_opps, draw_opps;
+    std::vector<scr::Obstacle> prev_obstacles;
+    std::vector<scr::TrackAnimation> prev_anims;
     bool screenshot_pending = false;      // F12
     double perf_total = 0, perf_max = 0;  // --perf
     int perf_frames = 0;
@@ -818,12 +904,32 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     clock.add_ticks(scr::SimClock::kMinTicksPerFrame);  // draw frame 0 immediately
     int exit_code = 0;
 
+    // --perf: the loop's time by section (core/profiler.h), reported every 5 seconds
+    auto prof_last = std::chrono::steady_clock::now();
+    auto prof_report_at = prof_last + std::chrono::seconds(5);
+    auto mark = [&](scr::prof::Section sec) {
+        const auto t = std::chrono::steady_clock::now();
+        scr::prof::add(sec, uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(t - prof_last).count()));
+        prof_last = t;
+    };
     while (running) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             switch (ev.type) {
             case SDL_EVENT_QUIT: running = false; break;
             case SDL_EVENT_KEY_DOWN:
+                if (track && !menu && !ev.key.repeat && ev.key.key == SDLK_F9) {
+                    // F9 / Shift+F9: the next / previous view distance (ours)
+                    static constexpr float kSteps[] = {1.0f, 1.5f, 2.0f, 2.5f, 3.0f, 3.5f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f};
+                    constexpr int n = int(std::size(kSteps));
+                    int i = 0;
+                    for (int k = 1; k < n; ++k)
+                        if (std::fabs(kSteps[k] - opt.view_distance) < std::fabs(kSteps[i] - opt.view_distance)) i = k;
+                    i = (ev.key.mod & SDL_KMOD_SHIFT) ? (i + n - 1) % n : (i + 1) % n;
+                    opt.view_distance = kSteps[i];
+                    view_note_timer = 2.0f;
+                    break;
+                }
                 if (track && !menu && !paused && prompt < 0 && !ev.key.repeat &&
                     (ev.key.key == SDLK_F8 || (freecam && ev.key.key == SDLK_ESCAPE))) {
                     set_freecam(!freecam);
@@ -852,10 +958,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         running = false;
                     }
                 }
-                else if (player && ev.key.key >= SDLK_F1 && ev.key.key <= SDLK_F4 && player->race.started) {
-                    player->camera.select(int(ev.key.key - SDLK_F1));
-                    replay_views = true;
-                }
+                else if (player && ev.key.key >= SDLK_F1 && ev.key.key <= SDLK_F4 && player->race.started && !replaying)
+                    player->camera.select(int(ev.key.key - SDLK_F1));  // (camera_handle_view_keys: not in replays)
                 else if (ev.key.key == SDLK_M && !ev.key.repeat) radar = radar >= 3 ? 0 : radar + 1;
                 else if (ev.key.key == SDLK_P && !ev.key.repeat && player && hud && prompt < 0 && !paused) {
                     paused = true;
@@ -887,12 +991,14 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             }
         }
         if (!running) break;
+        mark(scr::prof::Events);
 
         // Headless runs advance exactly 2 ticks per loop, so output depends only on the
         // frame count. Interactive runs count real 10 ms ticks, like the timer interrupt.
-        bool stepped = false;
+        bool stepped = false;   // a picture was drawn
+        bool catching_up = false;  // a step that is not drawn: the next one is already due
         if (opt.headless) {
-            if (frame > 0) clock.add_ticks(scr::SimClock::kMinTicksPerFrame);
+            if (frame > 0 || opt.tween_test) clock.add_ticks(opt.tween_test ? 1 : scr::SimClock::kMinTicksPerFrame);
         } else {
             const uint64_t now = SDL_GetTicksNS();
             tick_acc += now - last;
@@ -900,9 +1006,33 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             clock.add_ticks(static_cast<uint32_t>(tick_acc / scr::SimClock::kTickNs));
             tick_acc %= scr::SimClock::kTickNs;
         }
-        if (clock.frame_ready()) {
-            clock.begin_frame();
-            if (player && hud && !paused && frame == 150 && opt.hold.find("pause") != std::string::npos) {
+        // A game step when 2 ticks have passed; in between, interactive races draw the
+        // picture again, blended towards the next step.
+        const bool step = clock.frame_ready();
+        const bool interactive = !opt.headless || opt.tween_test;
+        const bool tween = !step && interactive && have_prev && track && player && !paused && prompt < 0 && !freecam;
+        if (step || tween) {
+            // Interactive runs: every step is exactly 2 ticks, so the game plays the same at any
+            // frame rate. Behind (another step already due): this step is not drawn, the next
+            // one is; more than half a second behind (a stall): the extra time is dropped.
+            if (step && interactive && clock.pending_ticks() > 50) clock.drop_ticks(clock.pending_ticks() - 2);
+            if (step) clock.begin_frame(interactive ? 2 : UINT32_MAX);
+            const bool skip_draw = step && interactive && !opt.headless && clock.frame_ready();
+            catching_up = skip_draw;
+            renderer3d.set_skip(skip_draw);
+            // how far the display is between the last step and the next (1: at the last step)
+            const float alpha = !interactive || !have_prev ? 1.0f
+                : std::clamp(float(double(clock.pending_ticks() * scr::SimClock::kTickNs + tick_acc) /
+                                   double(2 * scr::SimClock::kTickNs)), 0.0f, 1.0f);
+            if (step && track && player) {
+                prev_cam = cam;
+                prev_player = player->race.player;
+                prev_opps = player->race.opponents;
+                prev_obstacles = obstacles.list;
+                prev_anims = anims.list;
+                have_prev = true;
+            }
+            if (step && player && hud && !paused && frame == 150 && opt.hold.find("pause") != std::string::npos) {
                 // --hold pause: open the P panel at frame 150 (headless checks)
                 paused = true;
                 frozen = fb;
@@ -982,7 +1112,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             } else if (track) {
                 fb.palette() = track->palette;
                 renderer3d.set_anim_counter(freecam ? fc_anim : clock.anim_counter());
-                if (!freecam && player && frame == 150 && opt.hold.find("freecam") != std::string::npos)
+                if (step && !freecam && player && frame == 150 && opt.hold.find("freecam") != std::string::npos)
                     set_freecam(true);  // --hold freecam: photo mode at frame 150, flying forward (headless checks)
                 if (freecam) {
                     // photo mode: move the free camera, nothing else moves
@@ -1021,6 +1151,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     cam.yaw = fc_yaw;
                     cam.pitch = fc_pitch < 0 ? fc_pitch + 2048.0f : fc_pitch;
                     cam.roll = 0;
+                } else if (!step) {
+                    cam = step_cam;  // (drawing between steps: nothing moves)
                 } else if (player && opt.attract) {
                     // attract_mode_update_cars: the CPU cars, the TV camera, the credits; space,
                     // Enter, Esc or the throttle fade it out (handle_global_keys)
@@ -1057,21 +1189,40 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     if (keys[SDL_SCANCODE_LEFT] || held("left")) in.steer_left = 1023;
                     if (keys[SDL_SCANCODE_RIGHT] || held("right")) in.steer_right = 1023;
                     if (pad) {
-                        const int rt = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
-                        const int lt = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
-                        const int lx = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX);
-                        if (rt > 1000) in.accel = std::max(in.accel, rt * 1023 / 32767);
-                        if (lt > 1000 && !in.brake) {
-                            in.brake = lt * 1023 / 32767;
+                        // controls_update for a joystick axis: -1023..1023, nothing below 0x66
+                        // (the original's dead zone), then as the original uses it
+                        auto axis = [&](SDL_GamepadAxis ax) {
+                            const int v = std::clamp(int(SDL_GetGamepadAxis(pad, ax)) * 1023 / 32767, -1023, 1023);
+                            return std::abs(v) < 0x66 ? 0 : v;
+                        };
+                        const int rt = axis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
+                        const int lt = axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+                        const int lx = axis(SDL_GAMEPAD_AXIS_LEFTX);
+                        if (rt > 0) in.accel = std::max(in.accel, rt);
+                        if (lt > 0 && !in.brake) {
+                            in.brake = lt;
                             in.analog_brake = true;
                         }
-                        if (std::abs(lx) > 4000 && !in.steer_left && !in.steer_right) {
+                        if (lx != 0 && !in.steer_left && !in.steer_right) {
                             in.analog_steer = true;
-                            in.steer = lx * 1023 / 32767;
+                            in.steer = lx;
                         }
                     }
                     float ft = clock.frame_time();
                     int pow_row = clock.pow_table_row();
+                    if (positions) {
+                        // the same fields as step_race.py's COMPACT records, before this frame
+                        const scr::Car& pc = player->race.player;
+                        int32_t rec[9 + 1 + 27]{};
+                        rec[0] = pc.pos_x; rec[1] = pc.pos_y; rec[2] = pc.pos_z;
+                        std::memcpy(&rec[6], &pc.pitch, 4); std::memcpy(&rec[7], &pc.yaw, 4); std::memcpy(&rec[8], &pc.roll, 4);
+                        std::memcpy(&rec[9], &pc.speed, 4);
+                        for (size_t k = 0; k < 9 && k < player->race.opponents.size(); ++k) {
+                            const scr::Opponent& o = player->race.opponents[k];
+                            rec[10 + 3 * k] = o.pos_x; rec[11 + 3 * k] = o.pos_y; rec[12 + 3 * k] = o.pos_z;
+                        }
+                        std::fwrite(rec, sizeof rec, 1, positions);
+                    }
                     if (replaying) {
                         // replay_read_frame: the recorded frame time and inputs
                         if (replay_pos < replay.frames.size()) {
@@ -1088,8 +1239,10 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                             }
                             in.gear_up = rf.gear_up != 0;
                             in.gear_down = rf.gear_down != 0;
-                            ft = std::clamp(rf.frame_time, 0.02f, 0.2f);
+                            // (as recorded; only nonsense is kept out)
+                            ft = rf.frame_time > 0.0f && rf.frame_time < 1.0f ? rf.frame_time : 0.02f;
                             pow_row = int(1.0 / double(ft));
+                            player->race.raw_frame_time = rf.raw_time > 0.0f && rf.raw_time < 1.0f ? rf.raw_time : ft;
                         } else if (prompt < 0) {
                             // the end of the replay (g_race_flags 0x220)
                             if (opt.instant_replay) {
@@ -1121,10 +1274,15 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         std::swap(in.steer_left, in.steer_right);
                         in.steer = -in.steer;
                     }
+                    // camera_update_view: only camera_mode_car (F3, F4) wraps the car's yaw;
+                    // a replay is seen from the trackside cameras
+                    player->race.player.camera_car_mode = !replaying && (player->camera.view == 2 || player->camera.view == 3);
                     if (player->cpu_cars)
                         player->race.update(*track, in, ft, pow_row);
-                    else
+                    else {
                         player->race.player.update(*track, in, ft, pow_row);
+                        player->race.player.camera_update();
+                    }
                     if (frame == 700 && held("finish") && !replaying) player->race.finished = true;  // headless checks of the race end
                     race_audio.update(player->race, clock.frame_time());
                     if (player->cpu_cars && player->race.started && !player->race.finished && !player->race.failed) {
@@ -1169,7 +1327,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     cam.pitch = float(int(player->camera.pitch * kToUnits) & 0x7ff);
                     cam.yaw = float(int(player->camera.yaw * kToUnits) & 0x7ff);
                     cam.roll = float(int(player->camera.roll * kToUnits) & 0x7ff);
-                    if (replaying && !replay_views && tv_camera.has_trackside()) {
+                    if (replaying && tv_camera.has_trackside()) {
                         // camera_mode_trackside: the nearest replay camera, aimed at the car
                         const scr::Car& pc = player->race.player;
                         tv_camera.trackside(pc.pos_x, pc.pos_y, pc.pos_z);
@@ -1183,28 +1341,65 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         player->camera.car_visible = true;
                     }
                 }
+                if (step) step_cam = cam;
+                // obstacles_update (game state, once a step)
+                if (step && !freecam) obstacles.update(*track, clock.frame_time());
+                if (step && !player && !freecam) anims.update(int(cam.x), int(cam.z), clock.frame_time());
+                mark(scr::prof::Step);
+                // what is drawn: between the previous step and this one
+                const bool blend = player && have_prev && alpha < 1.0f && !freecam;
+                const scr::Camera draw_cam = blend ? tween_camera(prev_cam, step_cam, alpha) : cam;
+                if (player) {
+                    if (blend) {
+                        tween_car(draw_player, prev_player, player->race.player, alpha);
+                        draw_opps.resize(player->race.opponents.size());
+                        for (size_t i = 0; i < draw_opps.size(); ++i) {
+                            if (i < prev_opps.size()) tween_opponent(draw_opps[i], prev_opps[i], player->race.opponents[i], alpha);
+                            else draw_opps[i] = player->race.opponents[i];
+                        }
+                    } else {
+                        draw_player = player->race.player;
+                        draw_opps = player->race.opponents;
+                    }
+                }
+                mark(scr::prof::Tween);
                 const auto perf_t0 = std::chrono::steady_clock::now();
-                renderer3d.begin(*track, cam, fb);
+                scr::Camera view_cam = draw_cam;
+                if (opt.view_distance > 0.0f) {
+                    // the view distance (ours): the original's far clip (HI detail) times the
+                    // setting; the last quarter fades out in an ordered dither
+                    view_cam.far_depth = 43808.0f * opt.view_distance;
+                    view_cam.fade_depth = view_cam.far_depth * 0.75f;
+                }
+                renderer3d.begin(*track, view_cam, fb);
                 renderer3d.draw_placements();
-                // obstacles_update and the obstacles
-                if (!freecam) obstacles.update(*track, clock.frame_time());
-                for (const scr::Obstacle& o : obstacles.list) {
+                for (size_t oi = 0; oi < obstacles.list.size(); ++oi) {
+                    const scr::Obstacle& o = obstacles.list[oi];
                     if (o.y == -20000 || size_t(o.model) >= obstacles.models.size()) continue;
                     constexpr float kObsUnits = 1024.0f / 3.1415927410125732f;
+                    scr::Obstacle ob = o;
+                    if (blend && oi < prev_obstacles.size() && prev_obstacles[oi].y != -20000) {
+                        const scr::Obstacle& q = prev_obstacles[oi];
+                        ob.x = tween_int(q.x, o.x, alpha);
+                        ob.y = tween_int(q.y, o.y, alpha);
+                        ob.z = tween_int(q.z, o.z, alpha);
+                        ob.ax = tween_angle(q.ax, o.ax, alpha, kTwoPiF);
+                        ob.ay = tween_angle(q.ay, o.ay, alpha, kTwoPiF);
+                        ob.az = tween_angle(q.az, o.az, alpha, kTwoPiF);
+                    }
                     scr::Pose op;
-                    op.x = float(o.x);
-                    op.y = float(o.y);
+                    op.x = float(ob.x);
+                    op.y = float(ob.y);
                     // half of each obstacle is below the ground (it stands at the ground height);
                     // the original draws it over the ground all the same (painter's order)
                     op.depth_bias = kObstacleBias;
-                    op.z = float(o.z);
-                    op.ax = float(int(o.ax * kObsUnits) & 0x7ff);
-                    op.ay = float(int(o.ay * kObsUnits) & 0x7ff);
-                    op.az = float(int(o.az * kObsUnits) & 0x7ff);
+                    op.z = float(ob.z);
+                    op.ax = float(int(ob.ax * kObsUnits) & 0x7ff);
+                    op.ay = float(int(ob.ay * kObsUnits) & 0x7ff);
+                    op.az = float(int(ob.az * kObsUnits) & 0x7ff);
                     renderer3d.draw_model(obstacles.models[size_t(o.model)], op);
                 }
                 // The moving scenery (instance angles: yaw only).
-                if (!player && !freecam) anims.update(int(cam.x), int(cam.z), clock.frame_time());
                 constexpr float kAnimToUnits = 1024.0f / 3.1415927410125732f;
                 for (size_t i = 0; i < anims.list.size() && i < anim_models.size(); ++i) {
                     const scr::TrackAnimation& an = anims.list[i];
@@ -1212,13 +1407,22 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     ap.x = float(an.x);
                     ap.y = float(an.y);
                     ap.z = float(an.z);
-                    ap.ay = float(int(an.yaw * kAnimToUnits) & 0x7ff);
+                    float an_yaw = an.yaw;
+                    if (blend && i < prev_anims.size() &&
+                        std::abs(prev_anims[i].x - an.x) + std::abs(prev_anims[i].z - an.z) < 8000) {
+                        const scr::TrackAnimation& q = prev_anims[i];
+                        ap.x = float(tween_int(q.x, an.x, alpha));
+                        ap.y = float(tween_int(q.y, an.y, alpha));
+                        ap.z = float(tween_int(q.z, an.z, alpha));
+                        an_yaw = tween_angle(q.yaw, an.yaw, alpha, kTwoPiF);
+                    }
+                    ap.ay = float(int(an_yaw * kAnimToUnits) & 0x7ff);
                     renderer3d.draw_model(anim_models[i], ap);
                 }
                 if (player) {
                     // car_sync_render_object: body at the car, angles in 2048 units; the
                     // shadow sits on the ground just below.
-                    const scr::Car& c = player->race.player;
+                    const scr::Car& c = draw_player;
                     constexpr float kToUnits = 1024.0f / 3.1415927410125732f;
                     scr::Pose pose;
                     pose.x = float(c.pos_x);
@@ -1264,10 +1468,11 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                             spose.z = float(sp.z);
                             spose.animation = sp.animation;
                             spose.depth_bias = kShadowBias;  // on the road, not in it
+                            spose.billboard = true;  // always facing the camera (ours)
                             renderer3d.draw_model(*smoke_model, spose);
                         }
                     // the car's part table (lean, suspension, steering, wheel roll)
-                    player->race.player.part_poses(player->model, player->model_parts, player->part_poses, !freecam);
+                    player->race.player.part_poses(player->model, player->model_parts, player->part_poses, step && !freecam);
                     pose.parts = &player->part_poses;
                     if ((player->camera.car_visible || freecam) && !opt.attract) {
                         if (shadow) renderer3d.draw_model(*shadow, sh);
@@ -1305,7 +1510,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     }
                     // opponent_sync_render_object
                     for (size_t i = 0; i < player->race.opponents.size(); ++i) {
-                        const scr::Opponent& o = player->race.opponents[i];
+                        const scr::Opponent& o = draw_opps[i];
                         scr::Pose op;
                         op.x = float(o.pos_x);
                         op.y = float(o.pos_y);
@@ -1350,10 +1555,10 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                                 pp[size_t(pi2)].ax = lx;
                                 pp[size_t(pi2)].az = lz;
                             }
-                            if (!freecam) player->cpu_roll[i] = int32_t(double(player->cpu_roll[i]) - double(o.speed) / 15.0) & 0x7fe;
-                            for (int pi2 : cp.wheels) {
+                            if (step && !freecam) player->cpu_roll[i] = int32_t(double(player->cpu_roll[i]) - double(o.speed) / 15.0) & 0x7fe;
+                            for (int pi2 : cp.wheels) {  // (the hubs roll, the tyres do not)
                                 pp[size_t(pi2)].angles = true;
-                                pp[size_t(pi2)].ax = player->cpu_roll[i];
+                                pp[size_t(pi2)].ax = cm.parts[size_t(pi2)].name.back() == 'x' ? player->cpu_roll[i] : 0;
                             }
                             op.parts = &pp;
                         }
@@ -1364,7 +1569,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     if (shadow) renderer3d.draw_model(*shadow, c.pose);
                     renderer3d.draw_model(c.model, c.pose);
                 }
+                mark(scr::prof::Geometry);
                 renderer3d.finish();
+                mark(scr::prof::Fill);
                 // MIRRO / UPDOW: race_frame flips the 3D picture (not the HUD) after drawing it
                 if (opt.race_options & 0x30) {
                     const int fw = fb.width(), fh = fb.height();
@@ -1408,7 +1615,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     hs.gear = c.gear;
                     hs.countdown_stage = r.countdown_stage;
                     hs.end = r.finished ? 1 : r.failed ? 2 : 0;
-                    if (hs.end && opt.from_menu) {
+                    if (step && hs.end && opt.from_menu) {
                         // race_end_screen: back to the menu five seconds after the end
                         end_timer += clock.frame_time();
                         if (5.0f <= end_timer && (race_audio.speech_current() == -1 || opt.headless) && prompt < 0 && !replaying) {
@@ -1464,7 +1671,15 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         if (std::abs(ts.x - c.pos_x) < 8 * 8192 + 4096 && std::abs(ts.z - c.pos_z) < 8 * 8192 + 4096)
                             hs.radar_lines.push_back({ts.left_x, ts.left_z, ts.right_x, ts.right_z});
                     hud->draw(fb, hs, track->darken075, clock.frame_time(), clock.pow_table_row(), player->camera.hud_view,
-                              radar);
+                              radar, step);
+                }
+                if (view_note_timer > 0.0f && hud) {
+                    // F9's note: the new view distance
+                    if (step) view_note_timer -= clock.frame_time();
+                    char note[48];
+                    std::snprintf(note, sizeof note, "VIEW DISTANCE %gX", double(opt.view_distance));
+                    scr::HudSurface hsurf(fb);
+                    hsurf.text(hud->fonts, (320 - hsurf.measure(hud->fonts, note, 1)) / 2, 0x50, note, 1, 0);
                 }
             } else if (menu) {
                 scr::MenuKeys mk;
@@ -1492,6 +1707,12 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     mk.right |= k == "right";
                 }
                 menu->update(mk, clock.frame_time());
+                if (menu->volumes() != shared.volumes) {
+                    // the SOUND page: heard (the menu's music and clicks) and saved straight away
+                    shared.volumes = menu->volumes();
+                    apply_group_volumes();
+                    if (!shared.choice_path.empty()) menu->save_choice().save(shared.choice_path);
+                }
                 for (int sfx : menu->sounds) mixer.play(sfx);
                 menu->draw(fb, renderer3d);
                 if (menu->quit) {
@@ -1520,21 +1741,21 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             } else {
                 scr::draw_test_pattern(fb, frame);
             }
-            stepped = true;
-            if (!opt.record_audio.empty()) {
+            stepped = !skip_draw;
+            if (step && !opt.record_audio.empty()) {
                 // One frame of sound per simulated frame (2 ticks = 1/50 s at 44.1 kHz).
                 const int n = int(44100 * 2 / 100);
                 const size_t at = recorded.size();
                 recorded.resize(at + size_t(n) * 2);
                 mixer.mix(recorded.data() + at, n, 44100);
             }
-            if (opt.capture_every && frame % opt.capture_every == 0) {
+            if ((step || opt.tween_test) && opt.capture_every && frame >= opt.capture_from && frame % opt.capture_every == 0) {
                 scr::SurfacePtr s = scr::framebuffer_to_surface(fb);
                 char name[64];
-                std::snprintf(name, sizeof name, "/fb_%06llu.png", static_cast<unsigned long long>(frame));
+                std::snprintf(name, sizeof name, "/fb_%06llu%s.png", static_cast<unsigned long long>(frame), step ? "" : "_t");
                 save_or_log(s.get(), opt.capture_dir + name);
             }
-            ++frame;
+            if (step) ++frame;
         }
 
         if (screenshot_pending && frame > 0) {
@@ -1565,12 +1786,14 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 }
             }
         }
+        mark(stepped ? scr::prof::Hud : scr::prof::Other);
         if (stepped) {
             void* pixels; int pitch;
             if (SDL_LockTexture(tex, nullptr, &pixels, &pitch)) {
-                fb.to_rgba(static_cast<uint8_t*>(pixels), pitch);
+                fb.to_rgba(static_cast<uint8_t*>(pixels), pitch, renderer3d.pool());
                 SDL_UnlockTexture(tex);
             }
+            mark(scr::prof::Upload);
         }
 
         int ow, oh;
@@ -1597,7 +1820,21 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             }
             running = false;
         }
-        SDL_RenderPresent(renderer);
+        // Interactive runs present only new pictures (vsync paces the loop then); with nothing
+        // new and no step due, wait a little instead of spinning.
+        if (stepped || opt.headless) SDL_RenderPresent(renderer);
+        else if (!catching_up) SDL_Delay(1);
+        mark(scr::prof::Present);
+        if (stepped) scr::prof::frame_done(step);
+        if (opt.perf && prof_last >= prof_report_at) {
+            prof_report_at = prof_last + std::chrono::seconds(5);
+            const std::string rep = scr::prof::report();
+            if (!rep.empty()) std::fputs(rep.c_str(), stderr);
+        }
+    }
+    if (opt.perf) {
+        const std::string rep = scr::prof::report();
+        if (!rep.empty()) std::fputs(rep.c_str(), stderr);
     }
 
     SDL_Log("frames=%llu", static_cast<unsigned long long>(frame));
@@ -1605,6 +1842,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         SDL_Log("render3d: %.2f ms average, %.2f ms worst over %d frames at %dx%d", perf_total / perf_frames, perf_max,
                 perf_frames, fb.width(), fb.height());
     shared.frames_run = frame;
+    if (positions) std::fclose(positions);
     if (player && (replaying || !opt.record_file.empty())) {
         const scr::Car& pc = player->race.player;
         SDL_Log("replay: frame %zu, player at %d %d %d", replaying ? replay_pos : replay.frames.size(), pc.pos_x, pc.pos_y, pc.pos_z);
@@ -1685,6 +1923,20 @@ int main(int argc, char** argv) {
             shared.choice_path = std::string(pref) + "CHOICE.DAT";
             shared.replay_dir = std::string(pref) + "REPLAYS/";
             SDL_free(pref);
+        }
+    }
+    // The SOUND page's volumes: saved after our CHOICE.DAT's own bytes, --volumes for this run.
+    if (!shared.choice_path.empty()) {
+        scr::ChoiceFile choice;
+        if (choice.load(shared.choice_path)) std::copy(choice.volume.begin(), choice.volume.end(), shared.volumes.begin());
+    }
+    if (!opt.volumes.empty()) {
+        size_t i = 0;
+        for (const char* p = opt.volumes.c_str(); *p && i < shared.volumes.size(); ++i) {
+            char* end = nullptr;
+            shared.volumes[i] = std::clamp(int(std::strtol(p, &end, 10)), 0, scr::kVolumeMax);
+            if (end == p) break;
+            p = *end == ',' ? end + 1 : end;
         }
     }
     int exit_code = 0;

@@ -27,12 +27,6 @@ constexpr int kSpeech[27][3] = {
     {34, 35, 36},  {9, 30, -1},   {10, 28, 29},                  // 24 lost lead, 25 no time, 26 all
 };
 
-// The original's rotate_xz.
-void rotate_xz(int& ox, int& oz, int x, int z, float angle) {
-    const double c = std::cos(double(angle)), s = std::sin(double(angle));
-    ox = int(std::trunc(double(z) * s + double(x) * c));
-    oz = int(std::trunc(double(z) * c - double(x) * s));
-}
 
 // angle_within: |a - b| wrapped into 0..2pi is within tol of 0 or 2pi.
 bool angle_within(float a, float b, float tol) {
@@ -69,7 +63,7 @@ void RaceAudio::start(Mixer& mixer, const SoundBank& bank, const Race& race, int
     finished_ = race.finished;
     failed_ = race.failed;
     surface_ = race.player.marker_flags;
-    engine_ = mixer.play(engine_sample(surface_));
+    engine_ = mixer.play(engine_sample(surface_), SoundGroup::Engine);
     cpu_engine_.assign(race.opponents.size(), -1);
     cpu_prev_dist_.assign(race.opponents.size(), 0);
     cpu_rev_.assign(race.opponents.size(), 0.0f);
@@ -121,7 +115,7 @@ int RaceAudio::play_event(int event, int variant) {
     // speech_play_event: straight away, not through the queue.
     if (!speech_) return -1;
     const int s = pick_sample(event, variant);
-    return s < 0 ? -1 : mixer_->play(s + bank_->speech_first);
+    return s < 0 ? -1 : mixer_->play(s + bank_->speech_first, SoundGroup::Announcer);
 }
 
 bool RaceAudio::trigger_once_after(bool cond, int event, float time, float dt) {
@@ -206,7 +200,7 @@ void RaceAudio::speech_update(float dt) {
             const int s = pick_sample(queue_[0].event, queue_[0].variant);
             if (s != -1) {
                 speech_sample_ = s + bank_->speech_first;
-                speech_handle_ = mixer_->play(speech_sample_);
+                speech_handle_ = mixer_->play(speech_sample_, SoundGroup::Announcer);
             }
             if (speech_handle_ == -1) {
                 queue_.erase(queue_.begin());

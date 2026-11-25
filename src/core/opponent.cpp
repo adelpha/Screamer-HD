@@ -28,11 +28,6 @@ float rdf(const std::vector<uint8_t>& d, size_t o) {
 }
 int chop(double v) { return static_cast<int>(v); }
 double safe_sqrt(double v) { return v >= 0.0 ? std::sqrt(v) : 0.0; }
-void rotate_xz(int& ox, int& oz, int x, int z, float angle) {
-    const double c = std::cos(double(angle)), s = std::sin(double(angle));
-    ox = chop(double(z) * s + double(x) * c);
-    oz = chop(double(z) * c - double(x) * s);
-}
 int div4(int v) { return v / 4; }  // the game's signed divide (rounds toward zero)
 
 // point_in_front_box: bit 1 when `other` is ahead (rotated z >= 1), bit 0 when to the side x > 0.
@@ -175,7 +170,7 @@ bool Race::loads_gates(const std::string& data_dat, const std::string& track_nam
 }
 
 float Race::lerp(float value, float target, int k) const {
-    return (value - target) * pow_table(pow_row_, k) + target;
+    return float((double(value) - double(target)) * double(pow_table(pow_row_, k)) + double(target));
 }
 
 void Race::start(const Track& track, const CarSetup& player_setup, const std::vector<CarSetup>& opponent_setups) {
@@ -249,9 +244,9 @@ void Race::advance_on_spline(Opponent& o) {
     const RacingLine& line = lines[size_t(o.spline_index)];
     for (;;) {
         // vec_length_nonzero: length of the spline's derivative at t.
-        const float lx = ((o.p[0] - o.p[2] * 2.0f + o.p[4]) * o.t + o.p[2]) - o.p[0];
-        const float lz = ((o.p[1] - o.p[3] * 2.0f + o.p[5]) * o.t + o.p[3]) - o.p[1];
-        float len = float(safe_sqrt(double(lx * lx + lz * lz)));
+        const float lx = float(((double(o.p[0]) - double(o.p[2]) * 2.0 + double(o.p[4])) * double(o.t) + double(o.p[2])) - double(o.p[0]));
+        const float lz = float(((double(o.p[1]) - double(o.p[3]) * 2.0 + double(o.p[5])) * double(o.t) + double(o.p[3])) - double(o.p[1]));
+        float len = float(safe_sqrt(double(lx) * double(lx) + double(lz) * double(lz)));
         if (std::fabs(len) == 0.0f) len = 1.0f;
         o.t = float(double(d) / double(len) + double(o.t));
         if (o.t < 1.0f) break;
@@ -263,8 +258,8 @@ void Race::advance_on_spline(Opponent& o) {
             o.segment = line.segments[size_t(o.segment)].next;
         }
         next_spline_segment(o);
-        const float ex = o.eval_x - float(o.line_x), ez = o.eval_z - float(o.line_z);
-        d = float(double(d) - safe_sqrt(double(ex * ex + ez * ez)));
+        const double ex = double(o.eval_x) - double(o.line_x), ez = double(o.eval_z) - double(o.line_z);
+        d = float(double(d) - safe_sqrt(ex * ex + ez * ez));
         o.line_x = chop(o.eval_x);
         o.line_z = chop(o.eval_z);
     }
@@ -280,8 +275,8 @@ void Race::advance_on_spline(Opponent& o) {
 
 void Race::update_position(Opponent& o) {
     // opponent_apply_lateral_offset: pushed sideways by hits, drifting back to the line.
-    o.lateral_x = chop(double(o.lateral_dir_x * o.lateral_push * dt_) + double(o.lateral_x));
-    o.lateral_z = chop(double(o.lateral_dir_z * o.lateral_push * dt_) + double(o.lateral_z));
+    o.lateral_x = chop(double(o.lateral_dir_x) * double(o.lateral_push) * double(dt_) + double(o.lateral_x));
+    o.lateral_z = chop(double(o.lateral_dir_z) * double(o.lateral_push) * double(dt_) + double(o.lateral_z));
     o.lateral_push = pow_table(pow_row_, 0x13c / 4) * o.lateral_push;
     if (o.lateral_push < 10.0f) o.lateral_push = 0.0f;
     if (o.lateral_x == o.prev_lateral_x && o.lateral_z == o.prev_lateral_z) {
@@ -309,7 +304,7 @@ void Race::update_position(Opponent& o) {
 void Race::update_target_speed(Opponent& o) {
     float top, cruise;
     if (player_position < o.race_position) {
-        top = (o.def.max_spd + o.def.skill) * o.speed_factor;  // behind the player: catch up
+        top = float((double(o.def.max_spd) + double(o.def.skill)) * double(o.speed_factor));  // behind the player: catch up
         cruise = o.def.max_spd * o.speed_factor;
     } else {
         top = cruise = o.def.max_spd * o.speed_factor;
@@ -317,18 +312,19 @@ void Race::update_target_speed(Opponent& o) {
     if (top <= o.speed) {
         if (o.speed <= top) return;
         if (cruise < o.speed) o.catching_up = true;
-        o.speed = o.speed - o.def.brakes * dt_;
+        o.speed = float(double(o.speed) - double(o.def.brakes) * double(dt_));
         if (top <= o.speed) return;
     } else {
         o.catching_up = false;
-        o.speed = o.def.accel * dt_ + o.speed;
+        o.speed = float(double(o.def.accel) * double(dt_) + double(o.speed));
         if (o.speed <= top) return;
     }
     o.speed = top;
 }
 
 void Race::smooth_angles(Opponent& o) {
-    float lean = (o.speed * o.def.sband) * (o.speed * o.def.sband) * (o.line_yaw - o.line_yaw_prev);
+    const double sb = double(o.speed) * double(o.def.sband);
+    float lean = float(sb * sb * (double(o.line_yaw) - double(o.line_yaw_prev)));
     lean = std::clamp(lean, -2.0f, 2.0f);
     o.yaw_wobble = lerp(o.yaw_wobble, float(double(lean) * 0.5), 0x4f);
     o.roll_ofs = lerp(o.roll_ofs, float(double(lean) * 0.02), 0x4c);
@@ -655,19 +651,32 @@ void Race::update(const Track& track, const CarInput& in_raw, float frame_time, 
     speech_cues.clear();
     cpu_hit_sound = false;
     if (use_countdown) {
-        in.race_started = started;
-        in.cpu_cars_go = started;
-        // car_update_race_timers (in car_update_driving)
-        if (started && !finished && !failed) {
+        // g_race_flags: 1 racing (cleared by race_on_finished / race_on_failed), 4 over (the
+        // CPU cars keep driving: flags & 5), 0x4000 coasting
+        const bool racing = started && !finished && !failed;
+        in.race_started = racing;
+        in.cpu_cars_go = racing || finished || failed;
+        if (finished) coasting = true;  // race_on_finished: | 0x4004
+        // car_update_race_timers (in car_update_driving), on the raw frame time
+        if (racing) {
+            const float raw = raw_frame_time < 0.0f ? frame_time : raw_frame_time;
             if (timing_started) {
-                total_time += frame_time;
-                lap_time += frame_time;
+                total_time = raw + total_time;
+                lap_time = raw + lap_time;
             }
-            if (!clock_stopped) time_left -= frame_time;
-            if (time_left < 0.0f) time_left = 0.0f;
+            if (!clock_stopped) time_left = time_left - raw;
+            if (0.0f <= time_left) {
+                coasting = false;
+            } else {
+                time_left = 0.0f;
+                coasting = true;
+                if (player.speed < 1.0f) {
+                    coasting = false;  // stopped: lost (race_on_failed keeps 0x4000 as it is)
+                    failed = true;
+                }
+            }
         }
-        if (finished || failed || time_left <= 0.0f) in.accel = 0;  // out of time: no throttle
-        if (started && !finished && time_left <= 0.0f && player.speed < 1.0f) failed = true;
+        in.coasting = coasting;
     }
     positions_running_ = in.race_started;
     update_positions();  // race_update_positions runs before the cars move
@@ -733,6 +742,7 @@ void Race::update(const Track& track, const CarInput& in_raw, float frame_time, 
             cpu_contacts(o);
             collide_player(o);
         }
+    player.camera_update();
     if (use_countdown && countdown_stage >= 0) {
         countdown_timer += frame_time;
         const int stage = int(countdown_timer) / 2;
