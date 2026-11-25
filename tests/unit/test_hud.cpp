@@ -78,3 +78,24 @@ TEST_CASE("views: the cockpit view and the blend between views") {
     CHECK(v.y != first_y);  // the blend moved the camera to the chase position
     CHECK(v.z > 1000);      // 1300 behind the car (facing -z at yaw 0)
 }
+
+TEST_CASE("views: bumper to cockpit switches at once while driving") {
+    // camera_handle_view_keys blends from the old view's camera of the same frame, so a moving
+    // car does not add its travel to the blend: the bumper and cockpit cameras coincide and
+    // the dashboard appears on the next frame.
+    scr::Car car;
+    car.setup.maxspd = 21000;
+    scr::ViewCamera v;
+    v.set(0);
+    v.update(car, 300, 0.02f, 49);
+    car.pos_z -= 300;  // moving 300 units a frame
+    v.select(1);
+    int frames = 0;
+    while (v.hud_view != 1 && frames < 500) {
+        car.pos_z -= 300;
+        v.update(car, 300, 0.02f, 49);
+        ++frames;
+    }
+    CHECK(frames <= 2);
+    CHECK(v.viewport == 132);
+}

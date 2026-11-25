@@ -5,6 +5,7 @@
 #include "core/model3d.h"
 #include "core/render3d.h"
 #include "core/track.h"
+#include "core/worker_pool.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -103,6 +104,43 @@ TEST_CASE("track: MAP2 loads and renders") {
     auto stats = r.draw_track(*t, cam, fb);
     CHECK(stats.objects > 20);
     CHECK(stats.faces > 500);
+
+    // The picture does not depend on how many threads fill it.
+    for (int threads : {1, 3, 8}) {
+        scr::Framebuffer other(320, 200);
+        scr::Renderer r2;
+        r2.set_threads(threads);
+        auto stats2 = r2.draw_track(*t, cam, other);
+        CHECK(stats2.faces == stats.faces);
+        CHECK(std::memcmp(other.pixels(), fb.pixels(), 320 * 200) == 0);
+    }
+}
+
+TEST_CASE("render: worker pool runs every job once") {
+    for (int threads : {1, 2, 5}) {
+        scr::WorkerPool pool(threads);
+        for (int round = 0; round < 50; ++round) {
+            std::vector<int> hits(37, 0);
+            pool.run(int(hits.size()), [&](int i) { ++hits[size_t(i)]; });
+            for (int h : hits) CHECK(h == 1);
+        }
+    }
+}
+
+TEST_CASE("model: bounding spheres hold every vertex") {
+    scr::Model m;
+    scr::Part p;
+    p.vertices = {{-100, 0, 0}, {300, 50, -20}, {0, 400, 10}};
+    p.offset = {1000, 0, 0};
+    m.parts.push_back(p);
+    scr::compute_bounds(m);
+    const scr::Part& q = m.parts[0];
+    for (const auto& v : q.vertices) {
+        const float dx = float(v.x) - q.center[0], dy = float(v.y) - q.center[1], dz = float(v.z) - q.center[2];
+        CHECK(std::sqrt(dx * dx + dy * dy + dz * dz) <= q.radius);
+        const float ox = float(v.x) + 1000.0f, oy = float(v.y), oz = float(v.z);
+        CHECK(std::sqrt(ox * ox + oy * oy + oz * oz) <= m.radius);
+    }
 }
 
 TEST_CASE("track: MAP2 high detail, track lines and ground height") {

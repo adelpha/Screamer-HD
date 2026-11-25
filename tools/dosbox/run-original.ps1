@@ -40,9 +40,12 @@ param(
     [switch]   $Debugger,               # use dosbox_with_debugger.exe (Alt+Pause breaks into the debugger)
     [switch]   $Headless,               # SDL offscreen video: no window at all (no -Shots; use -Webserver to read memory)
     [switch]   $Sound,                  # audio is off by default for unattended runs
+    [switch]   $Play,                   # to play it yourself: the normal key mapping (the harness
+                                        # mapper file binds only F11), sound on, left running
     [string[]] $ExtraConfig = @()       # extra 'section.key=value' overrides
 )
 $ErrorActionPreference = 'Stop'
+if ($Play) { $Sound = $true; $Duration = 0 }
 $root = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 if (-not $GameDir) { $GameDir = if ($env:SCREAMER_DATA) { $env:SCREAMER_DATA } else { Join-Path $root 'SCREAMER' } }
 if (-not (Test-Path (Join-Path $GameDir 'GFX'))) { throw "Original game not found at $GameDir" }
@@ -72,7 +75,7 @@ $autoexec += 'exit'
 $conf = Join-Path $OutDir 'harness.conf'
 $lines = @(
     '[sdl]', 'fullscreen = false', 'window_size = 960x600', 'mute_when_inactive = off', 'pause_when_inactive = off',
-    "mapperfile = $mapper",
+    $(if ($Play) { '' } else { "mapperfile = $mapper" }),
     '[dosbox]', 'machine = svga_s3', 'memsize = 16', 'startup_verbosity = quiet',
     '[cpu]', 'core = auto', "cpu_cycles = $Cycles", "cpu_cycles_protected = $Cycles",
     '[capture]', "capture_dir = $OutDir", 'default_image_capture_formats = raw',

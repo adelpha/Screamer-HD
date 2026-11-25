@@ -31,7 +31,9 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
+#include <chrono>
 #include <cstdio>
+#include <ctime>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -41,9 +43,16 @@
 
 namespace {
 
+// Car shadows are tested against the depth buffer as if this much nearer (see Pose::depth_bias).
+constexpr float kShadowBias = 64.0f;
+// Obstacles (cones, barriers) likewise, so their lower half shows over the ground.
+constexpr float kObstacleBias = 512.0f;
+
 struct Options {
     std::string data_dir;
     bool headless = false;
+    bool perf = false;              // print the 3D render time per frame at the end
+    int threads = 0;                // renderer threads (0: one per hardware thread)
     bool fullscreen = false;
     uint64_t frames = 0;            // 0 = run until quit
     std::string screenshot;         // rendered output after the last frame
@@ -86,6 +95,8 @@ void print_usage() {
         "Usage: screamer [options]\n"
         "  --data DIR           original game directory (default: $SCREAMER_DATA or build-time path)\n"
         "  --headless           no visible window, software renderer, dummy audio\n"
+        "  --perf               print how long the 3D view takes to draw\n"
+        "  --threads N          threads drawing the 3D view (default: one per CPU thread)\n"
         "  --frames N           exit after N simulation frames (2 ticks of the game's 100 Hz clock each)\n"
         "  --scene NAME         menu (default when the game files are found), title, track, drive or testpattern\n"
         "  --menu-keys LIST     --scene menu: keys pressed at frames, e.g. 40:down,60:enter (headless runs)\n"
@@ -159,6 +170,8 @@ bool parse_args(int argc, char** argv, Options& o) {
         };
         if (a == "--data") o.data_dir = next("--data");
         else if (a == "--headless") o.headless = true;
+        else if (a == "--perf") o.perf = true;
+        else if (a == "--threads") o.threads = std::atoi(next("--threads"));
         else if (a == "--fullscreen") o.fullscreen = true;
         else if (a == "--frames") o.frames = std::strtoull(next("--frames"), nullptr, 10);
         else if (a == "--screenshot") o.screenshot = next("--screenshot");
@@ -340,6 +353,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     };
     std::vector<CarInstance> cars;
     std::optional<scr::Model> shadow;  // SHADOW.3DX, drawn under every car (translucent, MAPn.SMG)
+    std::optional<scr::Model> smoke_model;  // SMOKE.3DX, the player car's tyre smoke
     if (track && !opt.cars.empty()) {
         if (auto path = scr::resolve_game_file(*game_dir, "GFX/" + opt.track + opt.detail + ".DAT")) shadow = scr::load_object(*path, "SHADOW.3DX");
     }
@@ -375,6 +389,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         scr::ViewCamera camera;            // F1..F4
         scr::EnvScroll env;                // glass reflection scroll of the player car
         std::vector<scr::EnvScroll> cpu_env;
+        std::vector<std::array<float, 2>> cpu_shadow;  // shadow pitch and roll of each CPU car
+        std::array<float, 2> shadow_angles{};           // the player's (kept while it tumbles)
     };
     std::optional<Player> player;
     std::optional<scr::Hud> hud;  // the race HUD (--scene drive with CPU cars)
@@ -411,6 +427,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             return 1;
         }
         if (!shadow) shadow = scr::load_object(*path, "SHADOW.3DX");
+        smoke_model = scr::load_object(*path, "SMOKE.3DX");
         player.emplace();
         player->model = std::move(*model);
         const scr::CarSetup setup = scr::car_setup(rec, player->model);
@@ -516,6 +533,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     SDL_Gamepad* pad = nullptr;
     scr::Renderer renderer3d;
     renderer3d.set_textures(!opt.flat);
+    renderer3d.set_threads(opt.threads);
 
     // --scene menu: the front end (kept by main across races)
     scr::Menu* menu = nullptr;
@@ -607,6 +625,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
 
     uint64_t frame = 0;
     float end_timer = 0;
+    bool screenshot_pending = false;      // F12
+    double perf_total = 0, perf_max = 0;  // --perf
+    int perf_frames = 0;
     // race_run's "PLAY AGAIN?" after a race from the menu (pause_menu_draw_scene): -1 not shown,
     // else the highlighted answer (0 yes, 1 no)
     int prompt = -1;
@@ -639,6 +660,35 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         };
     bool running = true;
     scr::SimClock clock;  // the original's frame clock: 100 Hz ticks, at least 2 per frame
+    // F8: photo mode - the race stands still and goes quiet, the HUD goes away and a free
+    // camera flies about (WASD, Q/E or Space/C up and down, mouse or arrow keys to look,
+    // Shift faster, Ctrl slower). F8 or Esc puts everything back.
+    bool freecam = false;
+    float fc_x = 0, fc_y = 0, fc_z = 0, fc_yaw = 0, fc_pitch = 0;  // angles in 2048 units
+    float fc_saved_sfx = 0, fc_saved_music = 0;
+    int32_t fc_anim = 0;
+    auto set_freecam = [&](bool on) {
+        if (on == freecam) return;
+        freecam = on;
+        if (on) {
+            fc_x = cam.x;
+            fc_y = cam.y;
+            fc_z = cam.z;
+            fc_yaw = cam.yaw;
+            fc_pitch = cam.pitch > 1024 ? cam.pitch - 2048 : cam.pitch;
+            fc_anim = clock.anim_counter();
+            fc_saved_sfx = mixer.sfx_volume;
+            fc_saved_music = mixer.music_volume;
+            mixer.sfx_volume = 0;
+            mixer.music_volume = 0;
+        } else {
+            mixer.sfx_volume = fc_saved_sfx;
+            mixer.music_volume = fc_saved_music;
+        }
+        if (window && !opt.headless) SDL_SetWindowRelativeMouseMode(window, on);
+        float ignore_x, ignore_y;
+        SDL_GetRelativeMouseState(&ignore_x, &ignore_y);  // movement from before
+    };
     uint64_t last = SDL_GetTicksNS(), tick_acc = 0;
     clock.add_ticks(scr::SimClock::kMinTicksPerFrame);  // draw frame 0 immediately
     int exit_code = 0;
@@ -649,6 +699,12 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             switch (ev.type) {
             case SDL_EVENT_QUIT: running = false; break;
             case SDL_EVENT_KEY_DOWN:
+                if (track && !menu && !paused && prompt < 0 && !ev.key.repeat &&
+                    (ev.key.key == SDLK_F8 || (freecam && ev.key.key == SDLK_ESCAPE))) {
+                    set_freecam(!freecam);
+                    break;
+                }
+                if (freecam && ev.key.key != SDLK_F12) break;  // the race keys wait
                 if (ev.key.key == SDLK_ESCAPE && !menu) {
                     if (paused) {
                         paused = false;  // Esc leaves the panel
@@ -684,9 +740,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     mixer.sfx_volume = 0;
                     mixer.music_volume = 0;
                 }
-                else if (ev.key.key == SDLK_F12) {
-                    scr::SurfacePtr s(SDL_RenderReadPixels(renderer, nullptr));
-                    save_or_log(s.get(), "artifacts/screenshots/frame_" + std::to_string(frame) + ".png");
+                else if (ev.key.key == SDLK_F12 && !ev.key.repeat) {
+                    screenshot_pending = true;  // saved once the next frame is drawn
                 }
                 break;
             case SDL_EVENT_GAMEPAD_ADDED:
@@ -790,8 +845,47 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 if (paused) hud->draw_cd_panel(fb, panel);
             } else if (track) {
                 fb.palette() = track->palette;
-                renderer3d.set_anim_counter(clock.anim_counter());
-                if (player) {
+                renderer3d.set_anim_counter(freecam ? fc_anim : clock.anim_counter());
+                if (!freecam && player && frame == 150 && opt.hold.find("freecam") != std::string::npos)
+                    set_freecam(true);  // --hold freecam: photo mode at frame 150, flying forward (headless checks)
+                if (freecam) {
+                    // photo mode: move the free camera, nothing else moves
+                    const bool* keys = SDL_GetKeyboardState(nullptr);
+                    const float dt = clock.frame_time();
+                    float mx = 0, my = 0;
+                    SDL_GetRelativeMouseState(&mx, &my);
+                    if (opt.headless) mx = my = 0;
+                    const float turn = 600.0f * dt;  // 2048 units per turn
+                    fc_yaw -= mx * 1.5f;
+                    fc_pitch -= my * 1.5f;
+                    if (keys[SDL_SCANCODE_LEFT]) fc_yaw += turn;
+                    if (keys[SDL_SCANCODE_RIGHT]) fc_yaw -= turn;
+                    if (keys[SDL_SCANCODE_UP]) fc_pitch += turn;
+                    if (keys[SDL_SCANCODE_DOWN]) fc_pitch -= turn;
+                    fc_pitch = std::clamp(fc_pitch, -500.0f, 500.0f);
+                    fc_yaw = std::fmod(fc_yaw + 2048.0f, 2048.0f);
+                    float speed = 4000.0f * dt;
+                    if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) speed *= 5.0f;
+                    if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL]) speed *= 0.2f;
+                    const float a = fc_yaw * 3.1415927f / 1024.0f, p = fc_pitch * 3.1415927f / 1024.0f;
+                    // camera space looks down -z, +x is screen left (Renderer::begin)
+                    const float fx = std::cos(p) * std::sin(a), fy = std::sin(p), fz = -std::cos(a) * std::cos(p);
+                    const float rx = -std::cos(a), rz = -std::sin(a);
+                    const float f = float(keys[SDL_SCANCODE_W] || opt.hold.find("freecam") != std::string::npos) -
+                                    float(keys[SDL_SCANCODE_S]);
+                    const float r = float(keys[SDL_SCANCODE_D]) - float(keys[SDL_SCANCODE_A]);
+                    const float u = float(keys[SDL_SCANCODE_E] || keys[SDL_SCANCODE_SPACE]) -
+                                    float(keys[SDL_SCANCODE_Q] || keys[SDL_SCANCODE_C]);
+                    fc_x += (fx * f + rx * r) * speed;
+                    fc_y += (fy * f + u) * speed;
+                    fc_z += (fz * f + rz * r) * speed;
+                    cam.x = fc_x;
+                    cam.y = fc_y;
+                    cam.z = fc_z;
+                    cam.yaw = fc_yaw;
+                    cam.pitch = fc_pitch < 0 ? fc_pitch + 2048.0f : fc_pitch;
+                    cam.roll = 0;
+                } else if (player) {
                     scr::CarInput in;
                     const bool* keys = SDL_GetKeyboardState(nullptr);
                     auto held = [&](const char* k) { return opt.hold.find(k) != std::string::npos; };
@@ -818,19 +912,22 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     else
                         player->race.player.update(*track, in, clock.frame_time(), clock.pow_table_row());
                     race_audio.update(player->race, clock.frame_time());
+                    if (player->cpu_cars && player->race.started && !player->race.finished && !player->race.failed) {
+                        // car_check_obstacle_hits: in every race the player knocks cones and
+                        // barriers flying (car_collide_vs_cpu in races, car_collide_obstacles in
+                        // the special modes); Cone Carnage gives a second for each
+                        scr::Race& rr = player->race;
+                        const int hits = obstacles.collide(rr.player);
+                        for (int i = 0; i < hits; ++i) mixer.play(5);
+                        if (rr.mode == 0x20) rr.time_left += float(hits);
+                    }
                     if (player->race.mode == 4 || player->race.mode == 0x20 || player->race.mode == 0x40) {
                         scr::Race& rr = player->race;
-                        // car_collide_obstacles; Cone Carnage gives a second per obstacle
-                        if (rr.started && !rr.finished && !rr.failed) {
-                            const int hits = obstacles.collide(rr.player);
-                            for (int i = 0; i < hits; ++i) mixer.play(5);
-                            if (rr.mode == 0x20) rr.time_left += float(hits);
-                        }
                         if (rr.gate_sound) mixer.play(9);
                         if (rr.mode == 4 && rr.timing_started && !rr.finished) {
                             const scr::Car& pc = rr.player;
-                            ghost.recording.push_back({pc.pos_x, pc.pos_y + pc.body_lift, pc.pos_z, pc.pitch + pc.lean_pitch,
-                                                       pc.yaw + pc.drift_angle, pc.roll + pc.lean_roll,
+                            ghost.recording.push_back({pc.pos_x, pc.pos_y + pc.body_ofs_y, pc.pos_z, pc.pitch + pc.body_pitch_ofs,
+                                                       pc.yaw + pc.drift_angle, pc.roll + pc.body_roll_ofs,
                                                        int32_t(pc.render_animation()), pc.surface_render_flag, rr.lap_time});
                         }
                         if (rr.finished && !rr.failed && rr.mode == 4 && !ghost.recording.empty() &&
@@ -857,16 +954,20 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     cam.yaw = float(int(player->camera.yaw * kToUnits) & 0x7ff);
                     cam.roll = float(int(player->camera.roll * kToUnits) & 0x7ff);
                 }
+                const auto perf_t0 = std::chrono::steady_clock::now();
                 renderer3d.begin(*track, cam, fb);
                 renderer3d.draw_placements();
                 // obstacles_update and the obstacles
-                obstacles.update(*track, clock.frame_time());
+                if (!freecam) obstacles.update(*track, clock.frame_time());
                 for (const scr::Obstacle& o : obstacles.list) {
                     if (o.y == -20000 || size_t(o.model) >= obstacles.models.size()) continue;
                     constexpr float kObsUnits = 1024.0f / 3.1415927410125732f;
                     scr::Pose op;
                     op.x = float(o.x);
                     op.y = float(o.y);
+                    // half of each obstacle is below the ground (it stands at the ground height);
+                    // the original draws it over the ground all the same (painter's order)
+                    op.depth_bias = kObstacleBias;
                     op.z = float(o.z);
                     op.ax = float(int(o.ax * kObsUnits) & 0x7ff);
                     op.ay = float(int(o.ay * kObsUnits) & 0x7ff);
@@ -874,7 +975,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     renderer3d.draw_model(obstacles.models[size_t(o.model)], op);
                 }
                 // The moving scenery (instance angles: yaw only).
-                if (!player) anims.update(int(cam.x), int(cam.z), clock.frame_time());
+                if (!player && !freecam) anims.update(int(cam.x), int(cam.z), clock.frame_time());
                 constexpr float kAnimToUnits = 1024.0f / 3.1415927410125732f;
                 for (size_t i = 0; i < anims.list.size() && i < anim_models.size(); ++i) {
                     const scr::TrackAnimation& an = anims.list[i];
@@ -892,20 +993,50 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     constexpr float kToUnits = 1024.0f / 3.1415927410125732f;
                     scr::Pose pose;
                     pose.x = float(c.pos_x);
-                    pose.y = float(c.pos_y + c.body_lift);
+                    // car_sync_render_object: the crash bounce and tumble (body_ofs_y, body_*_ofs) on
+                    // top of the car's own position and angles
+                    pose.y = float(c.pos_y + c.body_ofs_y);
                     pose.z = float(c.pos_z);
-                    pose.ax = float(int((c.pitch + c.lean_pitch) * kToUnits) & 0x7ff);
+                    pose.ax = float(int((c.pitch + c.body_pitch_ofs) * kToUnits) & 0x7ff);
                     pose.ay = float(int((c.yaw + c.drift_angle) * kToUnits) & 0x7ff);
-                    pose.az = float(int((c.roll + c.lean_roll) * kToUnits) & 0x7ff);
+                    pose.az = float(int((c.roll + c.body_roll_ofs) * kToUnits) & 0x7ff);
                     pose.animation = int32_t(c.render_animation());
                     pose.reflection = c.surface_render_flag;
                     // car_apply_surface sets the (global) scroll rate from the player's surface.
                     const float env_rate = c.marker_flags == 0 ? 0.002f : 0.03f;
                     pose.env = &player->env;
                     pose.env_rate = env_rate;
+                    // car_update_shadow_position: 20 units further from the camera, on the ground,
+                    // tilted with the body.
                     scr::Pose sh = pose;
+                    {
+                        const double dx = double(cam.x) - c.pos_x, dz = double(cam.z) - c.pos_z;
+                        const double len = std::sqrt(dx * dx + dz * dz);
+                        if (len > 0) {
+                            sh.x = float(std::lrint(double(c.pos_x) - dx / len * 20.0));
+                            sh.z = float(std::lrint(double(c.pos_z) - dz / len * 20.0));
+                        }
+                    }
                     sh.y = float(c.ground_y - 2);
-                    if (player->camera.car_visible) {
+                    // the shadow keeps its angles while the car tumbles (crash state 1)
+                    if (c.crash_state != 1) player->shadow_angles = {pose.ax, pose.az};
+                    sh.ax = player->shadow_angles[0];
+                    sh.az = player->shadow_angles[1];
+                    sh.env = nullptr;
+                    sh.depth_bias = kShadowBias;
+                    // the tyre smoke (car_sync_debris_objects: instance position and animation word)
+                    if (smoke_model)
+                        for (const scr::SmokePuff& sp : c.smoke) {
+                            if (!sp.on) continue;
+                            scr::Pose spose;
+                            spose.x = float(sp.x);
+                            spose.y = float(sp.y);
+                            spose.z = float(sp.z);
+                            spose.animation = sp.animation;
+                            spose.depth_bias = kShadowBias;  // on the road, not in it
+                            renderer3d.draw_model(*smoke_model, spose);
+                        }
+                    if (player->camera.car_visible || freecam) {
                         if (shadow) renderer3d.draw_model(*shadow, sh);
                         renderer3d.draw_model(player->model, pose);
                     }
@@ -943,10 +1074,16 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                             player->cpu_env.resize(player->race.opponents.size());
                         op.env = &player->cpu_env[i];
                         op.env_rate = env_rate;
+                        // the shadow on the ground, tilted with the car (kept as it was while it crashes)
+                        if (player->cpu_shadow.size() < player->race.opponents.size())
+                            player->cpu_shadow.resize(player->race.opponents.size());
+                        if (o.crash_state == 0) player->cpu_shadow[i] = {op.ax, op.az};
                         scr::Pose osh = op;
                         osh.y = float(o.ground_y - 2);
-                        osh.ax = 0;
-                        osh.az = 0;
+                        osh.ax = player->cpu_shadow[i][0];
+                        osh.az = player->cpu_shadow[i][1];
+                        osh.env = nullptr;
+                        osh.depth_bias = kShadowBias;
                         if (shadow) renderer3d.draw_model(*shadow, osh);
                         renderer3d.draw_model(player->cpu_models[i], op);
                     }
@@ -956,7 +1093,13 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     renderer3d.draw_model(c.model, c.pose);
                 }
                 renderer3d.finish();
-                if (player && player->cpu_cars && hud) {
+                {
+                    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - perf_t0).count();
+                    perf_total += ms;
+                    perf_max = std::max(perf_max, ms);
+                    ++perf_frames;
+                }
+                if (player && player->cpu_cars && hud && !freecam) {
                     const scr::Race& r = player->race;
                     const scr::Car& c = r.player;
                     scr::HudState hs;
@@ -1066,6 +1209,34 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             ++frame;
         }
 
+        if (screenshot_pending && frame > 0) {
+            // F12: the frame as drawn (render size, before scaling to the window), as a PNG in
+            // Pictures/Screamer (or next to the program when there is no Pictures folder).
+            screenshot_pending = false;
+            std::string dir;
+            if (const char* pics = SDL_GetUserFolder(SDL_FOLDER_PICTURES)) dir = std::string(pics) + "Screamer/";
+            const std::time_t now = std::time(nullptr);
+            std::tm tm{};
+            localtime_s(&tm, &now);
+            char name[64];
+            std::strftime(name, sizeof name, "screamer_%Y%m%d_%H%M%S", &tm);
+            std::string path = dir + name + ".png";
+            for (int i = 2; std::filesystem::exists(path); ++i) path = dir + name + "_" + std::to_string(i) + ".png";
+            scr::SurfacePtr shot = scr::framebuffer_to_surface(fb);
+            if (save_or_log(shot.get(), path)) {
+                // where it was taken, to look at the same view again (--scene track --camera)
+                if (std::FILE* f = std::fopen((path.substr(0, path.size() - 4) + ".txt").c_str(), "w")) {
+                    std::fprintf(f, "track %s\n", opt.track.c_str());
+                    std::fprintf(f, "--camera %d,%d,%d,%d,%d,%d\n", int(cam.x), int(cam.y), int(cam.z), int(cam.yaw),
+                                 int(cam.pitch), int(cam.roll));
+                    if (player) {
+                        const scr::Car& c = player->race.player;
+                        std::fprintf(f, "car %d,%d,%d yaw %.4f\n", c.pos_x, c.pos_y, c.pos_z, double(c.yaw));
+                    }
+                    std::fclose(f);
+                }
+            }
+        }
         if (stepped) {
             void* pixels; int pitch;
             if (SDL_LockTexture(tex, nullptr, &pixels, &pitch)) {
@@ -1102,6 +1273,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     }
 
     SDL_Log("frames=%llu", static_cast<unsigned long long>(frame));
+    if (opt.perf && perf_frames)
+        SDL_Log("render3d: %.2f ms average, %.2f ms worst over %d frames at %dx%d", perf_total / perf_frames, perf_max,
+                perf_frames, fb.width(), fb.height());
     shared.frames_run = frame;
     if (!opt.record_audio.empty() && !write_wav(opt.record_audio, recorded, 44100)) exit_code = 1;
     if (audio_stream) SDL_DestroyAudioStream(audio_stream);

@@ -19,6 +19,7 @@
 #include "core/track.h"
 
 #include <array>
+#include <memory>
 #include <vector>
 
 namespace scr {
@@ -67,7 +68,22 @@ struct Pose {
     // until the first car_apply_surface).
     EnvScroll* env = nullptr;
     float env_rate = 0.008f;
+    // Drawn as if this many units nearer the camera in the depth test (negative: further). The original sorts
+    // whole objects and never depth-tests, so a car's shadow (a flat quad tilted with the car)
+    // always lies on the road; a bias keeps it from sinking into slopes here.
+    float depth_bias = 0;
+    // Road pieces (track placements of slot 0): they meet edge to edge but are transformed
+    // separately, and the hairline cracks between them would show the sky; their polygons
+    // reach a third of an original pixel past their edges.
+    bool seal_edges = false;
 };
+
+// The flat ground pieces of the scenery are tested and written as if this much further away,
+// so the road and its verges, drawn after them in the original, stay on top where the
+// ground pokes up through them.
+constexpr float kFlatGroundBias = 4096.0f;
+// Car wheels (Part::wheel) are tested as if this much nearer.
+constexpr float kWheelBias = 64.0f;
 
 // Material frame shown by cell_begin + mat*_draw: frames * phase >> 14, where the phase is
 // animation >> 2, or the low 14 bits of the global animation counter for animation < 0.
@@ -76,9 +92,22 @@ constexpr int material_frame(int frames, int32_t animation, int32_t anim_counter
     return int((int64_t(frames) * phase) >> 14);
 }
 
+class WorkerPool;
+
+// Objects and parts whose bounding sphere lies wholly outside the view are skipped; polygons
+// are clipped and projected as they come, and their pixels are filled at finish(), by all CPU
+// cores at once, each taking bands of rows. Every pixel sees the polygons in the order they
+// were drawn, so the picture does not depend on the number of threads.
 class Renderer {
 public:
+    Renderer();
+    ~Renderer();
+    Renderer(Renderer&&) noexcept;
+    Renderer& operator=(Renderer&&) noexcept;
+
     void set_textures(bool on) { textures_ = on; }
+    // Threads that fill pixels (<= 0: one per hardware thread, the default).
+    void set_threads(int threads);
     void set_anim_counter(int32_t counter) { anim_counter_ = counter; }  // SimClock::anim_counter()
 
     // Clears, draws the background panorama and every placement of the track.
@@ -96,6 +125,7 @@ public:
     // The sky/background band, like render_draw_background: panorama row 234 sits on the
     // horizon, the column offset follows the yaw ((0x7ff - yaw) / 2, wrapping at 512).
     static void draw_background(const PcxImage& bck, const Camera& cam, Framebuffer& fb);
+    static void draw_background_rows(const PcxImage& bck, const Camera& cam, Framebuffer& fb, int y0, int y1);
 
 private:
     struct ClipVert {
@@ -103,14 +133,38 @@ private:
         float u, v;     // texels
     };
     struct Deferred {
-        std::vector<ClipVert> poly;
+        uint32_t first, count;  // in deferred_verts_
         const Material* mat;
         uint8_t color;
         int32_t animation, reflection;
         float depth;
+        float depth_bias;
     };
-    void draw_polygon(const std::vector<ClipVert>& poly, const Material* mat, uint8_t face_color, int32_t animation,
-                      int32_t reflection);
+    struct Scr {
+        float x, y, iz, uz, vz;
+    };
+    // What a polygon's pixels are filled with.
+    struct Fill {
+        const Material* mat;
+        const uint8_t* texels;  // the frame's pixels when every texel lies inside the library, else null
+        int mode;               // Mode
+        int frame;
+        int wmask, hmask;       // size - 1 for power-of-two sizes, else -1
+        uint8_t flat;
+        bool use_texels, writes_depth;
+        float depth_bias;       // in units of d = 128 - z
+        float edge_slack;       // pixels the polygon reaches past its edges
+    };
+    struct Tri {
+        Scr a, b, c;
+        int y0, y1, x0, x1;
+        uint32_t fill;
+    };
+    // Clips, projects and queues the polygon's triangles.
+    void draw_polygon(const ClipVert* poly, size_t count, const Material* mat, uint8_t face_color, int32_t animation,
+                      int32_t reflection, float depth_bias = 0);
+    bool sphere_visible(float x, float y, float z, float r) const;
+    void fill_rows(int y0, int y1);
 
     const Track* track_ = nullptr;
     const Camera* cam_ = nullptr;
@@ -119,6 +173,14 @@ private:
     RenderStats stats_{};
     std::vector<float> depth_;  // 1/z per pixel
     std::vector<Deferred> deferred_;
+    std::vector<ClipVert> deferred_verts_;
+    std::vector<Fill> fills_;
+    std::vector<Tri> tris_;
+    // view frustum planes in camera space (unit normals, offsets), for sphere_visible
+    std::array<std::array<float, 4>, 4> planes_{};
+    int plane_count_ = 0;
+    float edge_slack_ = 0;  // for the polygons of the model being drawn
+    std::unique_ptr<WorkerPool> pool_;
     std::vector<float> wx_, wy_, wz_;
     std::vector<std::array<int, 2>> env_uv_;
     bool textures_ = true;

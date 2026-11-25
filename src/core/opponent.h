@@ -88,6 +88,10 @@ public:
     float crash_pitch = 0, crash_yaw = 0, crash_roll = 0;
     int track_marker = 0, marker_flags = 0, lap = 0;
     float track_progress = 0;
+    // opponent_update_track_progress keeps the same checkpoint bookkeeping as the player: a lap
+    // counts only after every marker has been passed (pad_328, checkpoints_passed).
+    std::vector<uint8_t> checkpoints_seen;
+    int checkpoints_passed = 0;
     int race_position = 0;
     bool active = true;
     float viewer_distance = 0;

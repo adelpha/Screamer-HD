@@ -69,6 +69,15 @@ struct CarWheel {
     float load_long = 0;              // +0x40
 };
 
+// A puff of tyre smoke (SMOKE.3DX; car_update_debris / car_sync_debris_objects): eight slots
+// of 0x28 bytes at PlayerCar +0x308.
+struct SmokePuff {
+    bool on = false;                // +0x08
+    int x = 0, y = 0, z = 0;        // world position (instance +0x08..)
+    int local_x = 0, local_z = 0;   // +0x18 / +0x20 where it came out, in the car
+    int32_t animation = 0;          // instance +0x20: 0..0xffff over its life (the texture frames)
+};
+
 struct CarProbe {
     int local_x = 0, local_z = 0;  // +0x00 / +0x08 corner in the car
     int x = 0, z = 0;              // +0x0c / +0x14
@@ -141,6 +150,11 @@ public:
     // Sound cues from this frame, played by RaceAudio (the original calls sfx_* inline):
     bool crash_sound = false;  // car_update_crash_state 2: sfx 8 (dentone) and the "crash" line
     bool wall_sound = false;   // car_update_track_heading, a wall without a crash: sfx 4 (wallh1)
+    // Tyre smoke: while the skid noise plays, during crash bounces and in crash state 5, a
+    // puff leaves each rear wheel every 0.05 s; it follows the car's frame and lives 2/3 s.
+    std::array<SmokePuff, 8> smoke{};
+    float smoke_timer = 0;          // +0x304
+    uint32_t frame_counter = 0;     // g_frame_counter (the frames this car has run)
     bool skid_sound = false;   // car_update_skid / crash state 5: the skid noise (sfx 0) plays
     void update_bumpers();
     std::array<CarProbe, 4> probe{};
@@ -169,6 +183,8 @@ private:
     void wheel_ground(const Track& track);
     void update_track_heading(const Track& track);
     void body_from_wheels();
+    void smoke_spawn();  // car_update_debris
+    void smoke_update(); // car_sync_debris_objects
     void crash_update(const Track& track);
     void set_state(int s) { if (crash_state == 0) crash_state = s; }  // car_set_state
 
@@ -210,6 +226,7 @@ private:
               int& cx, int& cy, int& cz);
     ChaseCamera chase_;
     bool blending_ = false, start_blend_ = false;
+    int old_view_ = 2;
     float off_angle_[3]{};
     int off_pos_[3]{};
     int pending_viewport_ = 200, pending_hud_ = 2;

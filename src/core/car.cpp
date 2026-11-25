@@ -121,7 +121,10 @@ void Car::update(const Track& track, const CarInput& in, float frame_time, int p
     update_steering(in);
     wheel_loads();
     update_skid();
+    if (skid_sound && crash_state == 0) smoke_spawn();  // car_update_skid
     crash_update(track);
+    smoke_update();
+    ++frame_counter;
     // car_update_track_contact (progress and checkpoints are not ported)
     corner_probes(track);
     resolve_corner_probes(track);
@@ -376,6 +379,47 @@ void Car::update_skid() {
     skid_sound = skidding || 0.23 < std::fabs(double(drift_angle));
 }
 
+void Car::smoke_spawn() {
+    if (smoke_timer < 0.05f) {
+        smoke_timer = dt_ + smoke_timer;
+        return;
+    }
+    smoke_timer = 0;
+    // a puff for each rear wheel (wheel[1], wheel[3]), in the first free slots, scattered by
+    // the low bits of the position and the frame counter
+    size_t slot = 0;
+    for (int w = 0; w < 4; w += 2) {
+        while (slot < smoke.size() && smoke[slot].on) ++slot;
+        if (slot >= smoke.size()) break;
+        SmokePuff& p = smoke[slot];
+        p.on = true;
+        p.animation = 0;
+        const int sign = (frame_counter & uint32_t(w)) == 0 ? 1 : -1;
+        const int u = int(frame_counter & 0x3f);
+        p.local_x = wheel[size_t(w) + 1].local_x + (pos_x & 7) * u * sign;
+        p.local_z = wheel[size_t(w) + 1].local_z + (pos_z & 7) * u;
+    }
+}
+
+void Car::smoke_update() {
+    for (SmokePuff& p : smoke) {
+        if (!p.on) continue;
+        // turned with the car (yaw + drift, then pitch), at the car
+        int ox, oz;
+        rotate_xz(ox, oz, p.local_x, p.local_z, -(yaw + drift_angle));
+        const float c = float(std::cos(double(pitch))), s = float(std::sin(double(pitch)));
+        p.x = ox + pos_x;
+        p.y = chop(double(float(oz) * s)) + pos_y;
+        p.z = chop(double(float(oz) * c)) + pos_z;
+        // obj_animate_step(dt * 1.5): through the frames in 2/3 s, then gone
+        p.animation = chop(double(dt_ * 1.5f * 65535.0f) + double(p.animation));
+        if (0x10000 <= p.animation) {
+            p.animation -= 0x10000;
+            p.on = false;
+        }
+    }
+}
+
 void Car::corner_probes(const Track& track) {
     const double cr = std::fabs(std::cos(double(roll))), cp = std::fabs(std::cos(double(pitch)));
     wall_contact = false;
@@ -454,7 +498,8 @@ void Car::update_track_heading(const Track& track) {
     while (kPi < diff) diff += -kPi;
     if (kHalfPi < diff) diff = kPi - diff;
     diff = diff / kHalfPi;
-    if (slide_threshold < speed * diff) set_state(2);  // too fast into the wall: crash
+    // too fast into the wall: crash (not tunnels and the like, surface_render_flag != 0)
+    if (slide_threshold < speed * diff && surface_render_flag == 0) set_state(2);
     else wall_sound = true;
     const float len = float(safe_sqrt(double(wall_push_x) * wall_push_x + double(wall_push_z) * wall_push_z));
     if (len > 0.0f) {
@@ -502,6 +547,7 @@ void Car::crash_update(const Track& track) {
         crash_roll_rate = pow_table(pow_row_, 0x184 / 4) * crash_roll_rate;
         body_roll_ofs = crash_roll_rate * dt_ + body_roll_ofs;
         if (body_ofs_y < 1) {
+            smoke_spawn();
             ++crash_bounce_count;
             body_ofs_y = 0;
             crash_bounce = float(-(double(crash_bounce) * 0.4));
@@ -516,6 +562,7 @@ void Car::crash_update(const Track& track) {
             skid_sound = true;
             cam_shake_x ^= 0x1f;
             yaw = float(double(steer) * 0.3 + double(yaw));
+            smoke_spawn();
         }
         break;
     case 6:
@@ -604,6 +651,7 @@ constexpr ViewDef kViews[4] = {{0, 200, 2}, {0, 132, 1}, {1, 200, 2}, {9, 200, 2
 
 void ViewCamera::select(int v) {
     if (v < 0 || v > 3 || v == view) return;
+    old_view_ = view;
     view = v;
     pending_viewport_ = kViews[v].viewport;
     pending_hud_ = kViews[v].hud;
@@ -645,9 +693,14 @@ void ViewCamera::update(const Car& car, int camera_hi, float frame_time, int pow
     float p, yw, r;
     int cx, cy, cz;
     if (start_blend_) {
-        // Remember the old camera, then blend from it (camera_interpolate).
-        const float op = pitch, oyw = yaw, orl = roll;
-        const int ox = x, oy = y, oz = z;
+        // camera_handle_view_keys: the old view's camera for this frame (camera_update_view
+        // before the switch), then the new one; camera_interpolate blends from the difference.
+        float op, oyw, orl;
+        int ox, oy, oz;
+        const int new_view = view;
+        view = old_view_;
+        base(car, camera_hi, frame_time, pow_row, op, oyw, orl, ox, oy, oz);
+        view = new_view;
         chase_.snap = true;
         base(car, camera_hi, frame_time, pow_row, p, yw, r, cx, cy, cz);
         off_pos_[0] = ox - cx; off_pos_[1] = oy - cy; off_pos_[2] = oz - cz;
@@ -702,11 +755,13 @@ void ChaseCamera::update(const Car& car, float frame_time, int pow_row, int view
     if (snap) {
         y = y_target;
         yaw = car.yaw;
-        roll = car.ground_roll;
+        roll = car.roll;
         pitch = pitch_target;
         snap = false;
     } else {
-        y = chop((double(y) - double(y_target)) * pow_table(pow_row, 0x51) + double(y_target));
+        // float_to_int_store(&cam.y, target, EBX): EBX is the snap flag, 0 here, so the height
+        // follows with pow_table index 0 (quickly), not 0x51 like the angles.
+        y = chop((double(y) - double(y_target)) * pow_table(pow_row, 0) + double(y_target));
         angle_lerp(yaw, car.yaw, 0x51);
         angle_lerp(roll, car.ground_roll, 0x51);
         angle_lerp(pitch, pitch_target, 0x51);
