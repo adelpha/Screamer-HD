@@ -5,6 +5,8 @@
 // recorded state. Prints the first frames and fields that differ.
 //
 // Usage: tracecmp TRACE GFX/MAPnH.DAT MAPn [--from N] [--to N] [--all] [--max-diff N] [--exact]
+//                 [--data DATA/MAPn.DAT] [--rpl REPLAY.RPL SKIP]
+//        tracecmp COMPACT.trace --positions OURS.bin OFFSET
 // Exit code 0 when at most N frames (default 0) differ.
 
 #include "core/car.h"
@@ -98,6 +100,37 @@ int main(int argc, char** argv) {
         return 2;
     }
     auto trace = load_trace(argv[1]);
+    for (int i = 2; i + 2 < argc; ++i)
+        if (!std::strcmp(argv[i], "--positions")) {
+            // A COMPACT recording of the original (tools/dosbox/record-replay.ps1) against our
+            // run of the same replay (screamer --replay RPL --positions OURS): every field of
+            // every frame must match. OFFSET: our frame of the recording's first record.
+            std::ifstream f(argv[i + 1], std::ios::binary);
+            std::vector<uint8_t> ours((std::istreambuf_iterator<char>(f)), {});
+            const size_t offset = size_t(std::atoi(argv[i + 2]));
+            constexpr size_t kOurs = 37 * 4;
+            if (trace.empty() || trace[0].car.size() != 0x28 + 9 * 12) {
+                std::fprintf(stderr, "%s is not a COMPACT recording\n", argv[1]);
+                return 1;
+            }
+            int bad = 0;
+            size_t k = 0;
+            for (; k < trace.size() && (offset + k + 1) * kOurs <= ours.size(); ++k) {
+                const uint8_t* g = trace[k].car.data();
+                const uint8_t* o = ours.data() + (offset + k) * kOurs;
+                // player x y z (0x4b0..), pitch yaw roll (0x4c8..), speed; CPU x y z
+                const bool same = !std::memcmp(g, o, 12) && !std::memcmp(g + 0x18, o + 24, 12) &&
+                                  !std::memcmp(g + 0x24, o + 36, 4) && !std::memcmp(g + 0x28, o + 40, 9 * 12);
+                if (same) continue;
+                if (++bad <= 10) std::printf("frame %zu differs\n", offset + k);
+            }
+            if (k < trace.size()) {
+                std::printf("ours ends after %zu of %zu frames\n", k, trace.size());
+                ++bad;
+            }
+            std::printf("%d of %zu frames differ (positions)\n", bad, k);
+            return bad ? 1 : 0;
+        }
     auto track = scr::load_track(argv[2], argv[3]);
     if (trace.size() < 2 || !track) {
         std::fprintf(stderr, "cannot load the trace or the track\n");
