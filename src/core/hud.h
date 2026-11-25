@@ -96,6 +96,11 @@ struct HudState {
     // The end of the race (race_end_screen): 1 finished (won = first), 2 out of time.
     int end = 0;
     bool won = false;
+    // race_end_screen picks the text by mode: 1/2 the position (mode 1), 4 / 0x20 / 0x40
+    // "YOU MADE IT!" or "TRY AGAIN", and in cone carnage and slalom "PERFECT!" below when
+    // every cone was hit / every gate passed without touching a cone.
+    int mode = 1;
+    bool perfect = false;
 };
 
 // The P-key panel (pause_menu): a car stereo (CDFRONTL.PKC) over the frozen race, with the

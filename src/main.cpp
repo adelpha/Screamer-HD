@@ -34,6 +34,9 @@
 #include <SDL3/SDL_main.h>
 
 #include <chrono>
+#if defined(_MSC_VER)
+#include <crtdbg.h>
+#endif
 #include <cstdio>
 #include <ctime>
 #include <cmath>
@@ -294,41 +297,57 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     // Time attack: the ghost of the best lap (ghost_record_frame / ghost_update), kept as
     // <pref dir>/MAPn.ghost: int car, float lap time, then frames of
     // { x, y, z, pitch, yaw, roll, animation, reflection, time }.
+    // Time attack: the ghost of the best lap, in the original's MAPn.ATK format (attack_save /
+    // attack_load): a 0x24-byte header { int capacity, int index, int frames, int valid,
+    // int buffer, int race_options, int car, float lap time, int pointer } and 0x28 bytes a
+    // frame { int x, y, z; float pitch, yaw, roll; int animation word, reflection word; float
+    // track progress, lap time } (ghost_record_frame). Ours are kept in the pref dir (the
+    // original wrote GAME/REPLAYS); an .ATK of the original's in REPLAYS is read too.
     struct GhostFrame {
         int x, y, z;
         float pitch, yaw, roll;
         int32_t animation, reflection;
-        float time;
+        float progress, time;
     };
+    static_assert(sizeof(GhostFrame) == 0x28);
     struct Ghost {
-        std::string path;
+        std::string path, fallback;
         int car = 0;
         float lap = 0;              // 0: none
         std::vector<GhostFrame> frames, recording;
-        bool load() {
-            std::FILE* f = std::fopen(path.c_str(), "rb");
+        bool load_from(const std::string& p) {
+            std::FILE* f = std::fopen(p.c_str(), "rb");
             if (!f) return false;
-            int32_t c = 0;
-            float l = 0;
-            bool ok = std::fread(&c, 4, 1, f) == 1 && std::fread(&l, 4, 1, f) == 1;
-            GhostFrame g{};
+            int32_t h[9]{};
+            bool ok = std::fread(h, 4, 9, f) == 9;
             frames.clear();
-            while (ok && std::fread(&g, sizeof g, 1, f) == 1) frames.push_back(g);
+            if (ok && h[3] != 0 && h[2] > 0 && h[2] < 1000000) {
+                frames.resize(size_t(h[2]));
+                ok = std::fread(frames.data(), sizeof(GhostFrame), frames.size(), f) == frames.size();
+            }
             std::fclose(f);
-            car = c;
+            float l = 0;
+            std::memcpy(&l, &h[7], 4);
+            car = h[6];
             lap = ok && !frames.empty() ? l : 0;
             return lap > 0;
         }
-        void save(float lap_time) {
+        bool load() { return load_from(path) || (!fallback.empty() && load_from(fallback)); }
+        void save(float lap_time, int race_options, int player_car) {
             std::FILE* f = std::fopen(path.c_str(), "wb");
             if (!f) return;
-            const int32_t c = car;
-            std::fwrite(&c, 4, 1, f);
-            std::fwrite(&lap_time, 4, 1, f);
-            for (const GhostFrame& g : recording) std::fwrite(&g, sizeof g, 1, f);
+            int32_t h[9]{};
+            h[0] = h[1] = h[2] = int32_t(recording.size());
+            h[3] = 1;
+            h[5] = race_options;
+            h[6] = player_car;
+            std::memcpy(&h[7], &lap_time, 4);
+            std::fwrite(h, 4, 9, f);
+            std::fwrite(recording.data(), sizeof(GhostFrame), recording.size(), f);
             std::fclose(f);
         }
     } ghost;
+    scr::Model ghost_model;              // the ghost's car when it is another than the player's
     std::vector<scr::Model> anim_models;  // per animation (an empty model draws nothing)
     const bool drive = opt.scene == "drive";
     if (opt.scene == "track" || drive) {
@@ -416,6 +435,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         std::vector<scr::EnvScroll> cpu_env;
         std::vector<std::array<float, 2>> cpu_shadow;  // shadow pitch and roll of each CPU car
         std::array<float, 2> shadow_angles{};           // the player's (kept while it tumbles)
+        int car_index = 0;                              // CARS_DATA record of the player's car
         scr::CarParts model_parts;                      // the player's car parts that move
         std::vector<scr::PartPose> part_poses;
         std::vector<scr::CarParts> cpu_parts;
@@ -448,6 +468,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             return 1;
         }
         const size_t idx = size_t(std::clamp(opt.car_index, 0, int(n) - 1));
+        player->car_index = int(idx);
         const uint8_t* rec = cars_data->data() + idx * 0x40;
         const std::string name(reinterpret_cast<const char*>(rec));
         auto path = scr::resolve_game_file(*game_dir, "GFX/" + opt.track + opt.detail + ".DAT");
@@ -479,9 +500,15 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 obstacles.load(*data, *gfx_path, opt.track, opt.game_mode == 0x20 ? "CNG" : opt.game_mode == 0x40 ? "SLA" : "OST",
                                *track, opt.race_options & 3);
             if (opt.game_mode == 4) {
-                ghost.path = opt.ghost_dir + opt.track + (opt.reversed ? "I" : "") + ".ghost";
+                // (reversed tracks share the file, as in the original: g_track_name is MAPn)
+                ghost.path = opt.ghost_dir + opt.track + ".ATK";
+                if (auto orig = scr::resolve_game_file(*game_dir, "REPLAYS/" + opt.track + ".ATK")) ghost.fallback = *orig;
                 ghost.car = int(idx);
-                if (opt.ghost) ghost.load();
+                if (opt.ghost && ghost.load() && ghost.car != int(idx) && ghost.car >= 0 && size_t(ghost.car) < n) {
+                    // ghost_car_load: the car the ghost was driven in
+                    const uint8_t* gr = cars_data->data() + size_t(ghost.car) * 0x40;
+                    if (auto gm = scr::load_object(*path, std::string(reinterpret_cast<const char*>(gr)) + ".3DX")) ghost_model = std::move(*gm);
+                }
             }
         } else if (player->cpu_cars) {
             size_t next = 0;
@@ -1008,12 +1035,13 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                             const scr::Car& pc = rr.player;
                             ghost.recording.push_back({pc.pos_x, pc.pos_y + pc.body_ofs_y, pc.pos_z, pc.pitch + pc.body_pitch_ofs,
                                                        pc.yaw + pc.drift_angle, pc.roll + pc.body_roll_ofs,
-                                                       int32_t(pc.render_animation()), pc.surface_render_flag, rr.lap_time});
+                                                       int32_t(pc.render_animation()), pc.surface_render_flag,
+                                                       pc.track_progress, rr.lap_time});
                         }
                         if (rr.finished && !rr.failed && rr.mode == 4 && !ghost.recording.empty() &&
                             (ghost.lap <= 0 || rr.best_lap < ghost.lap)) {
                             // race_run's attack_save: the new best lap becomes the ghost
-                            ghost.save(rr.best_lap);
+                            ghost.save(rr.best_lap, opt.race_options, player->car_index);
                             ghost.recording.clear();
                         }
                     }
@@ -1126,20 +1154,33 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     }
                     // ghost_sync_render_object: where the ghost was at this lap time
                     if (player->race.mode == 4 && ghost.lap > 0 && !ghost.frames.empty() && player->race.timing_started) {
+                        // ghost_update: the first frame at or after this lap time, drawn from the
+                        // one before towards it
                         const float t = player->race.lap_time;
                         size_t gi = 0;
-                        while (gi + 1 < ghost.frames.size() && ghost.frames[gi + 1].time <= t) ++gi;
-                        const GhostFrame& g = ghost.frames[gi];
+                        while (gi + 1 < ghost.frames.size() && ghost.frames[gi].time < t) ++gi;
+                        const GhostFrame& g1 = ghost.frames[gi];
+                        const GhostFrame& g0 = ghost.frames[gi > 0 ? gi - 1 : 0];
+                        const float span = g1.time - g0.time;
+                        const float f = span > 0 ? std::clamp((t - g0.time) / span, 0.0f, 1.0f) : 1.0f;
+                        auto mix = [&](float a, float b) { return a + (b - a) * f; };
+                        auto mix_angle = [&](float a, float b) {
+                            float d = b - a;
+                            while (d > 3.14159265f) d -= 6.2831853f;
+                            while (d < -3.14159265f) d += 6.2831853f;
+                            return a + d * f;
+                        };
                         scr::Pose gp;
-                        gp.x = float(g.x);
-                        gp.y = float(g.y);
-                        gp.z = float(g.z);
-                        gp.ax = float(int(g.pitch * kToUnits) & 0x7ff);
-                        gp.ay = float(int(g.yaw * kToUnits) & 0x7ff);
-                        gp.az = float(int(g.roll * kToUnits) & 0x7ff);
-                        gp.animation = g.animation;
-                        gp.reflection = g.reflection;
-                        renderer3d.draw_model(player->model, gp);
+                        gp.x = mix(float(g0.x), float(g1.x));
+                        gp.y = mix(float(g0.y), float(g1.y));
+                        gp.z = mix(float(g0.z), float(g1.z));
+                        gp.ax = float(int(mix_angle(g0.pitch, g1.pitch) * kToUnits) & 0x7ff);
+                        gp.ay = float(int(mix_angle(g0.yaw, g1.yaw) * kToUnits) & 0x7ff);
+                        gp.az = float(int(mix_angle(g0.roll, g1.roll) * kToUnits) & 0x7ff);
+                        gp.animation = g0.animation;
+                        gp.reflection = g0.reflection;
+                        gp.dynamic = true;
+                        renderer3d.draw_model(ghost_model.parts.empty() ? player->model : ghost_model, gp);
                     }
                     // opponent_sync_render_object
                     for (size_t i = 0; i < player->race.opponents.size(); ++i) {
@@ -1262,6 +1303,19 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         }
                     }
                     hs.won = r.finished && r.player_position == 1;
+                    hs.mode = r.mode;
+                    if (r.mode == 4) {
+                        // race_result_time_attack: beaten the ghost (or no ghost to beat)
+                        hs.won = r.finished && (ghost.lap <= 0 || r.total_time < ghost.lap);
+                    } else if (r.mode == 0x20) {
+                        // race_result_carnage: every cone
+                        hs.won = r.finished;
+                        hs.perfect = !obstacles.list.empty() && obstacles.hits == int(obstacles.list.size());
+                    } else if (r.mode == 0x40) {
+                        // race_result_checkpoints: every gate and no cone
+                        hs.won = r.finished;
+                        hs.perfect = r.markers_passed == int(r.gates.size()) && obstacles.hits == 0;
+                    }
                     hs.player_x = c.pos_x;
                     hs.player_z = c.pos_z;
                     hs.player_yaw = c.yaw;
@@ -1423,6 +1477,16 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
 int main(int argc, char** argv) {
     Options opt;
     if (!parse_args(argc, argv, opt)) return 2;
+#if defined(_MSC_VER) && defined(_DEBUG)
+    if (opt.headless) {
+        // headless runs (tests): debug assertions go to stderr instead of a dialog box
+        _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+        _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+        _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+        _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+        _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+    }
+#endif
 
     if (opt.headless) {
         SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
