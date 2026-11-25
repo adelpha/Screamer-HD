@@ -105,10 +105,11 @@ constexpr int material_frame(int frames, int32_t animation, int32_t anim_counter
 
 class WorkerPool;
 
-// Objects and parts whose bounding sphere lies wholly outside the view are skipped; polygons
-// are clipped and projected as they come, and their pixels are filled at finish(), by all CPU
-// cores at once, each taking bands of rows. Every pixel sees the polygons in the order they
-// were drawn, so the picture does not depend on the number of threads.
+// Objects and parts whose bounding sphere lies wholly outside the view are skipped. The draw
+// calls only note what to draw; flush_geometry() (or finish()) then transforms, clips and
+// projects everything on all CPU cores, and finish() fills the pixels, each core taking bands
+// of rows (render3d_fill.h). Every pixel sees the polygons in the order they were drawn, so
+// the picture does not depend on the number of threads.
 class Renderer {
 public:
     Renderer();

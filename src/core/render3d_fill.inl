@@ -48,6 +48,7 @@ SCR_INLINE VF vcmplt(VF a, VF b) { return _mm256_cmp_ps(a, b, _CMP_LT_OS); }
 SCR_INLINE VF vcmpnlt(VF a, VF b) { return _mm256_cmp_ps(a, b, _CMP_NLT_US); }
 SCR_INLINE int vbits(VF a) { return _mm256_movemask_ps(a); }
 SCR_INLINE VF vloadu(const float* p) { return _mm256_loadu_ps(p); }
+SCR_INLINE VI viload(const int32_t* p) { return _mm256_load_si256(reinterpret_cast<const __m256i*>(p)); }
 SCR_INLINE void vstore(float* p, VF a) { _mm256_store_ps(p, a); }
 SCR_INLINE void vistore(int32_t* p, VI a) { _mm256_store_si256(reinterpret_cast<__m256i*>(p), a); }
 SCR_INLINE VI vcvtt(VF a) { return _mm256_cvttps_epi32(a); }
@@ -63,9 +64,10 @@ SCR_INLINE VI vigt(VI a, VI b) { return _mm256_cmpgt_epi32(a, b); }
 SCR_INLINE VI vieq(VI a, VI b) { return _mm256_cmpeq_epi32(a, b); }
 SCR_INLINE VI visign(VI a) { return _mm256_srai_epi32(a, 31); }
 SCR_INLINE VI vishl8(VI a) { return _mm256_slli_epi32(a, 8); }
-SCR_INLINE VI vishr16(VI a) { return _mm256_srli_epi32(a, 16); }
-// a * b for a in -32768 .. 32767 and b in 0 .. 32767
-SCR_INLINE VI vimul_small(VI a, VI b) { return _mm256_mullo_epi32(a, b); }
+SCR_INLINE VI vishr15(VI a) { return _mm256_srli_epi32(a, 15); }
+// the high and the low word of the products of the lanes' low words (unsigned)
+SCR_INLINE VI vimulhi16(VI a, VI b) { return _mm256_mulhi_epu16(a, b); }
+SCR_INLINE VI vimullo16(VI a, VI b) { return _mm256_mullo_epi16(a, b); }
 #else
 constexpr int kLanes = 4;
 using VF = __m128;
@@ -91,6 +93,7 @@ SCR_INLINE VF vcmplt(VF a, VF b) { return _mm_cmplt_ps(a, b); }
 SCR_INLINE VF vcmpnlt(VF a, VF b) { return _mm_cmpnlt_ps(a, b); }
 SCR_INLINE int vbits(VF a) { return _mm_movemask_ps(a); }
 SCR_INLINE VF vloadu(const float* p) { return _mm_loadu_ps(p); }
+SCR_INLINE VI viload(const int32_t* p) { return _mm_load_si128(reinterpret_cast<const __m128i*>(p)); }
 SCR_INLINE void vstore(float* p, VF a) { _mm_store_ps(p, a); }
 SCR_INLINE void vistore(int32_t* p, VI a) { _mm_store_si128(reinterpret_cast<__m128i*>(p), a); }
 SCR_INLINE VI vcvtt(VF a) { return _mm_cvttps_epi32(a); }
@@ -106,10 +109,9 @@ SCR_INLINE VI vigt(VI a, VI b) { return _mm_cmpgt_epi32(a, b); }
 SCR_INLINE VI vieq(VI a, VI b) { return _mm_cmpeq_epi32(a, b); }
 SCR_INLINE VI visign(VI a) { return _mm_srai_epi32(a, 31); }
 SCR_INLINE VI vishl8(VI a) { return _mm_slli_epi32(a, 8); }
-SCR_INLINE VI vishr16(VI a) { return _mm_srli_epi32(a, 16); }
-// a * b for a in -32768 .. 32767 and b in 0 .. 32767: the low words multiplied (signed);
-// b's high word is zero, so the high words add nothing
-SCR_INLINE VI vimul_small(VI a, VI b) { return _mm_madd_epi16(a, b); }
+SCR_INLINE VI vishr15(VI a) { return _mm_srli_epi32(a, 15); }
+SCR_INLINE VI vimulhi16(VI a, VI b) { return _mm_mulhi_epu16(a, b); }
+SCR_INLINE VI vimullo16(VI a, VI b) { return _mm_mullo_epi16(a, b); }
 #endif
 
 enum class Kind { Darken, Flat, Library, Opaque, Transparent, Translucent };
@@ -141,19 +143,19 @@ SCR_INLINE float ceil_f(float v) {
 }
 SCR_INLINE int wrapping_add(int a, int b) { return int(uint32_t(a) + uint32_t(b)); }
 
-// i mod size (0 .. size - 1) for every lane with i in -32768 .. 32767: the quotient from a
-// single-precision multiply is right or one off, and the remainder is put right after.
-SCR_INLINE VI wrap_mod(VI i, VI size, VF rsize) {
-    const VI q = vcvtt(vmul(vcvt(i), rsize));
-    VI r = visub(i, vimul_small(q, size));
-    r = viadd(r, viand(size, visign(r)));           // r < 0: + size
-    r = visub(r, viandnot(vigt(size, r), size));    // r >= size: - size
-    return r;
+// i mod size (0 .. size - 1) for every lane with i in -16384 .. 16383, for a size of 2 .. 32767:
+// with bias a multiple of size from 16384 up, i + bias is 0 .. 65534 and has the same
+// remainder; its quotient by size comes from the high word of a 16-bit multiply by
+// magic = 65536 / size (rounded down), which gives the quotient or one less, and the
+// remainder is put right after. All in whole numbers: nothing to round.
+SCR_INLINE VI wrap_mod(VI i, VI size, VI bias, VI magic) {
+    const VI j = viadd(i, bias);
+    const VI r = visub(j, vimullo16(vimulhi16(j, magic), size));  // 0 .. 2 size - 1
+    return visub(r, viandnot(vigt(size, r), size));               // r >= size: - size
 }
-// Lanes (as bits) whose i is in -32768 .. 32767.
-SCR_INLINE int small_lanes(VI i) {
-    return vbits(vcastf(vieq(vishr16(viadd(i, viset1(0x8000))), viset1(0))));
-}
+// Lanes (as bits) of i with every bit above the low 15 clear; for i = u + 16384 (or that of
+// u and of v together), the lanes whose coordinates are in -16384 .. 16383.
+SCR_INLINE int small_lanes(VI i) { return vbits(vcastf(vieq(vishr15(i), viset1(0)))); }
 SCR_INLINE int wrap_scalar(int i, int size, int mask) {
     if (mask >= 0) return i & mask;
     if ((i %= size) < 0) i += size;
@@ -249,7 +251,9 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
     [[maybe_unused]] const int wmask = fl.wmask, hmask = fl.hmask;
     [[maybe_unused]] const VI vwmask = viset1(fl.wmask), vhmask = viset1(fl.hmask);
     [[maybe_unused]] const VI vwidth = viset1(fl.width), vheight = viset1(fl.height);
-    [[maybe_unused]] const VF vrwidth = vset1(fl.rwidth), vrheight = vset1(fl.rheight);
+    [[maybe_unused]] const VI ubias = viset1(fl.ubias), vbias2 = viset1(fl.vbias);
+    [[maybe_unused]] const VI umagic = viset1(fl.umagic), vmagic = viset1(fl.vmagic);
+    [[maybe_unused]] const VI range = viset1(0x4000);
     [[maybe_unused]] const uint8_t* const texels = fl.texels;
     [[maybe_unused]] const bool wide_reads = fl.wide_reads;
     [[maybe_unused]] const uint8_t flat = fl.flat;
@@ -410,10 +414,10 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
                     } else {
                         // The quick way wraps u and v to the texture in the vector registers;
                         // it needs coordinates of ordinary size.
-                        int ok = pass;
-                        if (wmask < 0) ok &= small_lanes(iu);
-                        if (hmask < 0) ok &= small_lanes(iv);
-                        if (ok != pass) {
+                        VI big = viset1(0);
+                        if (wmask < 0) big = viadd(iu, range);
+                        if (hmask < 0) big = vior(big, viadd(iv, range));
+                        if ((pass & small_lanes(big)) != pass) {
                             vstore(tzs, tz);
                             vistore(ius, iu);
                             vistore(ivs, iv);
@@ -421,8 +425,8 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
                                 if (pass & (1 << j)) pixel_general<K>(c, fl, row, drow, x + j, tzs[j], ius[j], ivs[j]);
                             continue;
                         }
-                        iu = wmask >= 0 ? viand(iu, vwmask) : wrap_mod(iu, vwidth, vrwidth);
-                        iv = hmask >= 0 ? viand(iv, vhmask) : wrap_mod(iv, vheight, vrheight);
+                        iu = wmask >= 0 ? viand(iu, vwmask) : wrap_mod(iu, vwidth, ubias, umagic);
+                        iv = hmask >= 0 ? viand(iv, vhmask) : wrap_mod(iv, vheight, vbias2, vmagic);
                         const VI at = viadd(vishl8(iv), iu);  // the texture's rows are 256 apart
 #if SCR_FILL_AVX2
                         if constexpr (K != Kind::Translucent) {
@@ -487,17 +491,13 @@ void SCR_FILL_NAME(fill_rows)(const FillContext& ctx, int band0, int band1, cons
 }
 
 void SCR_FILL_NAME(wrap_coords)(const int32_t* in, int32_t* out, size_t count, int size) {
-    const float rsize = 1.0f / float(size);
+    const int bias = (16384 + size - 1) / size * size, magic = 65536 / size;
     for (size_t i = 0; i < count; i += kLanes) {
         alignas(32) int32_t v[kLanes] = {}, r[kLanes];
         for (size_t j = 0; j < size_t(kLanes) && i + j < count; ++j) v[j] = in[i + j];
-#if SCR_FILL_AVX2
-        const VI vi = _mm256_load_si256(reinterpret_cast<const __m256i*>(v));
-#else
-        const VI vi = _mm_load_si128(reinterpret_cast<const __m128i*>(v));
-#endif
-        const int ok = small_lanes(vi);
-        vistore(r, wrap_mod(vi, viset1(size), vset1(rsize)));
+        const VI vi = viload(v);
+        const int ok = size >= 2 ? small_lanes(viadd(vi, viset1(0x4000))) : 0;
+        vistore(r, wrap_mod(vi, viset1(size), viset1(bias), viset1(magic)));
         for (size_t j = 0; j < size_t(kLanes) && i + j < count; ++j)
             out[i + j] = (ok >> j) & 1 ? r[j] : wrap_scalar(v[j], size, -1);
     }

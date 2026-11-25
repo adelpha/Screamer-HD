@@ -32,7 +32,9 @@ struct Fill {
     int frame;
     int wmask, hmask;       // size - 1 for power-of-two sizes, else -1
     int width, height;      // the material's size in texels (when texels is set)
-    float rwidth, rheight;  // 1 / size
+    // for sizes that are not powers of two (see wrap_mod): a multiple of the size from 16384 up,
+    // and 65536 / size
+    int ubias, vbias, umagic, vmagic;
     uint8_t flat;
     bool use_texels, writes_depth;
     bool wide_reads;        // four bytes can be read at every texel (AVX2 gathers)
@@ -70,7 +72,7 @@ void fill_rows_sse2(const FillContext& ctx, int band0, int band1, const TriRef* 
 void fill_rows_avx2(const FillContext& ctx, int band0, int band1, const TriRef* tris, size_t count);
 
 // u and v wrapped to the texture as the fillers do it, for the tests: out = in mod size
-// (0 .. size - 1), for size 1 .. 32767 and any in.
+// (0 .. size - 1), for size 1 .. 32767 and any in (the vector way for in of -16384 .. 16383).
 void wrap_coords_sse2(const int32_t* in, int32_t* out, size_t count, int size);
 void wrap_coords_avx2(const int32_t* in, int32_t* out, size_t count, int size);
 

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #ifdef _MSC_VER
 #include <intrin.h>
 #endif
@@ -529,6 +530,8 @@ void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Fram
     const float top = horizon - 234.0f * scale;
     const uint8_t fill = bck.pixels[size_t(bck.height - 1) * bck.width];
     const int w = fb.width();
+    int drawn_sy = -1;                 // the panorama row of the last row drawn from it,
+    const uint8_t* drawn = nullptr;    // and that row: the next rows are often the same
     for (int y = y0; y < y1; ++y) {
         const int sy = int(std::floor((float(y) - top) / scale));
         uint8_t* dst = &fb.at(0, y);
@@ -536,8 +539,14 @@ void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Fram
             std::fill(dst, dst + w, fill);
             continue;
         }
+        if (sy == drawn_sy) {
+            std::memcpy(dst, drawn, size_t(w));
+            continue;
+        }
         const uint8_t* src = bck.pixels.data() + size_t(sy) * size_t(bck.width);
         for (int x = 0; x < w; ++x) dst[x] = src[column[x]];
+        drawn_sy = sy;
+        drawn = dst;
     }
 }
 
@@ -601,8 +610,10 @@ void Renderer::draw_polygon(Geo& g, const ClipVert* in, size_t count, const Mate
         fill.wide_reads = end + 3 <= lib->data().size();
         fill.width = mat->width;
         fill.height = mat->height;
-        fill.rwidth = 1.0f / float(mat->width);
-        fill.rheight = 1.0f / float(mat->height);
+        fill.ubias = (16384 + mat->width - 1) / mat->width * mat->width;
+        fill.vbias = (16384 + mat->height - 1) / mat->height * mat->height;
+        fill.umagic = 65536 / mat->width;
+        fill.vmagic = 65536 / mat->height;
         if ((mat->width & (mat->width - 1)) == 0) fill.wmask = mat->width - 1;
         if ((mat->height & (mat->height - 1)) == 0) fill.hmask = mat->height - 1;
     }
