@@ -62,7 +62,15 @@ int __cdecl report_hook(int type, char* message, int* ret) {
 
 } // namespace
 
-void install_debug_report() {
+void install_debug_report(bool no_dialogs) {
+    if (no_dialogs) {
+        _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+        _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+        _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+        _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+        _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    }
     char exe[MAX_PATH];
     const DWORD len = GetModuleFileNameA(nullptr, exe, MAX_PATH);
     std::string p(exe, len);
@@ -71,5 +79,5 @@ void install_debug_report() {
     _CrtSetReportHook2(_CRT_RPTHOOK_INSTALL, report_hook);
 }
 #else
-void install_debug_report() {}
+void install_debug_report(bool) {}
 #endif

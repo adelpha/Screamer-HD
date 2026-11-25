@@ -1628,17 +1628,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
 int main(int argc, char** argv) {
     Options opt;
     if (!parse_args(argc, argv, opt)) return 2;
-    install_debug_report();
-#if defined(_MSC_VER) && defined(_DEBUG)
-    if (opt.headless) {
-        // headless runs (tests): debug assertions go to stderr instead of a dialog box
-        _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-        _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-        _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-        _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-        _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
-    }
-#endif
+    install_debug_report(opt.headless);  // headless runs (tests): assertions to stderr, no dialog
 
     if (opt.headless) {
         SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
