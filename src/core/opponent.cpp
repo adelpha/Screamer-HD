@@ -28,11 +28,6 @@ float rdf(const std::vector<uint8_t>& d, size_t o) {
 }
 int chop(double v) { return static_cast<int>(v); }
 double safe_sqrt(double v) { return v >= 0.0 ? std::sqrt(v) : 0.0; }
-void rotate_xz(int& ox, int& oz, int x, int z, float angle) {
-    const double c = std::cos(double(angle)), s = std::sin(double(angle));
-    ox = chop(double(z) * s + double(x) * c);
-    oz = chop(double(z) * c - double(x) * s);
-}
 int div4(int v) { return v / 4; }  // the game's signed divide (rounds toward zero)
 
 // point_in_front_box: bit 1 when `other` is ahead (rotated z >= 1), bit 0 when to the side x > 0.

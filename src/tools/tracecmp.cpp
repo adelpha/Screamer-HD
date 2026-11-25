@@ -4,7 +4,7 @@
 // runs Car::update with that frame's controls and frame time, and is compared with the next
 // recorded state. Prints the first frames and fields that differ.
 //
-// Usage: tracecmp TRACE GFX/MAPnH.DAT MAPn [--from N] [--to N] [--all] [--max-diff N]
+// Usage: tracecmp TRACE GFX/MAPnH.DAT MAPn [--from N] [--to N] [--all] [--max-diff N] [--exact]
 // Exit code 0 when at most N frames (default 0) differ.
 
 #include "core/car.h"
@@ -52,6 +52,8 @@ std::vector<Record> load_trace(const char* path) {
     return out;
 }
 
+bool g_exact = false;  // --exact: every field must match bit for bit, no tolerances
+
 struct Field {
     const char* name;
     double ours, game;
@@ -80,6 +82,7 @@ int main(int argc, char** argv) {
         if (!std::strcmp(argv[i], "--from") && i + 1 < argc) from = size_t(std::atoi(argv[++i]));
         else if (!std::strcmp(argv[i], "--to") && i + 1 < argc) to = size_t(std::atoi(argv[++i]));
         else if (!std::strcmp(argv[i], "--all")) all = true;
+        else if (!std::strcmp(argv[i], "--exact")) g_exact = true;
         else if (!std::strcmp(argv[i], "--max-diff") && i + 1 < argc) max_diff = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--data") && i + 1 < argc) data_dat = argv[++i];
     }
@@ -134,13 +137,13 @@ int main(int argc, char** argv) {
                 };
                 bool cbad = false;
                 for (const Field& fl : fields)
-                    if (std::fabs(fl.ours - fl.game) > fl.tolerance) cbad = true;
+                    if (std::fabs(fl.ours - fl.game) > (g_exact ? 0.0 : fl.tolerance)) cbad = true;
                 if (!cbad) continue;
                 frame_bad = true;
                 if (bad >= 12 && !all) continue;
                 std::printf("frame %zu cpu %zu:", k, c);
                 for (const Field& fl : fields)
-                    if (std::fabs(fl.ours - fl.game) > fl.tolerance) std::printf("  %s %.6g vs %.6g", fl.name, fl.ours, fl.game);
+                    if (std::fabs(fl.ours - fl.game) > (g_exact ? 0.0 : fl.tolerance)) std::printf("  %s %.6g vs %.6g", fl.name, fl.ours, fl.game);
                 std::printf("\n");
             }
             {
@@ -157,13 +160,13 @@ int main(int argc, char** argv) {
                 };
                 bool pbad = false;
                 for (const Field& fl : fields)
-                    if (std::fabs(fl.ours - fl.game) > fl.tolerance) pbad = true;
+                    if (std::fabs(fl.ours - fl.game) > (g_exact ? 0.0 : fl.tolerance)) pbad = true;
                 if (pbad) {
                     frame_bad = true;
                     if (bad < 12 || all) {
                         std::printf("frame %zu:", k);
                         for (const Field& fl : fields)
-                            if (std::fabs(fl.ours - fl.game) > fl.tolerance) std::printf("  %s %.6g vs %.6g", fl.name, fl.ours, fl.game);
+                            if (std::fabs(fl.ours - fl.game) > (g_exact ? 0.0 : fl.tolerance)) std::printf("  %s %.6g vs %.6g", fl.name, fl.ours, fl.game);
                         std::printf("%c", 10);
                     }
                 }
@@ -215,13 +218,13 @@ int main(int argc, char** argv) {
         ++compared;
         bool bad = false;
         for (const Field& f : fields)
-            if (std::fabs(f.ours - f.game) > f.tolerance) bad = true;
+            if (std::fabs(f.ours - f.game) > (g_exact ? 0.0 : f.tolerance)) bad = true;
         if (!bad) continue;
         if (++bad_frames > 12 && !all) continue;
         std::printf("frame %zu (flags %x, in %d/%d/%d/%d, ft %.4f row %d):", k, r.flags, r.accel, r.brake, r.left, r.right,
                     double(r.frame_time), r.pow_row);
         for (const Field& f : fields)
-            if (std::fabs(f.ours - f.game) > f.tolerance) std::printf("  %s %.6g vs %.6g", f.name, f.ours, f.game);
+            if (std::fabs(f.ours - f.game) > (g_exact ? 0.0 : f.tolerance)) std::printf("  %s %.6g vs %.6g", f.name, f.ours, f.game);
         std::printf("\n");
         if (car.wall_contact || game.wall_contact)
             std::printf("    wall: ours push %d,%d heading %g, game push %d,%d heading %g\n", car.wall_push_x, car.wall_push_z,

@@ -27,12 +27,6 @@ int32_t rd_i32(const uint8_t* p, size_t o) {
 int chop(double v) { return static_cast<int>(v); }  // __CHP: truncate toward zero
 double safe_sqrt(double v) { return v >= 0.0 ? std::sqrt(v) : 0.0; }
 
-// rotate_xz(out, in, angle): out.x = z sin a + x cos a, out.z = z cos a - x sin a.
-void rotate_xz(int& ox, int& oz, int x, int z, float angle) {
-    const double c = std::cos(double(angle)), s = std::sin(double(angle));
-    ox = chop(double(z) * s + double(x) * c);
-    oz = chop(double(z) * c - double(x) * s);
-}
 
 // Gear factors for the engine's pull (0x101d84, indexed by gear; gear 0 is unused).
 constexpr float kGearPull[7] = {0.0f, 5.0f, 3.5f, 2.0f, 0.95f, 0.78f, 0.72f};
@@ -101,7 +95,7 @@ void Car::reset(const CarSetup& su, const Track& track, int x, int z) {
 
 float Car::lerp(float value, float target, int k) const {
     // lerp_toward: target + (value - target) * pow(0.5 + 0.005 k, 50 / (fps + 1))
-    return (value - target) * pow_table(pow_row_, k) + target;
+    return float((double(value) - double(target)) * double(pow_table(pow_row_, k)) + double(target));
 }
 
 uint32_t Car::render_animation() const {
@@ -172,10 +166,13 @@ void Car::integrate_motion() {
 }
 
 void Car::engine_gearbox(const CarInput& in) {
-    const float maxrpm = setup.maxrpm;
+    // car_update_engine_gearbox. Every expression is evaluated at FPU precision (double, as
+    // DOSBox runs the x87) and rounded to float only where the original stores a float.
+    const double maxrpm = setup.maxrpm;
+    const double dt = dt_;
     if (!in.race_started) {
-        engine_rpm = lerp(engine_rpm, throttle * maxrpm, 0x4b);
-        if (speed < dt_ * 500.0f) gear = 0;
+        engine_rpm = lerp(engine_rpm, float(double(throttle) * maxrpm), 0x4b);
+        if (double(speed) < dt * 500.0) gear = 0;
         return;
     }
     if (setup.shiftmode == 0) {
@@ -195,49 +192,51 @@ void Car::engine_gearbox(const CarInput& in) {
         if (crash_state == 5) gear = 1;
     }
     if (gear != 0) {
-        const float ratio = setup.sh_rap[size_t(gear - 1)];
+        const double ratio = setup.sh_rap[size_t(gear - 1)];
         speed_limit = float(double(setup.maxspd) - (1.0 + std::sin(double(pitch)) * 4.0) * 1000.0);
-        if (setup.grip * 6000.0f < engine_rpm && speed < 2000.0f && in.accel >= 0xc9) {
+        if (double(setup.grip) * 6000.0 < double(engine_rpm) && speed < 2000.0f && in.accel >= 0xc9) {
             // Wheelspin at the start: the revs drop instead of following speed.
             set_state(5);
-            engine_rpm -= dt_ * 500.0f;
+            engine_rpm = float(double(engine_rpm) - dt * 500.0);
         } else {
-            engine_rpm = ratio * speed * rpm_per_speed;
+            engine_rpm = float(double(speed) * double(rpm_per_speed) * ratio);
             if (crash_state == 5) crash_state = 6;
         }
-        const float top = maxrpm / (rpm_per_speed * ratio);  // top speed in this gear
+        const float top = float(maxrpm / (double(rpm_per_speed) * ratio));  // top speed in this gear
         float pull, gain;
         if (setup.n_shifts == 1) {
             gain = setup.accel;
-            pull = float(safe_sqrt(double((top - speed) / top)));
+            pull = float(safe_sqrt((double(top) - double(speed)) / double(top)));
         } else {
-            float t = float(2.0 - double(top - speed) / (double(top) * 0.5) + -1.0);
+            float t = float(2.0 - (double(top) - double(speed)) / (double(top) * 0.5) + -1.0);
             if (gear == 1 && t < 0.0f) t = 0.2f;
-            pull = float((std::sin(double(t * kHalfPi)) + 1.0) * 0.5);
-            gain = setup.accel * kGearPull[std::min(gear, 6)];
+            pull = float((std::sin(double(t) * double(kHalfPi)) + 1.0) * 0.5);
+            gain = float(double(setup.accel) * double(kGearPull[std::min(gear, 6)]));
         }
-        if (engine_rpm < throttle * maxrpm) {
-            engine_rpm = float((double(throttle * gain * pull) - std::sin(double(pitch)) * 100.0) * dt_ + double(engine_rpm));
+        if (double(engine_rpm) < double(throttle) * maxrpm) {
+            const double push = double(throttle) * double(gain) * double(pull);
+            engine_rpm = float((push - std::sin(double(pitch)) * 100.0) * dt + double(engine_rpm));
         }
-        const float rpm = engine_rpm;
+        const double rpm = engine_rpm;
         if (maxrpm < rpm) {
-            engine_rpm = float(double(engine_rpm) -
-                               (std::sin(double(pitch)) * 100.0 + 4000.0 + (double(rpm) - double(maxrpm)) * 2.0) * dt_);
-            if (double(engine_rpm) < double(maxrpm) * double(throttle)) engine_rpm = maxrpm * throttle;
-        } else if (throttle * maxrpm < rpm) {
-            engine_rpm = float(double(engine_rpm) - safe_sqrt(double(rpm / maxrpm)) * double(engine_drag) * dt_);
-            if (double(engine_rpm) < double(maxrpm) * double(throttle)) engine_rpm = maxrpm * throttle;
+            const double over = (rpm - maxrpm) * 2.0;
+            engine_rpm = float(double(engine_rpm) - (std::sin(double(pitch)) * 100.0 + 4000.0 + over) * dt);
+            if (double(engine_rpm) < maxrpm * double(throttle)) engine_rpm = float(maxrpm * double(throttle));
+        } else if (double(throttle) * maxrpm < rpm) {
+            engine_rpm = float(double(engine_rpm) - safe_sqrt(rpm / maxrpm) * double(engine_drag) * dt);
+            if (double(engine_rpm) < maxrpm * double(throttle)) engine_rpm = float(maxrpm * double(throttle));
         }
         const float old = speed;
-        speed = crash_state == 5 ? dt_ * 1000.0f + speed : engine_rpm / (rpm_per_speed * ratio);
+        speed = crash_state == 5 ? float(dt * 1000.0 + double(speed))
+                                 : float(double(engine_rpm) / (double(rpm_per_speed) * ratio));
         if (speed_limit < speed) speed = speed_limit;
-        if (max_accel * dt_ < old - speed) braking = 1.0f;
+        if (double(max_accel) * dt < double(old) - double(speed)) braking = 1.0f;
     } else {
-        speed -= dt_ * 500.0f;
+        speed = float(double(speed) - dt * 500.0);
         if (speed < 0.0f) speed = 0.0f;
-        engine_rpm = lerp(engine_rpm, throttle * maxrpm, 0x4b);
+        engine_rpm = lerp(engine_rpm, float(double(throttle) * maxrpm), 0x4b);
     }
-    if (speed < dt_ * 500.0f) gear = 0;
+    if (double(speed) < dt * 500.0) gear = 0;
 }
 
 void Car::update_throttle(const CarInput& in) {
@@ -255,13 +254,14 @@ void Car::update_brake(const CarInput& in) {
     } else {
         brake = 0.0f;
     }
-    if (drift_angle < 0.1f) {
-        speed = speed - brake_decel * dt_ * brake;
+    if (double(drift_angle) < 0.1) {
+        const float decel = float(double(brake_decel) * double(dt_) * double(brake));
+        speed = speed - decel;
         if (speed < 0.0f) speed = 0.0f;
-        if (brake_skid_limit < brake * speed && spin_state == 0) {
+        if (double(brake_skid_limit) < double(brake) * double(speed) && spin_state == 0) {
             // too hard on the brakes: a skid, or with a front wheel on a bumpy surface
             // (brake_mode) the car spins round
-            if (!bumpy_front) braking = float(int(brake));
+            if (!bumpy_front) braking = brake;
             else spin_state = 1;
         }
     }
@@ -269,28 +269,28 @@ void Car::update_brake(const CarInput& in) {
 
 void Car::update_steering(const CarInput& in) {
     const int k = crash_state == 5 ? 0x58 : (braking == 0.0f && skid == 0.0f && spin_state == 0) ? 0x50 : 0x55;
-    steer_max = float((1.0 - safe_sqrt(double(speed / setup.maxspd))) * 0.2967059910297394 + 0.01745329238474369);
+    steer_max = float((1.0 - safe_sqrt(double(speed) / double(setup.maxspd))) * 0.2967059910297394 + 0.01745329238474369);
     const float mirror = 1.0f;  // g_race_options & 0x10 (MIRRO cheat) gives -1
     if (in.analog_steer) {
         const float target = -(float(in.steer) * 0.0009765625f * steer_max) * mirror;
         steer = (k == 0x50) ? target : lerp(steer, target, k);
     } else {
         float target = -(float(in.steer_left) * 0.0009765625f * steer_max) * mirror;
-        target = float(in.steer_right) * 0.0009765625f * steer_max * mirror + target;
+        target = float(double(in.steer_right) * 0.0009765625 * double(steer_max) * double(mirror) + double(target));
         steer = lerp(steer, -target, k);
-        if (std::fabs(steer) < 1e-05f) steer = 0.0f;
+        if (std::fabs(double(steer)) < 1e-05) steer = 0.0f;
     }
     if (bumpy_front) {
         // Bumpy surface ('e') under a front wheel shakes the steering.
         const int h = pos_x + pos_z;
         const double shake = double(h & 0x3f) * 0.0008 * ((h & 1) == 0 ? 1.0 : -1.0);
-        steer = float(safe_sqrt(1.0 - double(speed / setup.maxspd)) * shake + double(steer));
+        steer = float(safe_sqrt(1.0 - double(speed) / double(setup.maxspd)) * shake + double(steer));
         if (steer_max < std::fabs(steer)) steer = (steer < 0.0f ? -1.0f : 1.0f) * steer_max;
     }
     if ((0.0f < steer && probe[0].hit) || (steer < 0.0f && probe[2].hit) || crash_state == 1) steer = 0.0f;
     if (steer != 0.0f) {
         turn_radius = float(double(wheelbase) / std::tan(double(steer)));
-        turn_rate = (dt_ * speed) / turn_radius;
+        turn_rate = float(double(dt_) * double(speed) / double(turn_radius));
         yaw = turn_rate + yaw;
         int ax, az, bx, bz;
         rotate_xz(ax, az, chop(turn_radius), wheel[3].local_z, -yaw);
@@ -551,24 +551,23 @@ void Car::wheel_ground(const Track& track) {
 void Car::update_track_heading(const Track& track) {
     if (const TrackPoint* p = nearest_track_point(track, pos_x, pos_z)) track_heading = p->heading;
     if (!wall_contact || crash_state != 0) return;
-    const float hit = float(std::fabs(std::sin(double(yaw + wall_heading))));
+    const float hit = float(std::fabs(std::sin(double(yaw) + double(wall_heading))));
     float diff = std::fabs(yaw - track_heading);
     while (kPi < diff) diff += -kPi;
     if (kHalfPi < diff) diff = kPi - diff;
     diff = diff / kHalfPi;
     // too fast into the wall: crash (not tunnels and the like, surface_render_flag != 0)
-    if (slide_threshold < speed * diff && surface_render_flag == 0) set_state(2);
+    if (double(slide_threshold) < double(speed) * double(diff) && surface_render_flag == 0) set_state(2);
     else wall_sound = true;
-    const float len = float(safe_sqrt(double(wall_push_x) * wall_push_x + double(wall_push_z) * wall_push_z));
-    if (len > 0.0f) {
-        impact_vel_x = float(wall_push_x) / len;
-        impact_vel_z = float(wall_push_z) / len;
-    }
+    // (an int sum of squares; no guard against 0, as the original)
+    const float len = float(safe_sqrt(double(wall_push_x * wall_push_x + wall_push_z * wall_push_z)));
+    impact_vel_x = float(double(wall_push_x) / double(len));
+    impact_vel_z = float(double(wall_push_z) / double(len));
     impact_timer = float(std::pow(double(hit), 4.0) * double(speed * 2.0f) + 2000.0);
     if (5000.0f < impact_timer) impact_timer = 5000.0f;
     speed = float(double(speed) - double(speed) * 0.9 * double(hit));
     if (speed <= 0.0f) speed = 0.0f;
-    yaw_rate = float(int(probe[2].hit) - int(probe[0].hit)) * hit * 5.0f;
+    yaw_rate = float(double(int(probe[2].hit) - int(probe[0].hit)) * double(hit) * 5.0);
     braking = 0.0f;
     skid_prev = 0.0f;
     skid = 0.0f;

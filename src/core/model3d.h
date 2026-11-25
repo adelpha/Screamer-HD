@@ -65,6 +65,12 @@ struct Part {
     // radius < 0: unknown (never skipped).
     std::array<float, 3> center{};
     float radius = -1;
+    // collision_query_cell_objects / collision_test_object_faces (the first part of a track
+    // object is its collision mesh): the bounding circle (+0 radius, +4 / +8 int16 centre
+    // x / z) and the faces of draw order 0 (+0x28, +0x14 of them) as indices into `faces`.
+    int32_t bound_r = 0;
+    int16_t bound_x = 0, bound_z = 0;
+    std::vector<int> collision_faces;
     // One of a car's wheel parts (the names in the table at 0x101d58: flx fli blx rli frx fri
     // brx rri).
     bool wheel = false;
