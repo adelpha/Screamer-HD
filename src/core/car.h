@@ -14,7 +14,7 @@
 //
 // crash_state: 0 driving, 2 just hit a wall too hard (car_set_state), 1 tumbling until the
 // fourth bounce, 5 wheelspin at the start, 6 wheelspin over.
-// Not ported yet: spins (spin_state), obstacles, debris. Sounds are cues for RaceAudio.
+// Sounds are cues for RaceAudio; obstacles are in core/obstacles.
 // Network catch-up (speed_factor at 0x300) stays 1.
 
 #include "core/track.h"
@@ -124,6 +124,7 @@ public:
     float drift_angle = 0;                 // 0x128
     float surface_grip = 1.0f;
     int crash_state = 0;                   // 0x148
+    int spin_state = 0;                    // 0x170: 1 starts a spin, 2 / 4 unwinding it
     float crash_bounce = 0;                // 0x14c
     int crash_bounce_count = 0;            // 0x150
     float crash_pitch_rate = 0, crash_roll_rate = 0;  // 0x154, 0x15c
@@ -184,6 +185,8 @@ private:
     void update_track_heading(const Track& track);
     void body_from_wheels();
     void smoke_spawn();  // car_update_debris
+    void update_spin();  // car_update_spin
+    bool smoke_cue_ = false;  // car_update_skid's call of car_update_debris
     void smoke_update(); // car_sync_debris_objects
     void crash_update(const Track& track);
     void set_state(int s) { if (crash_state == 0) crash_state = s; }  // car_set_state
