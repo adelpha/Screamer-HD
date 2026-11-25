@@ -951,7 +951,9 @@ void Menu::start_race() {
         r.laps = 3;
         r.level = st.value;
     }
-    r.high_detail = option(0) == 2;
+    // race_load_track: 'L' files only for LOW (DAT_0011d2b4 < 1)
+    r.detail = std::clamp(option(0), 0, 2);
+    r.high_detail = r.detail >= 1;
     r.speech = option(3) == 1;
     r.music = option(4) == 1;
     r.name = name;

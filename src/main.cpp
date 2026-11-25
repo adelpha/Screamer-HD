@@ -72,6 +72,7 @@ struct Options {
     std::string track = "MAP2";     // --scene track: which track
     bool reversed = false;          // tracks 7-12: the track driven the other way (DATA/MAPnI.DAT)
     bool attract = false;           // the intro demo (attract_mode_run): CPU cars, TV camera, credits
+    bool moving_scenery = true;     // track_load_animations runs above LOW detail (DAT_0010cf54)
     int race_options = 0;           // g_race_options: the cheats (obstacle column, clock, mirror, upside down)
     std::string camera;             // --scene track: x,y,z,yaw,pitch[,roll]
     int fb_width = 320, fb_height = 200;  // internal render size (--render-size)
@@ -373,7 +374,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         auto gfx = scr::resolve_game_file(*game_dir, "GFX/" + opt.track + opt.detail + ".DAT");
         gfx_path = gfx;
         if (data && gfx) obstacles.load(*data, *gfx, opt.track, "OST", *track, opt.race_options & 3);
-        if (data && gfx && anims.load(*data, opt.track)) {
+        if (data && gfx && opt.moving_scenery && anims.load(*data, opt.track)) {
             for (const scr::TrackAnimation& an : anims.list) {
                 std::string obj = an.name;
                 for (char& ch : obj) ch = char(std::toupper(static_cast<unsigned char>(ch)));
@@ -1601,6 +1602,7 @@ int main(int argc, char** argv) {
             opt.laps = shared.race->laps;
             opt.level = shared.race->level;
             opt.detail = shared.race->high_detail ? "H" : "L";
+            opt.moving_scenery = shared.race->detail > 0;
             opt.speech = shared.race->speech;
             opt.music = shared.race->music;
             opt.from_menu = true;

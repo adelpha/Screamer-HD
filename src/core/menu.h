@@ -100,7 +100,8 @@ struct MenuRace {
     int car = 0;         // CARS_DATA record (the two paints of each car are next to each other)
     int laps = 3;
     int level = 1;       // difficulty: opponent set 'A' + level
-    bool high_detail = true;  // DETAIL option (HI: GFX/MAPnH.DAT)
+    bool high_detail = true;  // DETAIL option: MID and HI load GFX/MAPnH.DAT, LOW MAPnL.DAT
+    int detail = 2;           // 0 low (no moving scenery), 1 mid, 2 hi (the original's far clip: we draw it all)
     bool speech = true, music = true;
     std::string name;
     // g_race_options: bits 0-1 the obstacles' column of OSTACLES (MONTY 1, JOINT 2), 4 the
