@@ -145,6 +145,8 @@ public:
     bool timing_started = false;
     bool clock_stopped = false;  // g_race_options & 4 (CLOCK): time_left does not run down
     float time_left = 15.0f;     // starts at 15 s, a timed checkpoint gives time_left / 5 + bonus
+    bool coasting = false;       // g_race_flags & 0x4000 (see CarInput::coasting)
+    float raw_frame_time = -1;   // g_frame_time_raw for the race timers (< 0: the frame time)
     float total_time = 0;        // PlayerCar 0x78c
     float lap_time = 0;          // PlayerCar 0x794
     float best_lap = 10000.0f;

@@ -27,12 +27,6 @@ constexpr int kSpeech[27][3] = {
     {34, 35, 36},  {9, 30, -1},   {10, 28, 29},                  // 24 lost lead, 25 no time, 26 all
 };
 
-// The original's rotate_xz.
-void rotate_xz(int& ox, int& oz, int x, int z, float angle) {
-    const double c = std::cos(double(angle)), s = std::sin(double(angle));
-    ox = int(std::trunc(double(z) * s + double(x) * c));
-    oz = int(std::trunc(double(z) * c - double(x) * s));
-}
 
 // angle_within: |a - b| wrapped into 0..2pi is within tol of 0 or 2pi.
 bool angle_within(float a, float b, float tol) {

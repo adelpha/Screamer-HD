@@ -19,6 +19,8 @@ Usage: py -3.14 tools/dosbox/step_race.py OUT.trace FRAMES SCRIPT [SKIP]
   SKIP: frames to drive (following SCRIPT) before recording FRAMES frames
   SCRIPT: comma-separated segments "frames:keys", keys from accel, brake, left, right, e.g.
           "100:accel,60:accel+left,40:brake"
+Set STALL_SECONDS=N to stop once no race frame has run for N seconds.
+Set COMPACT=1 for positions only (version 4 records; see COMPACT_COPIES).
 Set RECORD_OPPONENTS=1 in the environment to also copy g_opponents (9 x 0x590 bytes) after
 the player; the buffer then holds about 65 frames.
 Trace file: b"SCRTRACE", u32 version (2, or 3 with opponents), u32 record size, then records of
@@ -47,8 +49,17 @@ HOOK_BASE = 0xF00000       # vars: +0 write pointer, +4 frame count, +8 buffer e
 SCRIPT_AT = HOOK_BASE + 0x100
 OPPONENTS, OPP_BYTES = 0x110AB4, 9 * 0x590
 WITH_OPPONENTS = bool(__import__("os").environ.get("RECORD_OPPONENTS"))
+# COMPACT=1: only positions (player 0x4b0..0x4d3 and speed, each CPU car's pos x/y/z and t),
+# for long runs such as a whole replay (thousands of frames).
+COMPACT = bool(__import__("os").environ.get("COMPACT"))
+# REPLAY=1 (implied by COMPACT): leave the inputs alone (a replay sets them itself)
+NO_INPUTS = COMPACT or bool(__import__("os").environ.get("REPLAY"))
+COMPACT_COPIES = [(PLAYER_CAR + 0x4B0, 0x24), (PLAYER_CAR + 0x50C, 4)] +     [(OPPONENTS + k * 0x590 + 0x498, 12) for k in range(9)]
 HEADER = 28
-RECORD = HEADER + CAR_BYTES + (OPP_BYTES if WITH_OPPONENTS else 0)
+if COMPACT:
+    RECORD = HEADER + sum(n for _, n in COMPACT_COPIES)
+else:
+    RECORD = HEADER + CAR_BYTES + (OPP_BYTES if WITH_OPPONENTS else 0)
 
 
 def _retry(fn):
@@ -90,7 +101,7 @@ def hook_code():
     c += x("60fc")                                     # pushad; cld
     c += x("8b1d") + d(HOOK_BASE + 4)                  # mov ebx, [count]
     c += x("c1e304")                                   # shl ebx, 4
-    for i, target in enumerate(inputs):
+    for i, target in enumerate(() if NO_INPUTS else inputs):  # COMPACT: the game's own inputs (a replay)
         c += x("8b83") + d(SCRIPT_AT + 4 * i)          # mov eax, [ebx + script + 4i]
         c += x("a3") + d(target + DATA)                # mov [input], eax
     c += x("ff05") + d(HOOK_BASE + 4)                  # inc dword [count]
@@ -104,9 +115,14 @@ def hook_code():
     c += x("0f83") + d(0)                              # jae done (buffer full)
     for a in (FRAME_TIME, POW_TABLE, RACE_FLAGS) + inputs:
         c += x("a1") + d(a + DATA) + x("ab")           # mov eax, [a]; stosd
-    c += x("be") + d(PLAYER_CAR + DATA)                # mov esi, g_player_car
-    c += x("b9") + d(CAR_BYTES // 4) + x("f3a5")       # mov ecx, n; rep movsd
-    if WITH_OPPONENTS:
+    if COMPACT:
+        for a, n in COMPACT_COPIES:
+            c += x("be") + d(a + DATA)                 # mov esi, a
+            c += x("b9") + d(n // 4) + x("f3a5")       # mov ecx, n; rep movsd
+    else:
+        c += x("be") + d(PLAYER_CAR + DATA)            # mov esi, g_player_car
+        c += x("b9") + d(CAR_BYTES // 4) + x("f3a5")   # mov ecx, n; rep movsd
+    if WITH_OPPONENTS and not COMPACT:
         c += x("be") + d(OPPONENTS + DATA)             # mov esi, g_opponents
         c += x("b9") + d(OPP_BYTES // 4) + x("f3a5")   # mov ecx, n; rep movsd
     c += x("893d") + d(HOOK_BASE)                      # mov [ptr], edi
@@ -125,7 +141,7 @@ def main():
     accel_sign = i32(mem(ACCEL_SIGN + DATA, 4)) or 1
     brake_sign = i32(mem(BRAKE_SIGN + DATA, 4)) or 1
     table = bytearray()
-    for k in range(skip + frames + 1):
+    for k in range(0 if NO_INPUTS else skip + frames + 1):
         keys = script[k] if k < len(script) else set()
         table += struct.pack("<iiii", 1023 * accel_sign if "accel" in keys else 0,
                              1023 * brake_sign if "brake" in keys else 0,
@@ -144,11 +160,17 @@ def main():
     rel = (HOOK_BASE + 0x10) - (call_at + 5)
     put(call_at + 1, struct.pack("<i", rel))
     t0 = time.time()
+    last_n, last_change = -1, time.time()
+    stall = float(__import__("os").environ.get("STALL_SECONDS", "0"))
     try:
         while True:
             n = i32(mem(HOOK_BASE + 4, 4))
             if n >= skip + frames:
                 break
+            if n != last_n:
+                last_n, last_change = n, time.time()
+            elif stall and n > 0 and time.time() - last_change > stall:
+                break  # STALL_SECONDS: the race is over (e.g. the end of a replay)
             if time.time() - t0 > 30 + (skip + frames) * 0.5:
                 print(f"only {n} frames recorded", file=sys.stderr)
                 break
@@ -164,7 +186,7 @@ def main():
         struct.pack_into("<i", r, 4, (ptr - (POW_BASE + DATA)) // 400)
         recs.append(bytes(r))
     with open(out, "wb") as f:
-        f.write(b"SCRTRACE" + struct.pack("<II", 3 if WITH_OPPONENTS else 2, RECORD))
+        f.write(b"SCRTRACE" + struct.pack("<II", 4 if COMPACT else 3 if WITH_OPPONENTS else 2, RECORD))
         f.write(b"".join(recs))
     flags = [struct.unpack_from("<I", r, 8)[0] for r in recs]
     if flags:

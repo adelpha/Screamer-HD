@@ -105,6 +105,8 @@ std::optional<std::vector<Placement>> parse_mmp(const std::vector<uint8_t>& mmp,
                     p.animation = le32(mmp, e + 32);
                     p.reflection = le32(mmp, e + 60);
                     p.slot = slot;
+                    p.cell_row = r;
+                    p.cell_col = c;
                     if (p.object >= 0 && size_t(p.object) < object_count) out.push_back(p);
                 }
             }
@@ -214,52 +216,65 @@ std::optional<float> ground_height(const Track& track, float x, float z, float b
 }
 
 std::optional<GroundHit> ground_query(const Track& track, int x, int z, bool walls_only) {
-    // collision_query_cells / collision_query_cell_objects / collision_test_quad|triangle:
-    // the probe is turned into the placement's frame (rotate_xz, truncated to integers),
-    // then each face of the road object is tested in x/z with integer edge functions
-    // (inclusive, one winding). Missed points are tried again 10 and 20 units further along
-    // +x/+z.
-    for (const Placement& p : track.placements) {
-        if (p.slot != 0 || std::abs(p.x - x) > 12288 || std::abs(p.z - z) > 12288) continue;
-        const double a = double(float(p.ay) * 0.0009765625f * 3.1415927410125732f);
-        const double c = std::cos(a), s = std::sin(a);
-        const int dx = x - p.x, dz = z - p.z;
-        const int rx = int(double(dz) * s + double(dx) * c) + p.x;
-        const int rz = int(double(dz) * c - double(dx) * s) + p.z;
-        for (int t = 0; t < 3; ++t) {
-            const int px = rx + 10 * t, pz = rz + 10 * t;
-            for (const Part& part : track.objects[size_t(p.object)].parts) {
-                for (const Face& f : part.faces) {
-                    if (!walls_only && f.normal[1] == 0) continue;
-                    int vx[6], vz[6];
-                    int minx = INT32_MAX, maxx = INT32_MIN, minz = INT32_MAX, maxz = INT32_MIN;
-                    for (int i = 0; i < f.count; ++i) {
+    // collision_query_cells: the 3x3 MMP cells around the probe in the order of the table at
+    // 0x101cec; collision_query_cell_objects: each slot-0 placement of a cell whose collision
+    // mesh (the object's first part) has the probe inside its bounding circle; the probe is
+    // turned into the placement's frame and tried at +0, +10, +20 along x and z;
+    // collision_test_object_faces(_b): the faces of draw order 0, collision_test_quad /
+    // collision_test_triangle with 32-bit integer edge tests. All integer math wraps like the
+    // original's 32-bit registers.
+    static constexpr int kCellOrder[9][2] = {{0, 0}, {1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {-1, -1}, {1, -1}, {-1, 1}};
+    auto mul = [](int a, int b) { return int(uint32_t(a) * uint32_t(b)); };
+    auto add = [](int a, int b) { return int(uint32_t(a) + uint32_t(b)); };
+    auto sub = [](int a, int b) { return int(uint32_t(a) - uint32_t(b)); };
+    const int row0 = (z + 0x100000) >> 13, col0 = (x + 0x100000) >> 13;
+    for (const auto& [dc, dr] : kCellOrder) {
+        const auto it = track.cells.find((row0 + dr) * 256 + (col0 + dc));
+        if (it == track.cells.end()) continue;
+        for (const int pi : it->second) {
+            const Placement& p = track.placements[size_t(pi)];
+            const Model& obj = track.objects[size_t(p.object)];
+            if (obj.parts.empty()) continue;
+            const Part& part = obj.parts[0];
+            const int dx = sub(x, p.x), dz = sub(z, p.z);
+            const int ex = sub(dx, part.bound_x), ez = sub(dz, part.bound_z);
+            if (add(mul(ex, ex), mul(ez, ez)) > mul(part.bound_r, part.bound_r)) continue;
+            const float angle = float(double(p.ay) * 0.0009765625 * double(3.1415927410125732f));
+            int rx, rz;
+            rotate_xz(rx, rz, dx, dz, angle);
+            int px = add(rx, p.x), pz = add(rz, p.z);
+            for (int t = 0; t < 3; ++t, px = add(px, 10), pz = add(pz, 10)) {
+                for (const int fi : part.collision_faces) {
+                    const Face& f = part.faces[size_t(fi)];
+                    const int n = f.count == 4 ? 4 : 3;  // anything but a quad: its first three corners
+                    int vx[4], vz[4];
+                    for (int i = 0; i < n; ++i) {
                         const Vec3i16& v = part.vertices[f.vtx[size_t(i)]];
-                        vx[i] = v.x + p.x;
-                        vz[i] = v.z + p.z;
+                        vx[i] = add(v.x, p.x);
+                        vz[i] = add(v.z, p.z);
+                    }
+                    int minx = vx[0], maxx = vx[0], minz = vz[0], maxz = vz[0];
+                    for (int i = 1; i < n; ++i) {
                         minx = std::min(minx, vx[i]); maxx = std::max(maxx, vx[i]);
                         minz = std::min(minz, vz[i]); maxz = std::max(maxz, vz[i]);
                     }
-                    if (px > maxx || px < minx || pz > maxz || pz < minz) continue;
+                    if (maxx < px || px < minx || maxz < pz || pz < minz) continue;
                     bool inside = true;
-                    for (int i = 0; i < f.count && inside; ++i) {
-                        const int j = (i + 1) % f.count;
-                        const int64_t e = int64_t(vz[j] - vz[i]) * (px - vx[i]) + int64_t(vx[i] - vx[j]) * (pz - vz[i]);
+                    for (int i = 0; i < n && inside; ++i) {
+                        const int j = (i + 1) % n;
+                        const int e = add(mul(sub(vx[i], vx[j]), sub(pz, vz[i])), mul(sub(vz[j], vz[i]), sub(px, vx[i])));
                         if (e < 0) inside = false;
                     }
                     if (!inside) continue;
                     GroundHit hit;
                     hit.surface = part.name.size() > 3 ? part.name[3] : char(0);
+                    if (walls_only) return hit;
+                    if (f.normal[1] == 0) continue;
                     // the normal turned back into the world (rotate_xz by -angle)
-                    hit.normal_x = int(double(f.normal[2]) * -s + double(f.normal[0]) * c);
-                    hit.normal_z = int(double(f.normal[2]) * c + double(f.normal[0]) * s);
-                    if (f.normal[1] != 0) {
-                        const Vec3i16& v0 = part.vertices[f.vtx[0]];
-                        const int64_t num = int64_t(px - (v0.x + p.x)) * f.normal[0] + int64_t(pz - (v0.z + p.z)) * f.normal[2];
-                        hit.y = int(-num / f.normal[1]) + v0.y + p.y;
-                    } else {
-                        hit.y = p.y;
-                    }
+                    rotate_xz(hit.normal_x, hit.normal_z, f.normal[0], f.normal[2], -angle);
+                    const Vec3i16& v0 = part.vertices[f.vtx[0]];
+                    const int num = add(mul(sub(px, vx[0]), f.normal[0]), mul(sub(pz, vz[0]), f.normal[2]));
+                    hit.y = add(int(int64_t(-int64_t(num)) / f.normal[1]), add(v0.y, p.y));
                     return hit;
                 }
             }
@@ -303,6 +318,8 @@ std::optional<Track> load_track(const std::string& dat_path, const std::string& 
     auto placements = parse_mmp(*mmp, t.objects.size());
     if (!placements) return std::nullopt;
     t.placements = std::move(*placements);
+    for (size_t i = 0; i < t.placements.size(); ++i)
+        if (t.placements[i].slot == 0) t.cells[t.placements[i].cell_row * 256 + t.placements[i].cell_col].push_back(int(i));
     parse_mmp_track_lines(*mmp, t.points, t.sections);
     t.materials = MaterialLibrary::parse(std::move(*mlb));
     if (!t.materials) return std::nullopt;

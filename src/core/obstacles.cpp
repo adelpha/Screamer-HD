@@ -14,11 +14,6 @@ namespace {
 
 constexpr float kPi = 3.141592741f;
 
-void rotate_xz(int& ox, int& oz, int x, int z, float angle) {
-    const double c = std::cos(double(angle)), s = std::sin(double(angle));
-    ox = int(double(z) * s + double(x) * c);
-    oz = int(double(z) * c - double(x) * s);
-}
 
 } // namespace
 

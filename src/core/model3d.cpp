@@ -86,6 +86,19 @@ std::optional<Model> parse_model(const uint8_t* d, size_t size) {
         // objects leave a face out of some of them: take the union, in list 0's order first.
         std::set<int> seen;
         std::vector<int> face_offsets;
+        int32_t list0_count = 0;
+        rd(d, size, p + 0x14, list0_count);
+        rd(d, size, p, part.bound_r);
+        rd(d, size, p + 4, part.bound_x);
+        rd(d, size, p + 8, part.bound_z);
+        std::vector<int> list0;
+        if (list0_count > 0 && list0_count < 20000)
+            for (int32_t k = 0; k < list0_count; ++k) {
+                uint16_t fo = 0;
+                if (!rd(d, size, p + size_t(order0) + 2 * size_t(k), fo)) break;
+                list0.push_back(fo);
+            }
+        std::vector<std::pair<int, int>> offset_to_face;
         for (size_t list = 0; list < 16; ++list) {
             int32_t order = 0;
             if (!rd(d, size, p + 0x28 + 4 * list, order)) break;
@@ -112,8 +125,17 @@ std::optional<Model> parse_model(const uint8_t* d, size_t size) {
             }
             for (int i = 0; i < 3; ++i) rd(d, size, f + 0x14 + 4 * size_t(i), face.normal[size_t(i)]);
             rd(d, size, f + 0x20, face.plane);
-            if (ok) part.faces.push_back(face);
+            if (ok) {
+                offset_to_face.push_back({fo, int(part.faces.size())});
+                part.faces.push_back(face);
+            }
         }
+        for (const int fo : list0)
+            for (const auto& [o, i] : offset_to_face)
+                if (o == fo) {
+                    part.collision_faces.push_back(i);
+                    break;
+                }
         return part;
     };
     for (int32_t k = 0; k < nparts; ++k) {

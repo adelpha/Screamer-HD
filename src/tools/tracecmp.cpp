@@ -4,11 +4,14 @@
 // runs Car::update with that frame's controls and frame time, and is compared with the next
 // recorded state. Prints the first frames and fields that differ.
 //
-// Usage: tracecmp TRACE GFX/MAPnH.DAT MAPn [--from N] [--to N] [--all] [--max-diff N]
+// Usage: tracecmp TRACE GFX/MAPnH.DAT MAPn [--from N] [--to N] [--all] [--max-diff N] [--exact]
+//                 [--data DATA/MAPn.DAT] [--rpl REPLAY.RPL SKIP]
+//        tracecmp COMPACT.trace --positions OURS.bin OFFSET
 // Exit code 0 when at most N frames (default 0) differ.
 
 #include "core/car.h"
 #include "core/opponent.h"
+#include "core/replay.h"
 #include "core/track.h"
 
 #include <cmath>
@@ -52,11 +55,41 @@ std::vector<Record> load_trace(const char* path) {
     return out;
 }
 
+bool g_exact = false;  // --exact: every field must match bit for bit, no tolerances
+
 struct Field {
     const char* name;
     double ours, game;
     double tolerance;
 };
+
+std::vector<Field> player_fields(const scr::Car& car, const scr::Car& game) {
+    return {
+        {"pos_x", double(car.pos_x), double(game.pos_x), 0},
+        {"pos_y", double(car.pos_y), double(game.pos_y), 0},
+        {"pos_z", double(car.pos_z), double(game.pos_z), 0},
+        {"yaw", car.yaw, game.yaw, 1e-5},
+        {"pitch", car.pitch, game.pitch, 1e-5},
+        {"roll", car.roll, game.roll, 1e-5},
+        {"speed", car.speed, game.speed, 0.01},
+        {"engine_rpm", car.engine_rpm, game.engine_rpm, 0.5},
+        {"gear", double(car.gear), double(game.gear), 0},
+        {"throttle", car.throttle, game.throttle, 1e-6},
+        {"brake", car.brake, game.brake, 1e-6},
+        {"steer", car.steer, game.steer, 1e-6},
+        {"turn_rate", car.turn_rate, game.turn_rate, 1e-6},
+        {"drift_angle", car.drift_angle, game.drift_angle, 1e-5},
+        {"skid_level", car.skid_level, game.skid_level, 0.01},
+        {"yaw_rate", car.yaw_rate, game.yaw_rate, 1e-4},
+        {"impact_timer", car.impact_timer, game.impact_timer, 0.5},
+        {"crash_state", double(car.crash_state), double(game.crash_state), 0},
+        {"body_lift", double(car.body_lift), double(game.body_lift), 0},
+        {"lean_pitch", car.lean_pitch, game.lean_pitch, 1e-5},
+        {"lean_roll", car.lean_roll, game.lean_roll, 1e-5},
+        {"wall_contact", double(car.wall_contact), double(game.wall_contact), 0},
+        {"ground_y", double(car.ground_y), double(game.ground_y), 0},
+    };
+}
 
 } // namespace
 
@@ -67,6 +100,37 @@ int main(int argc, char** argv) {
         return 2;
     }
     auto trace = load_trace(argv[1]);
+    for (int i = 2; i + 2 < argc; ++i)
+        if (!std::strcmp(argv[i], "--positions")) {
+            // A COMPACT recording of the original (tools/dosbox/record-replay.ps1) against our
+            // run of the same replay (screamer --replay RPL --positions OURS): every field of
+            // every frame must match. OFFSET: our frame of the recording's first record.
+            std::ifstream f(argv[i + 1], std::ios::binary);
+            std::vector<uint8_t> ours((std::istreambuf_iterator<char>(f)), {});
+            const size_t offset = size_t(std::atoi(argv[i + 2]));
+            constexpr size_t kOurs = 37 * 4;
+            if (trace.empty() || trace[0].car.size() != 0x28 + 9 * 12) {
+                std::fprintf(stderr, "%s is not a COMPACT recording\n", argv[1]);
+                return 1;
+            }
+            int bad = 0;
+            size_t k = 0;
+            for (; k < trace.size() && (offset + k + 1) * kOurs <= ours.size(); ++k) {
+                const uint8_t* g = trace[k].car.data();
+                const uint8_t* o = ours.data() + (offset + k) * kOurs;
+                // player x y z (0x4b0..), pitch yaw roll (0x4c8..), speed; CPU x y z
+                const bool same = !std::memcmp(g, o, 12) && !std::memcmp(g + 0x18, o + 24, 12) &&
+                                  !std::memcmp(g + 0x24, o + 36, 4) && !std::memcmp(g + 0x28, o + 40, 9 * 12);
+                if (same) continue;
+                if (++bad <= 10) std::printf("frame %zu differs\n", offset + k);
+            }
+            if (k < trace.size()) {
+                std::printf("ours ends after %zu of %zu frames\n", k, trace.size());
+                ++bad;
+            }
+            std::printf("%d of %zu frames differ (positions)\n", bad, k);
+            return bad ? 1 : 0;
+        }
     auto track = scr::load_track(argv[2], argv[3]);
     if (trace.size() < 2 || !track) {
         std::fprintf(stderr, "cannot load the trace or the track\n");
@@ -74,12 +138,24 @@ int main(int argc, char** argv) {
     }
     size_t from = 0, to = trace.size() - 1;
     bool all = false;
+    scr::Replay rpl;
+    size_t rpl_skip = 0;
+    bool replay_trace = false;  // recorded during a replay: frame k's time and inputs are in record k + 1
     int max_diff = 0;
     std::string data_dat;
     for (int i = 4; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--from") && i + 1 < argc) from = size_t(std::atoi(argv[++i]));
         else if (!std::strcmp(argv[i], "--to") && i + 1 < argc) to = size_t(std::atoi(argv[++i]));
         else if (!std::strcmp(argv[i], "--all")) all = true;
+        else if (!std::strcmp(argv[i], "--exact")) g_exact = true;
+        else if (!std::strcmp(argv[i], "--replay-trace")) replay_trace = true;
+        else if (!std::strcmp(argv[i], "--rpl") && i + 2 < argc) {
+            // recorded during a replay: frame times and inputs from the .RPL, its frame
+            // (skip + k) for record k
+            rpl.load(argv[++i]);
+            rpl_skip = size_t(std::atoi(argv[++i]));
+            replay_trace = true;
+        }
         else if (!std::strcmp(argv[i], "--max-diff") && i + 1 < argc) max_diff = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--data") && i + 1 < argc) data_dat = argv[++i];
     }
@@ -94,16 +170,33 @@ int main(int argc, char** argv) {
         }
         int bad = 0, cmp = 0;
         for (size_t k = from; k < to && k + 1 < trace.size(); ++k) {
-            const Record& r = trace[k];
-            race.load_state(r.car.data(), r.car.data() + kCar, n_cpu);
+            const Record& r0 = trace[k];
+            const Record& r = replay_trace ? trace[k + 1] : r0;
+            race.load_state(r0.car.data(), r0.car.data() + kCar, n_cpu);
+            race.player.camera_car_mode = !replay_trace;  // replays: the trackside camera
             scr::CarInput in;
             in.accel = r.accel;
             in.brake = r.brake;
             in.steer_left = r.left;
             in.steer_right = r.right;
-            in.race_started = (r.flags & 1) != 0;
-            in.cpu_cars_go = (r.flags & 5) != 0;
-            race.update(*track, in, r.frame_time, r.pow_row);
+            in.race_started = (r0.flags & 1) != 0;
+            in.cpu_cars_go = (r0.flags & 5) != 0;
+            in.coasting = (r0.flags & 0x4000) != 0;
+            float ft = r.frame_time;
+            int row = r.pow_row;
+            if (!rpl.frames.empty() && rpl_skip + k < rpl.frames.size()) {
+                const scr::ReplayFrame& f = rpl.frames[rpl_skip + k];
+                in.accel = f.accel;
+                in.brake = f.brake;
+                in.steer_left = f.steer_left;
+                in.steer_right = f.steer_right;
+                in.gear_up = f.gear_up != 0;
+                in.gear_down = f.gear_down != 0;
+                ft = f.frame_time;
+                row = int(1.0 / double(ft));
+                race.raw_frame_time = f.raw_time;
+            }
+            race.update(*track, in, ft, row);
             scr::Race next;
             next.load_state(trace[k + 1].car.data(), trace[k + 1].car.data() + kCar, n_cpu);
             ++cmp;
@@ -134,19 +227,20 @@ int main(int argc, char** argv) {
                 };
                 bool cbad = false;
                 for (const Field& fl : fields)
-                    if (std::fabs(fl.ours - fl.game) > fl.tolerance) cbad = true;
+                    if (std::fabs(fl.ours - fl.game) > (g_exact ? 0.0 : fl.tolerance)) cbad = true;
                 if (!cbad) continue;
                 frame_bad = true;
                 if (bad >= 12 && !all) continue;
                 std::printf("frame %zu cpu %zu:", k, c);
                 for (const Field& fl : fields)
-                    if (std::fabs(fl.ours - fl.game) > fl.tolerance) std::printf("  %s %.6g vs %.6g", fl.name, fl.ours, fl.game);
+                    if (std::fabs(fl.ours - fl.game) > (g_exact ? 0.0 : fl.tolerance)) std::printf("  %s %.6g vs %.6g", fl.name, fl.ours, fl.game);
                 std::printf("\n");
             }
             {
                 const scr::Car& a = race.player;
                 const scr::Car& g = next.player;
-                const Field fields[] = {
+                std::vector<Field> fields = player_fields(a, g);
+                const Field extra[] = {
                     {"player pos_x", double(a.pos_x), double(g.pos_x), 0},
                     {"player pos_z", double(a.pos_z), double(g.pos_z), 0},
                     {"player speed", a.speed, g.speed, 0.01},
@@ -155,15 +249,16 @@ int main(int argc, char** argv) {
                     {"player position", double(race.player_position), double(next.player_position), 0},
                     {"player surface flag", double(a.surface_render_flag), double(g.surface_render_flag), 0},
                 };
+                fields.insert(fields.end(), std::begin(extra), std::end(extra));
                 bool pbad = false;
                 for (const Field& fl : fields)
-                    if (std::fabs(fl.ours - fl.game) > fl.tolerance) pbad = true;
+                    if (std::fabs(fl.ours - fl.game) > (g_exact ? 0.0 : fl.tolerance)) pbad = true;
                 if (pbad) {
                     frame_bad = true;
                     if (bad < 12 || all) {
                         std::printf("frame %zu:", k);
                         for (const Field& fl : fields)
-                            if (std::fabs(fl.ours - fl.game) > fl.tolerance) std::printf("  %s %.6g vs %.6g", fl.name, fl.ours, fl.game);
+                            if (std::fabs(fl.ours - fl.game) > (g_exact ? 0.0 : fl.tolerance)) std::printf("  %s %.6g vs %.6g", fl.name, fl.ours, fl.game);
                         std::printf("%c", 10);
                     }
                 }
@@ -184,44 +279,22 @@ int main(int argc, char** argv) {
         in.steer_left = r.left;
         in.steer_right = r.right;
         in.race_started = (r.flags & 1) != 0;
+        in.coasting = (r.flags & 0x4000) != 0;
         car.update(*track, in, r.frame_time, r.pow_row);
+        car.camera_update();  // the recordings use the default chase view (F3)
         scr::Car game;
         game.load_player_car(trace[k + 1].car.data());
-        const Field fields[] = {
-            {"pos_x", double(car.pos_x), double(game.pos_x), 0},
-            {"pos_y", double(car.pos_y), double(game.pos_y), 0},
-            {"pos_z", double(car.pos_z), double(game.pos_z), 0},
-            {"yaw", car.yaw, game.yaw, 1e-5},
-            {"pitch", car.pitch, game.pitch, 1e-5},
-            {"roll", car.roll, game.roll, 1e-5},
-            {"speed", car.speed, game.speed, 0.01},
-            {"engine_rpm", car.engine_rpm, game.engine_rpm, 0.5},
-            {"gear", double(car.gear), double(game.gear), 0},
-            {"throttle", car.throttle, game.throttle, 1e-6},
-            {"brake", car.brake, game.brake, 1e-6},
-            {"steer", car.steer, game.steer, 1e-6},
-            {"turn_rate", car.turn_rate, game.turn_rate, 1e-6},
-            {"drift_angle", car.drift_angle, game.drift_angle, 1e-5},
-            {"skid_level", car.skid_level, game.skid_level, 0.01},
-            {"yaw_rate", car.yaw_rate, game.yaw_rate, 1e-4},
-            {"impact_timer", car.impact_timer, game.impact_timer, 0.5},
-            {"crash_state", double(car.crash_state), double(game.crash_state), 0},
-            {"body_lift", double(car.body_lift), double(game.body_lift), 0},
-            {"lean_pitch", car.lean_pitch, game.lean_pitch, 1e-5},
-            {"lean_roll", car.lean_roll, game.lean_roll, 1e-5},
-            {"wall_contact", double(car.wall_contact), double(game.wall_contact), 0},
-            {"ground_y", double(car.ground_y), double(game.ground_y), 0},
-        };
+        const std::vector<Field> fields = player_fields(car, game);
         ++compared;
         bool bad = false;
         for (const Field& f : fields)
-            if (std::fabs(f.ours - f.game) > f.tolerance) bad = true;
+            if (std::fabs(f.ours - f.game) > (g_exact ? 0.0 : f.tolerance)) bad = true;
         if (!bad) continue;
         if (++bad_frames > 12 && !all) continue;
         std::printf("frame %zu (flags %x, in %d/%d/%d/%d, ft %.4f row %d):", k, r.flags, r.accel, r.brake, r.left, r.right,
                     double(r.frame_time), r.pow_row);
         for (const Field& f : fields)
-            if (std::fabs(f.ours - f.game) > f.tolerance) std::printf("  %s %.6g vs %.6g", f.name, f.ours, f.game);
+            if (std::fabs(f.ours - f.game) > (g_exact ? 0.0 : f.tolerance)) std::printf("  %s %.6g vs %.6g", f.name, f.ours, f.game);
         std::printf("\n");
         if (car.wall_contact || game.wall_contact)
             std::printf("    wall: ours push %d,%d heading %g, game push %d,%d heading %g\n", car.wall_push_x, car.wall_push_z,

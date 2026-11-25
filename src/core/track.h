@@ -34,6 +34,8 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_map>
+#include <cmath>
 #include <vector>
 
 namespace scr {
@@ -68,6 +70,7 @@ struct Placement {
     int animation = -1;          // +0x20: texture animation word (-1 = global counter, see Pose)
     int reflection = 0;          // +0x3c: see Pose::reflection
     int slot = 0;
+    int cell_row = 0, cell_col = 0;  // the MMP cell it is listed in (8192 units, offset 0x100000)
 };
 
 class MaterialLibrary {
@@ -87,6 +90,9 @@ private:
 struct Track {
     std::vector<Model> objects;
     std::vector<Placement> placements;
+    // Slot-0 placements of each MMP cell in file order (collision_query_cell_objects), by
+    // row * 256 + col.
+    std::unordered_map<int, std::vector<int>> cells;
     std::vector<TrackPoint> points;
     std::vector<TrackSection> sections;
     std::optional<MaterialLibrary> materials;
@@ -126,6 +132,14 @@ struct GroundHit {
 // as a wall). walls_only = the corner probes' variant (collision_test_object_faces_b), which
 // accepts any face, not only those with a vertical normal component.
 std::optional<GroundHit> ground_query(const Track& track, int x, int z, bool walls_only = false);
+
+// rotate_xz: out.x = trunc(z sin a + x cos a), out.z = trunc(z cos a - x sin a), with sin and
+// cos rounded to float and the rest at FPU precision, as the original.
+inline void rotate_xz(int& ox, int& oz, int x, int z, float angle) {
+    const double c = double(float(std::cos(double(angle)))), s = double(float(std::sin(double(angle))));
+    ox = int(double(z) * s + double(x) * c);
+    oz = int(double(z) * c - double(x) * s);
+}
 
 // track_find_nearest_point: nearest centre-line point (slot 2) and cross-section (slot 3).
 const TrackPoint* nearest_track_point(const Track& track, int x, int z);
