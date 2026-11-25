@@ -1237,6 +1237,12 @@ void Menu::update(const MenuKeys& keys, float dt) {
     ++frame_;
     handle_keys(keys);
     update_camera(dt);
+    // frontend_handle_keys / frontend_draw_frame: 30 seconds without a key on a menu page and
+    // frontend_run ends: the intro demo again
+    if (mode == 0) {
+        idle_ += dt;
+        if (30.0f < idle_) want_demo = true;
+    }
     // frontend_update_page
     switch (mode) {
     case 0: build_page_items(dt); break;
@@ -1352,6 +1358,12 @@ void Menu::draw(Framebuffer& fb, Renderer& renderer) {
             const uint8_t* row = bg.pixels.data() + size_t(y * bg.height / fb.height()) * size_t(bg.width);
             for (int x = 0; x < fb.width(); ++x) fb.at(x, y) = row[x * bg.width / fb.width()];
         }
+        // frontend_draw_frame: the MIRRO / UPDOW cheats flip the backdrop too
+        if (race_options & 0x10)
+            for (int y = 0; y < fb.height(); ++y) std::reverse(&fb.at(0, y), &fb.at(0, y) + fb.width());
+        if (race_options & 0x20)
+            for (int y = 0; y < fb.height() / 2; ++y)
+                std::swap_ranges(&fb.at(0, y), &fb.at(0, y) + fb.width(), &fb.at(0, fb.height() - 1 - y));
         fb.palette() = bg.palette();
     }
     for (const Item& it : items) {

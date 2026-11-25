@@ -120,6 +120,7 @@ public:
     // (sound 8); a letter that fits none starts again. Returns true when a cheat took.
     bool type_letter(char c);
     int race_options = 0;  // g_race_options (the cheats; see MenuRace)
+    bool want_demo = false;  // left alone for 30 seconds: back to the intro demo
     // The saved state (read_choice_dat) and back (write_choice_dat).
     void load_choice(const ChoiceFile& c);
     ChoiceFile save_choice() const;

@@ -131,6 +131,8 @@ public:
 
     // race_frame: the player and the CPU cars, then the collisions between them.
     void update(const Track& track, const CarInput& in, float frame_time, int pow_row);
+    // The intro demo: the CPU cars alone, heard and simulated around the camera.
+    void update_attract(const Track& track, float frame_time, int pow_row, int listener_x, int listener_z);
 
     Car player;
     // Race state for the player (car_update_race_timers, car_on_checkpoint, car_complete_lap).

@@ -8,6 +8,8 @@
 // --dump-fb produce reproducible images the test harness compares.
 
 #include "core/animations.h"
+#include "core/attract.h"
+#include "core/tv_camera.h"
 #include "core/archive.h"
 #include "core/car.h"
 #include "core/cd_audio.h"
@@ -66,6 +68,7 @@ struct Options {
     std::string scene;              // title | track | testpattern; empty = title when game data is found
     std::string track = "MAP2";     // --scene track: which track
     bool reversed = false;          // tracks 7-12: the track driven the other way (DATA/MAPnI.DAT)
+    bool attract = false;           // the intro demo (attract_mode_run): CPU cars, TV camera, credits
     int race_options = 0;           // g_race_options: the cheats (obstacle column, clock, mirror, upside down)
     std::string camera;             // --scene track: x,y,z,yaw,pitch[,roll]
     int fb_width = 320, fb_height = 200;  // internal render size (--render-size)
@@ -270,6 +273,8 @@ struct Shared {
     std::vector<Outcome> outcomes;      // the races since the menu (PLAY AGAIN repeats it)
     std::string choice_path;            // our copy of CONFIG/CHOICE.DAT
     bool back_to_menu = false;          // the race asks to return to the menu
+    bool attract_done = false;          // the intro demo is over (a key, or the credits ended)
+    bool to_demo = false;               // the menu was left alone: the intro demo again
     bool restart_race = false;          // PLAY AGAIN? yes
     uint64_t frames_run = 0;
 };
@@ -283,6 +288,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     scr::Camera cam;
     scr::TrackAnimations anims;           // trucks, jets, trams... on their splines
     scr::Obstacles obstacles;             // cones and the like (MAPnOST.SPL in races)
+    scr::TvCamera tv_camera;               // the intro demo's camera
+    scr::AttractOverlay attract;           // the intro demo's logo and credits
     std::optional<std::string> gfx_path;  // GFX/MAPn?.DAT
     // Time attack: the ghost of the best lap (ghost_record_frame / ghost_update), kept as
     // <pref dir>/MAPn.ghost: int car, float lap time, then frames of
@@ -488,6 +495,16 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 player->cpu_models.push_back(std::move(*m));
             }
             player->race.start(*track, setup, cpu_setups);
+            if (opt.attract) {
+                // race_load_attract: g_race_flags | 0x2001, no countdown
+                player->race.started = true;
+                player->race.countdown_stage = -1;
+                if (auto cam_spl = scr::Archive::open(*data)) {
+                    if (auto spl = cam_spl->read(opt.track + "CAM.SPL")) tv_camera.load(scr::parse_splines(*spl));
+                }
+                if (auto graf = scr::resolve_game_file(*game_dir, "GFX/GRAF.DAT"))
+                    if (auto local = scr::resolve_game_file(*game_dir, "DATA/LOCAL.DAT")) attract.load(*graf, *local);
+            }
         } else {
             int sx = 44000, sz = 4550;  // the intro demo's grid, MAP2
             if (!opt.start.empty()) std::sscanf(opt.start.c_str(), "%d,%d", &sx, &sz);
@@ -498,7 +515,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         auto sound_dat = scr::resolve_game_file(*game_dir, "DATA/SOUND.DAT");
         if (gen && sound_dat && sound_bank.load(*gen, *sound_dat, data ? *data : std::string(), opt.track, opt.speech)) {
             mixer.set_bank(&sound_bank);
-            race_audio.start(mixer, sound_bank, player->race, int(idx), 0, opt.speech);
+            if (!opt.attract) race_audio.start(mixer, sound_bank, player->race, int(idx), 0, opt.speech);
         } else {
             SDL_Log("no sound effects (DATA/SOUND.DAT not found)");
         }
@@ -916,6 +933,33 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     cam.yaw = fc_yaw;
                     cam.pitch = fc_pitch < 0 ? fc_pitch + 2048.0f : fc_pitch;
                     cam.roll = 0;
+                } else if (player && opt.attract) {
+                    // attract_mode_update_cars: the CPU cars, the TV camera, the credits; space,
+                    // Enter, Esc or the throttle fade it out (handle_global_keys)
+                    const bool* keys = SDL_GetKeyboardState(nullptr);
+                    bool leave = keys[SDL_SCANCODE_SPACE] || keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER] ||
+                                 keys[SDL_SCANCODE_ESCAPE] || keys[SDL_SCANCODE_UP] ||
+                                 (frame >= 300 && opt.hold.find("accel") != std::string::npos);  // headless checks
+                    if (pad && (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH) || SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_START) ||
+                                SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 1000))
+                        leave = true;
+                    if (leave) attract.leave();
+                    player->race.update_attract(*track, clock.frame_time(), clock.pow_table_row(), tv_camera.x, tv_camera.z);
+                    anims.update(tv_camera.x, tv_camera.z, clock.frame_time());
+                    tv_camera.update(player->race.opponents, 2);
+                    attract.update(clock.frame_time(), clock.pow_table_row());
+                    if (attract.done()) {
+                        shared.attract_done = true;
+                        running = false;
+                    }
+                    constexpr float kToUnits = 1024.0f / 3.1415927410125732f;
+                    cam.center_y = 130.0f;
+                    cam.x = float(tv_camera.x);
+                    cam.y = float(tv_camera.y);
+                    cam.z = float(tv_camera.z);
+                    cam.pitch = float(int(tv_camera.pitch * kToUnits) & 0x7ff);
+                    cam.yaw = float(int(tv_camera.yaw * kToUnits) & 0x7ff);
+                    cam.roll = 0;
                 } else if (player) {
                     scr::CarInput in;
                     const bool* keys = SDL_GetKeyboardState(nullptr);
@@ -1062,7 +1106,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     sh.env = nullptr;
                     sh.depth_bias = kShadowBias;
                     // the tyre smoke (car_sync_debris_objects: instance position and animation word)
-                    if (smoke_model)
+                    if (smoke_model && !opt.attract)
                         for (const scr::SmokePuff& sp : c.smoke) {
                             if (!sp.on) continue;
                             scr::Pose spose;
@@ -1076,7 +1120,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     // the car's part table (lean, suspension, steering, wheel roll)
                     player->race.player.part_poses(player->model, player->model_parts, player->part_poses, !freecam);
                     pose.parts = &player->part_poses;
-                    if (player->camera.car_visible || freecam) {
+                    if ((player->camera.car_visible || freecam) && !opt.attract) {
                         if (shadow) renderer3d.draw_model(*shadow, sh);
                         renderer3d.draw_model(player->model, pose);
                     }
@@ -1173,7 +1217,18 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     perf_max = std::max(perf_max, ms);
                     ++perf_frames;
                 }
-                if (player && player->cpu_cars && hud && !freecam) {
+                if (opt.attract) {
+                    // attract_mode_overlay, and attract_mode_fade_out's palette
+                    attract.draw(fb);
+                    const float b = attract.brightness();
+                    if (b < 1.0f)
+                        for (scr::Rgb& c : fb.palette()) {
+                            c.r = uint8_t(float(c.r) * b);
+                            c.g = uint8_t(float(c.g) * b);
+                            c.b = uint8_t(float(c.b) * b);
+                        }
+                }
+                if (player && player->cpu_cars && hud && !freecam && !opt.attract) {
                     const scr::Race& r = player->race;
                     const scr::Car& c = r.player;
                     scr::HudState hs;
@@ -1248,6 +1303,12 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 menu->draw(fb, renderer3d);
                 if (menu->quit) {
                     running = false;
+                    if (!shared.choice_path.empty()) menu->save_choice().save(shared.choice_path);
+                }
+                if (menu->want_demo && opt.menu_keys.empty() && opt.frames == 0) {
+                    // frontend_run ends after 30 idle seconds: the intro demo again
+                    running = false;
+                    shared.to_demo = true;
                     if (!shared.choice_path.empty()) menu->save_choice().save(shared.choice_path);
                 }
                 if (menu->race) {
@@ -1380,8 +1441,9 @@ int main(int argc, char** argv) {
     if (game_dir) SDL_Log("game data: %s", game_dir->c_str());
     else SDL_Log("game data: not found (pass --data or set SCREAMER_DATA)");
 
-    // Without --scene the game starts in the menu (when the game files are there).
-    if (opt.scene.empty() && game_dir) opt.scene = "menu";
+    // Without --scene the game starts with the intro demo, then the menu (game_main:
+    // attract_mode_run, frontend_run), when the game files are there.
+    if (opt.scene.empty() && game_dir) opt.scene = "attract";
     // The title screen as frontend_show_title draws it: menu1l.pcx from gfx\graf.dat.
     std::optional<scr::PcxImage> title;
     if (opt.scene.empty() || opt.scene == "title") {
@@ -1418,12 +1480,46 @@ int main(int argc, char** argv) {
     for (;;) {
         shared.back_to_menu = false;
         shared.restart_race = false;
+        shared.attract_done = false;
+        shared.to_demo = false;
+        if (opt.scene == "attract") {
+            // attract_mode_setup: the track last chosen in the menu (CHOICE.DAT), difficulty
+            // B, CPU cars only
+            opt.scene = "drive";
+            opt.attract = true;
+            opt.level = 1;
+            opt.reversed = false;
+            opt.race_options = 0;
+            // (CHOICE.DAT +0x434, DAT_001207f4: each demo shows the next track)
+            if (!shared.choice_path.empty()) {
+                scr::ChoiceFile choice;
+                if (choice.load(shared.choice_path)) {
+                    const int t = std::clamp(choice.get(0x434), 0, 5);
+                    const int map = t + 1;
+                    choice.set(0x434, t + 1 > 5 ? 0 : t + 1);
+                    choice.save(shared.choice_path);
+                    opt.track = "MAP" + std::to_string(map);
+                }
+            }
+        }
         exit_code = run_scene(opt, window, renderer, game_dir, title, shared);
+        if (opt.attract) {
+            opt.attract = false;
+            if (exit_code == 0 && shared.attract_done) {
+                opt.scene = "menu";
+                opt.hold.clear();
+                continue;
+            }
+        }
         if (exit_code != 0) break;
         if (opt.frames) {
             // --frames counts over all the scenes of the run
             if (shared.frames_run >= opt.frames) break;
             opt.frames -= shared.frames_run;
+        }
+        if (shared.to_demo) {
+            opt.scene = "attract";
+            continue;
         }
         if (shared.back_to_menu) {
             // the race is over: the menu takes the result (shared.race / outcome)

@@ -741,4 +741,45 @@ void Race::update(const Track& track, const CarInput& in_raw, float frame_time, 
     }
 }
 
+
+void Race::update_attract(const Track& track, float frame_time, int pow_row, int listener_x, int listener_z) {
+    // attract_mode_update_cars: the CPU cars on their own (the intro demo); the listener is
+    // the TV camera
+    dt_ = frame_time;
+    pow_row_ = pow_row;
+    speech_cues.clear();
+    cpu_hit_sound = false;
+    CarInput in;
+    in.race_started = in.cpu_cars_go = true;
+    for (Opponent& o : opponents) update_position(o);
+    for (Opponent& o : opponents) {
+        // opponent_update_driving: only cars near the player are simulated in full.
+        const double dx = double(chop(double(o.pos_x - listener_x) * 0.1)), dz = double(chop(double(o.pos_z - listener_z) * 0.1));
+        if (std::abs(o.pos_x - listener_x) < 35000 && std::abs(o.pos_z - listener_z) < 35000) {
+            o.viewer_distance = float(safe_sqrt(dx * dx + dz * dz) * 10.0);
+            o.active = o.viewer_distance < 35000.0f;
+        } else {
+            o.active = false;
+        }
+        if (o.crash_state == 0 && in.cpu_cars_go) update_target_speed(o);
+        advance_on_spline(o);
+    }
+    for (Opponent& o : opponents) {
+        if (o.active) {
+            smooth_angles(o);
+            // opponent_update_steer_anim: the marker's flags as the body's +0x3c word (window
+            // reflections: 0 open, 0x8000 / 0xff00 e.g. in tunnels).
+            o.render_flags = o.marker_flags == 1 ? 0x8000u : o.marker_flags == 2 ? 0xff00u : 0u;
+        }
+        crash_update(o);
+    }
+    for (Opponent& o : opponents) {
+        track_progress(o);
+        if (o.active) bumpers(o);
+        check_ground(track, o);
+    }
+    for (Opponent& o : opponents)
+        if (o.crash_state == 0 && o.active) cpu_contacts(o);
+}
+
 } // namespace scr

@@ -19,6 +19,8 @@ add_library(screamer_core STATIC
   core/pcx.cpp
   core/render3d.cpp
   core/worker_pool.cpp
+  core/tv_camera.cpp
+  core/attract.cpp
   core/sim_clock.cpp
   core/testpattern.cpp
   core/track.cpp
