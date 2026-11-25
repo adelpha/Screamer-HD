@@ -52,6 +52,7 @@ struct Options {
     std::string data_dir;
     bool headless = false;
     bool perf = false;              // print the 3D render time per frame at the end
+    bool lod = false;               // the original's distant versions of objects (off: full detail)
     int threads = 0;                // renderer threads (0: one per hardware thread)
     bool fullscreen = false;
     uint64_t frames = 0;            // 0 = run until quit
@@ -97,6 +98,7 @@ void print_usage() {
         "  --data DIR           original game directory (default: $SCREAMER_DATA or build-time path)\n"
         "  --headless           no visible window, software renderer, dummy audio\n"
         "  --perf               print how long the 3D view takes to draw\n"
+        "  --lod                draw distant objects in the original's simpler versions (default: full detail)\n"
         "  --threads N          threads drawing the 3D view (default: one per CPU thread)\n"
         "  --frames N           exit after N simulation frames (2 ticks of the game's 100 Hz clock each)\n"
         "  --scene NAME         menu (default when the game files are found), title, track, drive or testpattern\n"
@@ -173,6 +175,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         if (a == "--data") o.data_dir = next("--data");
         else if (a == "--headless") o.headless = true;
         else if (a == "--perf") o.perf = true;
+        else if (a == "--lod") o.lod = true;
         else if (a == "--threads") o.threads = std::atoi(next("--threads"));
         else if (a == "--fullscreen") o.fullscreen = true;
         else if (a == "--frames") o.frames = std::strtoull(next("--frames"), nullptr, 10);
@@ -552,6 +555,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     scr::Renderer renderer3d;
     renderer3d.set_textures(!opt.flat);
     renderer3d.set_threads(opt.threads);
+    renderer3d.set_lod(opt.lod);
 
     // --scene menu: the front end (kept by main across races)
     scr::Menu* menu = nullptr;
@@ -1023,6 +1027,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     // car_apply_surface sets the (global) scroll rate from the player's surface.
                     const float env_rate = c.marker_flags == 0 ? 0.002f : 0.03f;
                     pose.env = &player->env;
+                    pose.dynamic = true;
                     pose.env_rate = env_rate;
                     // car_update_shadow_position: 20 units further from the camera, on the ground,
                     // tilted with the body.
@@ -1094,6 +1099,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         if (player->cpu_env.size() < player->race.opponents.size())
                             player->cpu_env.resize(player->race.opponents.size());
                         op.env = &player->cpu_env[i];
+                        op.dynamic = true;
                         op.env_rate = env_rate;
                         // the shadow on the ground, tilted with the car (kept as it was while it crashes)
                         if (player->cpu_shadow.size() < player->race.opponents.size())

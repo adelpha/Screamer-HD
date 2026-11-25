@@ -25,9 +25,8 @@ std::optional<Model> parse_model(const uint8_t* d, size_t size) {
     int32_t frames = -1;
     rd(d, size, 0x10, frames);
     if (frames > 0 && frames < 4096) m.frames = frames;
-    for (int32_t k = 0; k < nparts; ++k) {
-        int32_t po = 0;
-        if (!rd(d, size, 0x18 + 4 * size_t(k), po) || po <= 0 || size_t(po) >= size) return std::nullopt;
+    auto parse_part = [&](int32_t po) -> std::optional<Part> {
+        if (po <= 0 || size_t(po) >= size) return std::nullopt;
         const size_t p = size_t(po);
         int32_t voff = 0, uvoff = 0, order0 = 0;
         if (!rd(d, size, p + 0x1c, voff) || !rd(d, size, p + 0x24, uvoff) || !rd(d, size, p + 0x28, order0)) return std::nullopt;
@@ -115,7 +114,39 @@ std::optional<Model> parse_model(const uint8_t* d, size_t size) {
             rd(d, size, f + 0x20, face.plane);
             if (ok) part.faces.push_back(face);
         }
-        m.parts.push_back(std::move(part));
+        return part;
+    };
+    for (int32_t k = 0; k < nparts; ++k) {
+        int32_t po = 0;
+        if (!rd(d, size, 0x18 + 4 * size_t(k), po)) return std::nullopt;
+        auto part = parse_part(po);
+        if (!part) return std::nullopt;
+        m.parts.push_back(std::move(*part));
+    }
+    // object_compute_depth: two simpler versions of each part for distant objects, the part
+    // offset tables at +0x11c and +0x220 (65 entries further each); 0 = not drawn there.
+    for (int lod = 1; lod <= 2; ++lod) {
+        std::vector<LodPart> parts;
+        bool any = false;
+        for (int32_t k = 0; k < nparts; ++k) {
+            int32_t po = 0, po0 = 0;
+            rd(d, size, 0x18 + 0x104 * size_t(lod) + 4 * size_t(k), po);
+            rd(d, size, 0x18 + 4 * size_t(k), po0);
+            LodPart lp;
+            if (po == po0) {
+                lp.same = true;
+            } else if (po > 0) {
+                if (auto part = parse_part(po)) {
+                    lp.part = std::move(*part);
+                    lp.present = true;
+                    any = true;
+                }
+            } else {
+                any = true;  // left out at this distance
+            }
+            parts.push_back(std::move(lp));
+        }
+        if (any) m.lods[size_t(lod - 1)] = std::move(parts);
     }
     compute_bounds(m);
     return m;
@@ -146,7 +177,13 @@ void compute_bounds(Model& model) {
         }
     model.flat = any && flat;
     model.flat_y = flat_y;
-    for (Part& part : model.parts) {
+    std::vector<Part*> all;
+    for (Part& part : model.parts) all.push_back(&part);
+    for (auto& lod : model.lods)
+        for (LodPart& lp : lod)
+            if (lp.present) all.push_back(&lp.part);
+    for (Part* pp : all) {
+        Part& part = *pp;
         static const char* const kWheels[] = {"flx", "fli", "blx", "rli", "frx", "fri", "brx", "rri"};
         part.wheel = std::find(std::begin(kWheels), std::end(kWheels), part.name) != std::end(kWheels);
         if (part.vertices.empty()) {

@@ -70,8 +70,18 @@ struct Part {
     bool wheel = false;
 };
 
+// A part's simpler version for distant objects (Model::lods).
+struct LodPart {
+    bool same = false;     // the full part again
+    bool present = false;  // `part` is its own simpler version; neither: not drawn
+    Part part;
+};
+
 struct Model {
     std::vector<Part> parts;
+    // object_compute_depth's level-of-detail tables (beyond 4000 and 7000 units for track
+    // objects); empty when every part stays the same.
+    std::array<std::vector<LodPart>, 2> lods;
     // Animated objects (object header +0x10 >= 0): the number of frames; each part then has
     // a matrix and position per frame (Part::frames), the frame following the global
     // animation counter (frames * counter >> 16).
