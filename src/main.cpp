@@ -77,6 +77,7 @@ struct Options {
     std::string replay_file;        // play this .RPL back (the race runs again from its inputs)
     std::string save_dir;           // --save-dir: our saves here instead of the pref path
     std::string record_file;        // --record: save the race's replay here when the run ends
+    std::string positions_file;     // --positions: player and CPU positions every frame (vs tools/dosbox/record-replay.ps1)
     bool instant_replay = false;    // the replay right after a single race: PLAY AGAIN? at its end
     bool moving_scenery = true;     // track_load_animations runs above LOW detail (DAT_0010cf54)
     int race_options = 0;           // g_race_options: the cheats (obstacle column, clock, mirror, upside down)
@@ -223,6 +224,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--replay") o.replay_file = next("--replay");
         else if (a == "--record") o.record_file = next("--record");
         else if (a == "--save-dir") o.save_dir = next("--save-dir");
+        else if (a == "--positions") o.positions_file = next("--positions");
         else if (a == "--race-options") o.race_options = int(std::strtol(next("--race-options"), nullptr, 0));
         else if (a == "--camera") o.camera = next("--camera");
         else if (a == "--flat") o.flat = true;
@@ -324,8 +326,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     scr::TvCamera tv_camera;               // the intro demo's camera
     scr::Replay replay;                    // playing back (opt.replay_file) or recording
     size_t replay_pos = 0;
-    bool replay_views = false;             // F1-F4 pressed in a replay: the player's views
     const bool replaying = !opt.replay_file.empty() && replay.load(opt.replay_file);
+    std::FILE* positions = opt.positions_file.empty() || opt.scene != "drive" ? nullptr : std::fopen(opt.positions_file.c_str(), "wb");
     scr::AttractOverlay attract;           // the intro demo's logo and credits
     std::optional<std::string> gfx_path;  // GFX/MAPn?.DAT
     // Time attack: the ghost of the best lap (ghost_record_frame / ghost_update), kept as
@@ -852,10 +854,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         running = false;
                     }
                 }
-                else if (player && ev.key.key >= SDLK_F1 && ev.key.key <= SDLK_F4 && player->race.started) {
-                    player->camera.select(int(ev.key.key - SDLK_F1));
-                    replay_views = true;
-                }
+                else if (player && ev.key.key >= SDLK_F1 && ev.key.key <= SDLK_F4 && player->race.started && !replaying)
+                    player->camera.select(int(ev.key.key - SDLK_F1));  // (camera_handle_view_keys: not in replays)
                 else if (ev.key.key == SDLK_M && !ev.key.repeat) radar = radar >= 3 ? 0 : radar + 1;
                 else if (ev.key.key == SDLK_P && !ev.key.repeat && player && hud && prompt < 0 && !paused) {
                     paused = true;
@@ -1072,6 +1072,19 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     }
                     float ft = clock.frame_time();
                     int pow_row = clock.pow_table_row();
+                    if (positions) {
+                        // the same fields as step_race.py's COMPACT records, before this frame
+                        const scr::Car& pc = player->race.player;
+                        int32_t rec[9 + 1 + 27]{};
+                        rec[0] = pc.pos_x; rec[1] = pc.pos_y; rec[2] = pc.pos_z;
+                        std::memcpy(&rec[6], &pc.pitch, 4); std::memcpy(&rec[7], &pc.yaw, 4); std::memcpy(&rec[8], &pc.roll, 4);
+                        std::memcpy(&rec[9], &pc.speed, 4);
+                        for (size_t k = 0; k < 9 && k < player->race.opponents.size(); ++k) {
+                            const scr::Opponent& o = player->race.opponents[k];
+                            rec[10 + 3 * k] = o.pos_x; rec[11 + 3 * k] = o.pos_y; rec[12 + 3 * k] = o.pos_z;
+                        }
+                        std::fwrite(rec, sizeof rec, 1, positions);
+                    }
                     if (replaying) {
                         // replay_read_frame: the recorded frame time and inputs
                         if (replay_pos < replay.frames.size()) {
@@ -1088,8 +1101,10 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                             }
                             in.gear_up = rf.gear_up != 0;
                             in.gear_down = rf.gear_down != 0;
-                            ft = std::clamp(rf.frame_time, 0.02f, 0.2f);
+                            // (as recorded; only nonsense is kept out)
+                            ft = rf.frame_time > 0.0f && rf.frame_time < 1.0f ? rf.frame_time : 0.02f;
                             pow_row = int(1.0 / double(ft));
+                            player->race.raw_frame_time = rf.raw_time > 0.0f && rf.raw_time < 1.0f ? rf.raw_time : ft;
                         } else if (prompt < 0) {
                             // the end of the replay (g_race_flags 0x220)
                             if (opt.instant_replay) {
@@ -1121,10 +1136,15 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         std::swap(in.steer_left, in.steer_right);
                         in.steer = -in.steer;
                     }
+                    // camera_update_view: only camera_mode_car (F3, F4) wraps the car's yaw;
+                    // a replay is seen from the trackside cameras
+                    player->race.player.camera_car_mode = !replaying && (player->camera.view == 2 || player->camera.view == 3);
                     if (player->cpu_cars)
                         player->race.update(*track, in, ft, pow_row);
-                    else
+                    else {
                         player->race.player.update(*track, in, ft, pow_row);
+                        player->race.player.camera_update();
+                    }
                     if (frame == 700 && held("finish") && !replaying) player->race.finished = true;  // headless checks of the race end
                     race_audio.update(player->race, clock.frame_time());
                     if (player->cpu_cars && player->race.started && !player->race.finished && !player->race.failed) {
@@ -1169,7 +1189,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     cam.pitch = float(int(player->camera.pitch * kToUnits) & 0x7ff);
                     cam.yaw = float(int(player->camera.yaw * kToUnits) & 0x7ff);
                     cam.roll = float(int(player->camera.roll * kToUnits) & 0x7ff);
-                    if (replaying && !replay_views && tv_camera.has_trackside()) {
+                    if (replaying && tv_camera.has_trackside()) {
                         // camera_mode_trackside: the nearest replay camera, aimed at the car
                         const scr::Car& pc = player->race.player;
                         tv_camera.trackside(pc.pos_x, pc.pos_y, pc.pos_z);
@@ -1605,6 +1625,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         SDL_Log("render3d: %.2f ms average, %.2f ms worst over %d frames at %dx%d", perf_total / perf_frames, perf_max,
                 perf_frames, fb.width(), fb.height());
     shared.frames_run = frame;
+    if (positions) std::fclose(positions);
     if (player && (replaying || !opt.record_file.empty())) {
         const scr::Car& pc = player->race.player;
         SDL_Log("replay: frame %zu, player at %d %d %d", replaying ? replay_pos : replay.frames.size(), pc.pos_x, pc.pos_y, pc.pos_z);

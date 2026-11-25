@@ -37,6 +37,9 @@ struct CarInput {
     bool gear_down = false;
     bool race_started = true;   // g_race_flags & 1: before the start only the revs move
     bool cpu_cars_go = true;    // g_race_flags & 5: the CPU cars drive
+    // g_race_flags & 0x4000: out of time or past the finish: no throttle, no gear changes,
+    // the brake held at half (car_update_engine_gearbox sets g_input_brake to 512)
+    bool coasting = false;
 };
 
 // Per-car constants from CARS_DATA (CarData) and the wheel positions in the .3DX model.
@@ -94,6 +97,9 @@ public:
 
     // One frame of race_frame for the player car, in the game's order.
     void update(const Track& track, const CarInput& in, float frame_time, int pow_row);
+    // camera_update's part in the physics: run after update (and the collisions).
+    void camera_update();
+    bool camera_car_mode = true;  // the view is a camera_mode_car one (F3, F4)
 
     // Takes the state from a copy of the game's g_player_car (at least 0x800 bytes), for
     // comparing single frames with recordings of the original (tools/dosbox/record-race.ps1).
@@ -177,12 +183,12 @@ public:
 private:
     float lerp(float value, float target, int k) const;  // lerp_toward
     void integrate_motion();
-    void engine_gearbox(const CarInput& in);
+    void engine_gearbox(CarInput& in);
     void update_throttle(const CarInput& in);
     void update_brake(const CarInput& in);
     void update_steering(const CarInput& in);
     void wheel_loads();
-    void update_skid();
+    void update_skid(const CarInput& in);
     void corner_probes(const Track& track);
     void resolve_corner_probes(const Track& track);
     void apply_wall_push(const Track& track);
