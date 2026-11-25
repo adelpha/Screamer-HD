@@ -184,10 +184,16 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
         if (part_mask && (pi >= part_mask->size() || !(*part_mask)[pi])) continue;
         const Part& part = model.parts[pi];
         // Part placement inside the object, then the object's.
-        const bool placed = part.angles != std::array<int32_t, 3>{};
-        Mat3 prot = placed ? multiply(rot, rotation(float(part.angles[0]), float(part.angles[1]), float(part.angles[2]))) : rot;
+        const PartPose* pp = pose.parts && pi < pose.parts->size() ? &(*pose.parts)[pi] : nullptr;
+        std::array<int32_t, 3> angles = part.angles;
+        std::array<int32_t, 3> offset = part.offset;
+        if (pp && pp->angles) angles = {pp->ax, pp->ay, pp->az};
+        if (pp && pp->y) offset[1] = pp->oy;
+        const bool placed = angles != std::array<int32_t, 3>{};
+        // (the yaw negated as for whole objects, so a part turns the way the game turns it)
+        Mat3 prot = placed ? multiply(rot, rotation(float(angles[0]), -float(angles[1]), float(angles[2]))) : rot;
         float ox, oy, oz;
-        apply(rot, float(part.offset[0]), float(part.offset[1]), float(part.offset[2]), ox, oy, oz);
+        apply(rot, float(offset[0]), float(offset[1]), float(offset[2]), ox, oy, oz);
         if (!part.frames.empty()) {
             // A part of an animated object (object_load_bbox): this frame's matrix (stored by
             // columns; it also swaps y and z, which is why the game flips its back-face test

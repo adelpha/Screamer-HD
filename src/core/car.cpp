@@ -387,6 +387,30 @@ void Car::update_skid() {
     smoke_cue_ = skid_sound;
 }
 
+void Car::part_poses(const Model& model, const CarParts& cp, std::vector<PartPose>& out, bool advance) {
+    out.assign(model.parts.size(), PartPose{});
+    const int32_t lean_x = chop(double(lean_pitch) * 1024.0 * 2.0 / 3.1415927410125732) & 0x7ff;
+    const int32_t lean_z = chop(double(lean_roll) * 1024.0 * 4.0 / 3.1415927410125732) & 0x7ff;
+    for (int i : cp.body) {
+        PartPose& p = out[size_t(i)];
+        p.angles = true;
+        p.ax = lean_x;
+        p.az = lean_z;
+        p.y = true;
+        p.oy = model.parts[size_t(i)].offset[1] - body_lift;
+    }
+    // (FISTP after __CHP: truncated; the roll keeps even values)
+    if (advance) wheel_roll = chop(double(wheel_roll) - double(speed) / 15.0) & 0x7fe;
+    const int32_t steer_ay =
+        steer_max != 0.0f ? chop(double(steer) * 1024.0 / (double(steer_max) * 1.5) / 3.141592741012573) & 0x7ff : 0;
+    for (int i : cp.wheels) {
+        PartPose& p = out[size_t(i)];
+        p.angles = true;
+        p.ax = wheel_roll;
+    }
+    for (int i : cp.steered) out[size_t(i)].ay = steer_ay;
+}
+
 void Car::update_spin() {
     // car_update_spin: state 1 starts a spin, a full turn of drift away from the way the car
     // was turning; states 2 and 4 then bring the drift back to 0 (3 rad/s, faster when large)

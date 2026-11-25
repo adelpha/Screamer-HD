@@ -154,6 +154,11 @@ public:
     // Tyre smoke: while the skid noise plays, during crash bounces and in crash state 5, a
     // puff leaves each rear wheel every 0.05 s; it follows the car's frame and lives 2/3 s.
     std::array<SmokePuff, 8> smoke{};
+    // car_sync_render_object's part table: body lean (x2 pitch, x4 roll), the body sections at
+    // their suspension height less body_lift, the front wheels steered (steer / (1.5 max)) and
+    // every wheel rolled by speed / 15 a frame.
+    int32_t wheel_roll = 0;
+    void part_poses(const Model& model, const CarParts& cp, std::vector<PartPose>& out, bool advance = true);
     float smoke_timer = 0;          // +0x304
     uint32_t frame_counter = 0;     // g_frame_counter (the frames this car has run)
     bool skid_sound = false;   // car_update_skid / crash state 5: the skid noise (sfx 0) plays

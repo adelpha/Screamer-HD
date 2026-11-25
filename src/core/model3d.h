@@ -85,6 +85,25 @@ struct Model {
     int flat_y = 0;
 };
 
+// A part's placement set by the game for one frame (the instance's part table, f_10 in
+// g_objects, 0x20 bytes per part): angles in 2048 units replacing the file's, and the height.
+struct PartPose {
+    bool angles = false;
+    int32_t ax = 0, ay = 0, az = 0;
+    bool y = false;
+    int32_t oy = 0;
+};
+
+// The parts of a car that car_sync_render_object / opponent_sync_render_object move: the
+// body sections (fauto, rauto, MV_mauto, fai: lean and suspension) and the wheels (table at
+// 0x101d58: flx fli blx rli frx fri brx rri; the first two pairs steer).
+struct CarParts {
+    std::vector<int> body;    // part indices
+    std::vector<int> wheels;
+    std::vector<int> steered;
+};
+CarParts find_car_parts(const Model& car);
+
 // Fills in Part::center/radius and Model::radius (parse_model does this).
 void compute_bounds(Model& model);
 

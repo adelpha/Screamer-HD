@@ -403,6 +403,11 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         std::vector<scr::EnvScroll> cpu_env;
         std::vector<std::array<float, 2>> cpu_shadow;  // shadow pitch and roll of each CPU car
         std::array<float, 2> shadow_angles{};           // the player's (kept while it tumbles)
+        scr::CarParts model_parts;                      // the player's car parts that move
+        std::vector<scr::PartPose> part_poses;
+        std::vector<scr::CarParts> cpu_parts;
+        std::vector<int32_t> cpu_roll;
+        std::vector<std::vector<scr::PartPose>> cpu_poses;
     };
     std::optional<Player> player;
     std::optional<scr::Hud> hud;  // the race HUD (--scene drive with CPU cars)
@@ -442,6 +447,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         smoke_model = scr::load_object(*path, "SMOKE.3DX");
         player.emplace();
         player->model = std::move(*model);
+        player->model_parts = scr::find_car_parts(player->model);
         const scr::CarSetup setup = scr::car_setup(rec, player->model);
         // CPU cars: the racing lines and OPPONENTS of DATA/<track>.DAT; each takes the next
         // CARS_DATA record, skipping the player's (opponent_car_load).
@@ -1048,6 +1054,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                             spose.depth_bias = kShadowBias;  // on the road, not in it
                             renderer3d.draw_model(*smoke_model, spose);
                         }
+                    // the car's part table (lean, suspension, steering, wheel roll)
+                    player->race.player.part_poses(player->model, player->model_parts, player->part_poses, !freecam);
+                    pose.parts = &player->part_poses;
                     if (player->camera.car_visible || freecam) {
                         if (shadow) renderer3d.draw_model(*shadow, sh);
                         renderer3d.draw_model(player->model, pose);
@@ -1097,6 +1106,31 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         osh.env = nullptr;
                         osh.depth_bias = kShadowBias;
                         if (shadow) renderer3d.draw_model(*shadow, osh);
+                        // opponent_sync_render_object's part table: the body sections lean
+                        // (pitch_ofs, roll_ofs), every wheel rolls by speed / 15 a frame
+                        if (player->cpu_parts.size() <= i) player->cpu_parts.resize(i + 1);
+                        if (player->cpu_roll.size() <= i) player->cpu_roll.resize(i + 1, 0);
+                        if (player->cpu_poses.size() <= i) player->cpu_poses.resize(i + 1);
+                        {
+                            const scr::Model& cm = player->cpu_models[i];
+                            if (player->cpu_parts[i].body.empty() && player->cpu_parts[i].wheels.empty())
+                                player->cpu_parts[i] = scr::find_car_parts(cm);
+                            const scr::CarParts& cp = player->cpu_parts[i];
+                            auto& pp = player->cpu_poses[i];
+                            pp.assign(cm.parts.size(), scr::PartPose{});
+                            const int32_t lx = int(o.pitch_ofs * kToUnits) & 0x7ff, lz = int(o.roll_ofs * kToUnits) & 0x7ff;
+                            for (int pi2 : cp.body) {
+                                pp[size_t(pi2)].angles = true;
+                                pp[size_t(pi2)].ax = lx;
+                                pp[size_t(pi2)].az = lz;
+                            }
+                            if (!freecam) player->cpu_roll[i] = int32_t(double(player->cpu_roll[i]) - double(o.speed) / 15.0) & 0x7fe;
+                            for (int pi2 : cp.wheels) {
+                                pp[size_t(pi2)].angles = true;
+                                pp[size_t(pi2)].ax = player->cpu_roll[i];
+                            }
+                            op.parts = &pp;
+                        }
                         renderer3d.draw_model(player->cpu_models[i], op);
                     }
                 }

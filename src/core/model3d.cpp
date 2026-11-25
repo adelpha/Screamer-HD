@@ -121,6 +121,17 @@ std::optional<Model> parse_model(const uint8_t* d, size_t size) {
     return m;
 }
 
+CarParts find_car_parts(const Model& car) {
+    CarParts out;
+    for (size_t i = 0; i < car.parts.size(); ++i) {
+        const std::string& n = car.parts[i].name;
+        if (n == "fauto" || n == "rauto" || n == "MV_mauto" || n == "fai") out.body.push_back(int(i));
+        if (car.parts[i].wheel) out.wheels.push_back(int(i));
+        if (n == "flx" || n == "fli" || n == "frx" || n == "fri") out.steered.push_back(int(i));
+    }
+    return out;
+}
+
 void compute_bounds(Model& model) {
     model.radius = 0;
     model.flat = false;

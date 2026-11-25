@@ -72,6 +72,9 @@ struct Pose {
     // whole objects and never depth-tests, so a car's shadow (a flat quad tilted with the car)
     // always lies on the road; a bias keeps it from sinking into slopes here.
     float depth_bias = 0;
+    // Per-part placements for this frame (cars: lean, suspension, steering, wheel roll), by
+    // part index; parts beyond the end or without flags keep the file's.
+    const std::vector<PartPose>* parts = nullptr;
     // Road pieces (track placements of slot 0): they meet edge to edge but are transformed
     // separately, and the hairline cracks between them would show the sky; their polygons
     // reach a third of an original pixel past their edges.
