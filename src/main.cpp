@@ -75,6 +75,7 @@ struct Options {
     bool reversed = false;          // tracks 7-12: the track driven the other way (DATA/MAPnI.DAT)
     bool attract = false;           // the intro demo (attract_mode_run): CPU cars, TV camera, credits
     std::string replay_file;        // play this .RPL back (the race runs again from its inputs)
+    uint64_t capture_from = 0;      // --capture-from: --capture-every starts at this frame
     bool tween_test = false;        // --tween-test: headless, one tick a loop, so every other picture is drawn between steps
     std::string save_dir;           // --save-dir: our saves here instead of the pref path
     std::string record_file;        // --record: save the race's replay here when the run ends
@@ -277,6 +278,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--record") o.record_file = next("--record");
         else if (a == "--save-dir") o.save_dir = next("--save-dir");
         else if (a == "--tween-test") o.tween_test = true;
+        else if (a == "--capture-from") o.capture_from = std::strtoull(next("--capture-from"), nullptr, 10);
         else if (a == "--positions") o.positions_file = next("--positions");
         else if (a == "--race-options") o.race_options = int(std::strtol(next("--race-options"), nullptr, 0));
         else if (a == "--camera") o.camera = next("--camera");
@@ -1674,10 +1676,10 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 recorded.resize(at + size_t(n) * 2);
                 mixer.mix(recorded.data() + at, n, 44100);
             }
-            if (step && opt.capture_every && frame % opt.capture_every == 0) {
+            if ((step || opt.tween_test) && opt.capture_every && frame >= opt.capture_from && frame % opt.capture_every == 0) {
                 scr::SurfacePtr s = scr::framebuffer_to_surface(fb);
                 char name[64];
-                std::snprintf(name, sizeof name, "/fb_%06llu.png", static_cast<unsigned long long>(frame));
+                std::snprintf(name, sizeof name, "/fb_%06llu%s.png", static_cast<unsigned long long>(frame), step ? "" : "_t");
                 save_or_log(s.get(), opt.capture_dir + name);
             }
             if (step) ++frame;
