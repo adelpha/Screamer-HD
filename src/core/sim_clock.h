@@ -35,8 +35,11 @@ public:
     void add_ticks(uint32_t ticks) { ticks_ += ticks; }
     // True once enough ticks have accumulated for the next frame.
     bool frame_ready() const { return ticks_ >= kMinTicksPerFrame; }
-    // Consumes all accumulated ticks and updates the frame time, like the game does.
-    void begin_frame();
+    // Consumes the accumulated ticks (at most `take`) and updates the frame time, like the
+    // game does. The original busy-waits for 2 ticks, so on a fast enough machine every frame
+    // is 2 ticks; a frame that has to wait for the display passes `take` = 2 and keeps the
+    // rest for the next frame, so the race runs exactly as on such a machine.
+    void begin_frame(uint32_t take = UINT32_MAX);
 
     // Resets the smoothed time the way race_load does (g_frame_time = 0).
     void reset() { frame_time_ = 0.0f; raw_ = 0.0f; ticks_ = 0; }

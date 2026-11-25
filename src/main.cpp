@@ -901,7 +901,10 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             tick_acc %= scr::SimClock::kTickNs;
         }
         if (clock.frame_ready()) {
-            clock.begin_frame();
+            // Interactive runs: frames of exactly 2 ticks (50 a second) as the original on a
+            // machine that keeps up, unless this one falls behind (then all of them, as the
+            // original does on a slow one).
+            clock.begin_frame(opt.headless || clock.pending_ticks() > 3 ? UINT32_MAX : 2);
             if (player && hud && !paused && frame == 150 && opt.hold.find("pause") != std::string::npos) {
                 // --hold pause: open the P panel at frame 150 (headless checks)
                 paused = true;
@@ -1057,17 +1060,23 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     if (keys[SDL_SCANCODE_LEFT] || held("left")) in.steer_left = 1023;
                     if (keys[SDL_SCANCODE_RIGHT] || held("right")) in.steer_right = 1023;
                     if (pad) {
-                        const int rt = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
-                        const int lt = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
-                        const int lx = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX);
-                        if (rt > 1000) in.accel = std::max(in.accel, rt * 1023 / 32767);
-                        if (lt > 1000 && !in.brake) {
-                            in.brake = lt * 1023 / 32767;
+                        // controls_update for a joystick axis: -1023..1023, nothing below 0x66
+                        // (the original's dead zone), then as the original uses it
+                        auto axis = [&](SDL_GamepadAxis ax) {
+                            const int v = std::clamp(int(SDL_GetGamepadAxis(pad, ax)) * 1023 / 32767, -1023, 1023);
+                            return std::abs(v) < 0x66 ? 0 : v;
+                        };
+                        const int rt = axis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
+                        const int lt = axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+                        const int lx = axis(SDL_GAMEPAD_AXIS_LEFTX);
+                        if (rt > 0) in.accel = std::max(in.accel, rt);
+                        if (lt > 0 && !in.brake) {
+                            in.brake = lt;
                             in.analog_brake = true;
                         }
-                        if (std::abs(lx) > 4000 && !in.steer_left && !in.steer_right) {
+                        if (lx != 0 && !in.steer_left && !in.steer_right) {
                             in.analog_steer = true;
-                            in.steer = lx * 1023 / 32767;
+                            in.steer = lx;
                         }
                     }
                     float ft = clock.frame_time();
