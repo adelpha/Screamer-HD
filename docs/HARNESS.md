@@ -58,7 +58,8 @@ no manual steps.
 | `--record-audio FILE.wav` | Write the run's sound (effects, announcer and CD music) to a 44.1 kHz WAV, one 1/50 s block per frame, so headless runs give the same file every time. |
 | `--music-source cd\|midi\|auto` | Music from the CD image, or the MIDI versions in DATA/MUSIC.DAT on the built-in FM synth (auto: CD when the image is found). |
 | `--audio-log` | Log every sample that starts, with its frame: `frame 300: sound 19 go`. |
-| `--mute`, `--sfx-volume N`, `--music-volume N`, `--no-music`, `--no-speech`, `--audio-filter linear\|nearest` | Sound options (volumes 0..100). The music is the CD audio, read from the CD image in the game directory (`SCREAM.cue`/`.bin`, or `SCREAM.DAT`/`SCREAM.gog` as the Steam and GOG releases name them). |
+| `--mute`, `--sfx-volume N`, `--music-volume N`, `--no-music`, `--no-speech`, `--audio-filter linear\|nearest` | Sound options (volumes 0..100: the car-stereo panel's FX and CD/MU levels). The music is the CD audio, read from the CD image in the game directory (`SCREAM.cue`/`.bin`, or `SCREAM.DAT`/`SCREAM.gog` as the Steam and GOG releases name them). |
+| `--volumes A,E,F,M` | The OPTIONS > SOUND settings for this run, 0..10 each: announcer, the player's engine, all other effects (CPU engines, skids, crashes, scenery, menu clicks) and music. Without it they come from `CHOICE.DAT`, which keeps them after the original's 0x460 bytes (`SCRX`, a count, then the values); the original's own file gives 10 for all. |
 
 ## Test types
 

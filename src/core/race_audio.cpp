@@ -63,7 +63,7 @@ void RaceAudio::start(Mixer& mixer, const SoundBank& bank, const Race& race, int
     finished_ = race.finished;
     failed_ = race.failed;
     surface_ = race.player.marker_flags;
-    engine_ = mixer.play(engine_sample(surface_));
+    engine_ = mixer.play(engine_sample(surface_), SoundGroup::Engine);
     cpu_engine_.assign(race.opponents.size(), -1);
     cpu_prev_dist_.assign(race.opponents.size(), 0);
     cpu_rev_.assign(race.opponents.size(), 0.0f);
@@ -115,7 +115,7 @@ int RaceAudio::play_event(int event, int variant) {
     // speech_play_event: straight away, not through the queue.
     if (!speech_) return -1;
     const int s = pick_sample(event, variant);
-    return s < 0 ? -1 : mixer_->play(s + bank_->speech_first);
+    return s < 0 ? -1 : mixer_->play(s + bank_->speech_first, SoundGroup::Announcer);
 }
 
 bool RaceAudio::trigger_once_after(bool cond, int event, float time, float dt) {
@@ -200,7 +200,7 @@ void RaceAudio::speech_update(float dt) {
             const int s = pick_sample(queue_[0].event, queue_[0].variant);
             if (s != -1) {
                 speech_sample_ = s + bank_->speech_first;
-                speech_handle_ = mixer_->play(speech_sample_);
+                speech_handle_ = mixer_->play(speech_sample_, SoundGroup::Announcer);
             }
             if (speech_handle_ == -1) {
                 queue_.erase(queue_.begin());

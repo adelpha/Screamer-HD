@@ -3,7 +3,9 @@
 #include "core/gamedata.h"
 #include "core/menu.h"
 
+#include <array>
 #include <cstdio>
+#include <filesystem>
 #include <optional>
 #include <string>
 
@@ -195,6 +197,71 @@ TEST_CASE("menu: cheats typed in the menus") {
     CHECK(m.tracks_unlocked == 9);
     CHECK(type("TAZOR"));
     CHECK(m.cars_unlocked == 1);
+}
+
+TEST_CASE("menu: CHOICE.DAT keeps our volumes after the original's bytes") {
+    const auto path = std::filesystem::temp_directory_path() / "scr_choice_test.dat";
+    scr::ChoiceFile c;
+    CHECK((c.volume == std::array<int32_t, 4>{10, 10, 10, 10}));
+    c.volume = {3, 0, 7, 10};
+    c.set(0x14, 2);
+    REQUIRE(c.save(path.string()));
+    CHECK(std::filesystem::file_size(path) == 0x460 + 4 + 4 + 16);
+    scr::ChoiceFile d;
+    REQUIRE(d.load(path.string()));
+    CHECK((d.volume == std::array<int32_t, 4>{3, 0, 7, 10}));
+    CHECK(d.get(0x14) == 2);
+    // the original's file (0x460 bytes, nothing after them): the defaults
+    std::filesystem::resize_file(path, 0x460);
+    scr::ChoiceFile e;
+    e.volume = {1, 1, 1, 1};
+    REQUIRE(e.load(path.string()));
+    CHECK((e.volume == std::array<int32_t, 4>{10, 10, 10, 10}));
+    CHECK(e.get(0x14) == 2);
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("menu: OPTIONS > SOUND sets the four volumes") {
+    if (!scr::find_game_dir()) SKIP("original game data not present");
+    auto a = load_menu();
+    REQUIRE(a.has_value());
+    scr::Menu m(*a);
+    scr::ChoiceFile c;
+    c.volume = {10, 10, 5, 10};
+    m.load_choice(c);
+    m.show_title();
+    run(m, 100);
+    auto press = [&](auto set) {
+        scr::MenuKeys k;
+        set(k);
+        run(m, 1, k);
+        run(m, 30);
+    };
+    for (int i = 0; i < 4; ++i) press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.enter = true; });  // OPTIONS
+    REQUIRE(m.page == 1);
+    for (int i = 0; i < 5; ++i) press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.enter = true; });  // SOUND
+    REQUIRE(m.page == 7);
+    run(m, 60);
+    // its lines: "ANNOUNCER 10" ... (one block per letter)
+    int letters = 0;
+    for (const auto& it : m.items) letters += it.ch != -1;
+    CHECK(letters == int(std::string("ANNOUNCER 10ENGINE 10EFFECTS 5MUSIC 10").size()));
+    press([](scr::MenuKeys& k) { k.left = true; });   // announcer 9
+    press([](scr::MenuKeys& k) { k.right = true; });  // back to 10, not past it
+    press([](scr::MenuKeys& k) { k.right = true; });
+    press([](scr::MenuKeys& k) { k.left = true; });
+    press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.left = true; });   // engine 9
+    press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.enter = true; });  // effects 6
+    press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.enter = true; });  // music wraps to 0
+    CHECK((m.volumes() == std::array<int, 4>{9, 9, 6, 0}));
+    CHECK((m.save_choice().volume == std::array<int32_t, 4>{9, 9, 6, 0}));
+    press([](scr::MenuKeys& k) { k.esc = true; });
+    CHECK(m.page == 1);
 }
 
 TEST_CASE("menu: replay numbers for new total records") {
