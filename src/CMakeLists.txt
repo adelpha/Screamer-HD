@@ -34,7 +34,7 @@ target_compile_definitions(screamer_core PUBLIC
 )
 
 # The game executable (console subsystem for now so headless runs can log to stdout).
-add_executable(screamer main.cpp)
+add_executable(screamer main.cpp debug_report.cpp)
 target_link_libraries(screamer PRIVATE screamer_core)
 
 # Image comparison tool used by the test harness and the DOSBox reference scripts.

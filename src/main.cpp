@@ -30,6 +30,7 @@
 #include "core/track.h"
 #include "core/sim_clock.h"
 #include "core/testpattern.h"
+#include "debug_report.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -124,7 +125,8 @@ void print_usage() {
         "  --race-options N     the cheats' g_race_options: 1/2 other obstacles, 4 clock stopped, 0x10 mirror, 0x20 upside down\n"
         "  --car-index N        --scene drive: car from CARS_DATA (0..12, default 0)\n"
         "  --start X,Z          --scene drive: start position (default: the intro demo's grid)\n"
-        "  --hold KEYS          --scene drive: controls held every frame, e.g. accel,left (headless runs)\n"
+        "  --hold KEYS          --scene drive: controls held every frame, e.g. accel,left (headless runs); finish ends\n"
+        "                       the race at frame 700, promptno answers PLAY AGAIN? with no\n"
         "  --detail high|low    track detail: GFX/MAPnH.DAT (default, as the game's high detail) or MAPnL.DAT\n"
         "  --camera X,Y,Z,YAW,PITCH[,ROLL]  camera for --scene track (game units, angles 0..2047)\n"
         "  --render-size WxH    internal resolution for 3D scenes (default 320x200)\n"
@@ -912,7 +914,10 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 const bool* keys = SDL_GetKeyboardState(nullptr);
                 const bool now[4] = {keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_LEFT],
                                      keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_RIGHT],
-                                     keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER], false};
+                                     keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER] ||
+                                         opt.hold.find("promptno") != std::string::npos,  // headless checks: answer no
+                                     false};
+                if (opt.hold.find("promptno") != std::string::npos) prompt = 1;
                 if (now[0] && !prompt_keys[0] && prompt != 0) {
                     prompt = 0;
                     mixer.play(6);
@@ -1120,6 +1125,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         player->race.update(*track, in, ft, pow_row);
                     else
                         player->race.player.update(*track, in, ft, pow_row);
+                    if (frame == 700 && held("finish") && !replaying) player->race.finished = true;  // headless checks of the race end
                     race_audio.update(player->race, clock.frame_time());
                     if (player->cpu_cars && player->race.started && !player->race.finished && !player->race.failed) {
                         // car_check_obstacle_hits: in every race the player knocks cones and
@@ -1405,7 +1411,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     if (hs.end && opt.from_menu) {
                         // race_end_screen: back to the menu five seconds after the end
                         end_timer += clock.frame_time();
-                        if (5.0f <= end_timer && race_audio.speech_current() == -1 && prompt < 0 && !replaying) {
+                        if (5.0f <= end_timer && (race_audio.speech_current() == -1 || opt.headless) && prompt < 0 && !replaying) {
                             shared.outcomes.push_back(
                                 Shared::Outcome{r.best_lap, r.total_time, r.finished, r.failed, r.player_position, {}});
                             // race_run: replay_save("temp") after a race that was not left or
@@ -1622,6 +1628,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
 int main(int argc, char** argv) {
     Options opt;
     if (!parse_args(argc, argv, opt)) return 2;
+    install_debug_report();
 #if defined(_MSC_VER) && defined(_DEBUG)
     if (opt.headless) {
         // headless runs (tests): debug assertions go to stderr instead of a dialog box
