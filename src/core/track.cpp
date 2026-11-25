@@ -346,14 +346,19 @@ void weld_road_joints(Track& t, double reach) {
                 }
         }
     }
-    // each corner's nearest corner of another placement within reach
+    // Corners of different placements within reach of each other go together (also by way of
+    // a third: where the road, its verge and the next piece of each meet, there are several).
     std::map<std::pair<int, int>, std::vector<int>> grid;
     auto cell = [&](double v) { return int(std::floor(v / reach)); };
     for (size_t i = 0; i < corners.size(); ++i) grid[{cell(corners[i].x), cell(corners[i].z)}].push_back(int(i));
-    std::vector<int> nearest(corners.size(), -1);
+    std::vector<int> group(corners.size());
+    for (size_t i = 0; i < corners.size(); ++i) group[i] = int(i);
+    auto find = [&](int i) {
+        while (group[size_t(i)] != i) i = group[size_t(i)] = group[size_t(group[size_t(i)])];
+        return i;
+    };
     for (size_t i = 0; i < corners.size(); ++i) {
         const Corner& a = corners[i];
-        double best = reach * reach;
         for (int gx = cell(a.x) - 1; gx <= cell(a.x) + 1; ++gx)
             for (int gz = cell(a.z) - 1; gz <= cell(a.z) + 1; ++gz) {
                 const auto it = grid.find({gx, gz});
@@ -362,24 +367,38 @@ void weld_road_joints(Track& t, double reach) {
                     const Corner& b = corners[size_t(j)];
                     if (b.placement == a.placement) continue;
                     const double d = (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z);
-                    if (d < best) {
-                        best = d;
-                        nearest[i] = j;
-                    }
+                    if (d < reach * reach) group[size_t(find(int(i)))] = find(j);
                 }
             }
     }
-    for (size_t i = 0; i < corners.size(); ++i) {
-        const int j = nearest[i];
-        if (j < 0 || nearest[size_t(j)] != int(i)) continue;
-        const Corner& a = corners[i];
-        const Corner& b = corners[size_t(j)];
-        // half way to the other, turned back into the object's axes
-        const double wx = (b.x - a.x) * 0.5, wy = (b.y - a.y) * 0.5, wz = (b.z - a.z) * 0.5;
-        if (wx == 0 && wy == 0 && wz == 0) continue;
-        const std::array<double, 9>& r = turned[size_t(a.placement)];
-        const float dx = float(r[0] * wx + r[3] * wy + r[6] * wz), dy = float(r[1] * wx + r[4] * wy + r[7] * wz), dz = float(r[2] * wx + r[5] * wy + r[8] * wz);
-        for (const auto& [part, vertex] : a.vertices) t.welds[size_t(a.placement)].push_back({part, vertex, dx, dy, dz});
+    std::map<int, std::vector<int>> groups;
+    for (size_t i = 0; i < corners.size(); ++i) groups[find(int(i))].push_back(int(i));
+    for (const auto& [root, members] : groups) {
+        if (members.size() < 2) continue;
+        // (two corners of one piece in a group: they are not the same spot, leave them all)
+        bool twice = false;
+        for (size_t i = 0; i < members.size() && !twice; ++i)
+            for (size_t j = i + 1; j < members.size(); ++j)
+                if (corners[size_t(members[i])].placement == corners[size_t(members[j])].placement) twice = true;
+        if (twice) continue;
+        double mx = 0, my = 0, mz = 0;
+        for (const int i : members) {
+            mx += corners[size_t(i)].x;
+            my += corners[size_t(i)].y;
+            mz += corners[size_t(i)].z;
+        }
+        mx /= double(members.size());
+        my /= double(members.size());
+        mz /= double(members.size());
+        for (const int i : members) {
+            const Corner& a = corners[size_t(i)];
+            // to the middle of the group, turned back into the object's axes
+            const double wx = mx - a.x, wy = my - a.y, wz = mz - a.z;
+            if (wx == 0 && wy == 0 && wz == 0) continue;
+            const std::array<double, 9>& r = turned[size_t(a.placement)];
+            const float dx = float(r[0] * wx + r[3] * wy + r[6] * wz), dy = float(r[1] * wx + r[4] * wy + r[7] * wz), dz = float(r[2] * wx + r[5] * wy + r[8] * wz);
+            for (const auto& [part, vertex] : a.vertices) t.welds[size_t(a.placement)].push_back({part, vertex, dx, dy, dz});
+        }
     }
 }
 
