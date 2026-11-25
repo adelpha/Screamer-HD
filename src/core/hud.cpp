@@ -364,7 +364,11 @@ void Hud::draw(Framebuffer& fb, const HudState& st, const std::array<uint8_t, 25
     }
     // race_end_screen (race_end_draw_mode1, or "TIME OVER" when out of time)
     auto centred = [&](const std::string& t, int y) { s.text(fonts, (320 - s.measure(fonts, t, 0)) / 2, y, t, 0, 2); };
-    if (st.end == 1 && texts.size() > 11) {
+    if (st.end == 1 && (st.mode == 4 || st.mode == 0x20 || st.mode == 0x40) && texts.size() > 15) {
+        // race_end_draw_attack / _carnage / _checkpoints
+        centred(texts[st.won ? 14 : 13], 0x5a);
+        if (st.perfect && st.mode != 4) centred(texts[15], 0x78);
+    } else if (st.end == 1 && texts.size() > 11) {
         if (st.won) centred(texts[11], 0x3e);
         const size_t pos = size_t(std::clamp(st.position, 1, 10));
         centred(texts[pos] + " " + texts[0], 0x5a);

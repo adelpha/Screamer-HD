@@ -121,8 +121,9 @@ void Car::update(const Track& track, const CarInput& in, float frame_time, int p
     update_steering(in);
     wheel_loads();
     update_skid();
-    if (skid_sound && crash_state == 0) smoke_spawn();  // car_update_skid
+    if (smoke_cue_) smoke_spawn();  // car_update_skid
     crash_update(track);
+    update_spin();
     smoke_update();
     ++frame_counter;
     // car_update_track_contact (progress and checkpoints are not ported)
@@ -240,7 +241,7 @@ void Car::engine_gearbox(const CarInput& in) {
 }
 
 void Car::update_throttle(const CarInput& in) {
-    if (0.0f <= throttle && skid == 0.0f && crash_state == 0 && braking == 0.0f && in.accel > 0) {
+    if (0.0f <= throttle && skid == 0.0f && crash_state == 0 && braking == 0.0f && spin_state == 0 && in.accel > 0) {
         throttle = float(std::abs(in.accel)) / 1023.0f;
     } else {
         throttle = 0.0f;
@@ -257,12 +258,17 @@ void Car::update_brake(const CarInput& in) {
     if (drift_angle < 0.1f) {
         speed = speed - brake_decel * dt_ * brake;
         if (speed < 0.0f) speed = 0.0f;
-        if (brake_skid_limit < brake * speed) braking = float(int(brake));  // brake_mode 0
+        if (brake_skid_limit < brake * speed && spin_state == 0) {
+            // too hard on the brakes: a skid, or with a front wheel on a bumpy surface
+            // (brake_mode) the car spins round
+            if (!bumpy_front) braking = float(int(brake));
+            else spin_state = 1;
+        }
     }
 }
 
 void Car::update_steering(const CarInput& in) {
-    const int k = crash_state == 5 ? 0x58 : (braking == 0.0f && skid == 0.0f) ? 0x50 : 0x55;
+    const int k = crash_state == 5 ? 0x58 : (braking == 0.0f && skid == 0.0f && spin_state == 0) ? 0x50 : 0x55;
     steer_max = float((1.0 - safe_sqrt(double(speed / setup.maxspd))) * 0.2967059910297394 + 0.01745329238474369);
     const float mirror = 1.0f;  // g_race_options & 0x10 (MIRRO cheat) gives -1
     if (in.analog_steer) {
@@ -330,11 +336,13 @@ void Car::wheel_loads() {
 
 void Car::update_skid() {
     bool skidding = false;
-    if (crash_state != 0) {
+    if (crash_state != 0 || spin_state != 0) {
+        // (the skid itself is worked out only when not crashing or spinning)
         skid_level = lerp(skid_level, skid, 0x50);
         if (skid_level < 10.0f) skid_level = 0.0f;
         // The skid noise keeps going while drifting; crash states from 3 up do not stop it.
-        if (0.23 < std::fabs(double(drift_angle))) skid_sound = true;
+        smoke_cue_ = 0.23 < std::fabs(double(drift_angle));
+        if (smoke_cue_) skid_sound = true;
         else if (crash_state < 3) skid_sound = false;
         return;
     }
@@ -356,8 +364,7 @@ void Car::update_skid() {
             slip_a = float(std::sin(double(side)));
             slip_b = float(-std::cos(double(side)));
         } else {
-            // spin_state = 1: spins are not ported; treat as a hard skid.
-            skid_prev = 0.0f;
+            spin_state = 1;  // far over the limit: the car spins round (car_update_spin)
         }
     } else {
         braking = pow_table(pow_row_, 0x188 / 4) * braking;
@@ -377,6 +384,57 @@ void Car::update_skid() {
     skid_level = lerp(skid_level, skid, 0x50);
     if (skid_level < 10.0f) skid_level = 0.0f;
     skid_sound = skidding || 0.23 < std::fabs(double(drift_angle));
+    smoke_cue_ = skid_sound;
+}
+
+void Car::part_poses(const Model& model, const CarParts& cp, std::vector<PartPose>& out, bool advance) {
+    out.assign(model.parts.size(), PartPose{});
+    const int32_t lean_x = chop(double(lean_pitch) * 1024.0 * 2.0 / 3.1415927410125732) & 0x7ff;
+    const int32_t lean_z = chop(double(lean_roll) * 1024.0 * 4.0 / 3.1415927410125732) & 0x7ff;
+    for (int i : cp.body) {
+        PartPose& p = out[size_t(i)];
+        p.angles = true;
+        p.ax = lean_x;
+        p.az = lean_z;
+        p.y = true;
+        p.oy = model.parts[size_t(i)].offset[1] - body_lift;
+    }
+    // (FISTP after __CHP: truncated; the roll keeps even values)
+    if (advance) wheel_roll = chop(double(wheel_roll) - double(speed) / 15.0) & 0x7fe;
+    const int32_t steer_ay =
+        steer_max != 0.0f ? chop(double(steer) * 1024.0 / (double(steer_max) * 1.5) / 3.141592741012573) & 0x7ff : 0;
+    for (int i : cp.wheels) {
+        PartPose& p = out[size_t(i)];
+        p.angles = true;
+        p.ax = wheel_roll;
+    }
+    for (int i : cp.steered) out[size_t(i)].ay = steer_ay;
+}
+
+void Car::update_spin() {
+    // car_update_spin: state 1 starts a spin, a full turn of drift away from the way the car
+    // was turning; states 2 and 4 then bring the drift back to 0 (3 rad/s, faster when large)
+    if (spin_state == 1) {
+        const int s = 0.0f > turn_rate ? 1 : -1;
+        spin_state = int(float(s) + 3.0f);
+        drift_angle = float(s) * 6.2831854820251465f + drift_angle;
+    } else if (1 < spin_state) {
+        const float dir = float(spin_state - 3);
+        const float rate = float((double(std::fabs(drift_angle)) + 0.2) / 3.141592741012573);
+        bool done = false;
+        if (0.0f < dir) {
+            drift_angle = drift_angle - dt_ * rate * 3.0f;
+            if (drift_angle < 0.0f) done = true;
+        }
+        if (dir < 0.0f) {
+            drift_angle = dt_ * rate * 3.0f + drift_angle;
+            if (0.0f < drift_angle) done = true;
+        }
+        if (done) {
+            drift_angle = 0.0f;
+            spin_state = 0;
+        }
+    }
 }
 
 void Car::smoke_spawn() {
@@ -514,7 +572,7 @@ void Car::update_track_heading(const Track& track) {
     braking = 0.0f;
     skid_prev = 0.0f;
     skid = 0.0f;
-    drift_angle = 0.0f;
+    if (spin_state == 0) drift_angle = 0.0f;
 }
 
 void Car::update_bumpers() {
@@ -538,6 +596,7 @@ void Car::crash_update(const Track& track) {
         crash_roll_rate = crash_pitch_rate = 12.0f;
         drift_angle = body_roll_ofs = body_pitch_ofs = 0.0f;
         body_ofs_y = 0;
+        spin_state = 0;
         [[fallthrough]];
     case 1:
         body_ofs_y = chop(double(crash_bounce * dt_) + double(body_ofs_y));
@@ -591,7 +650,7 @@ void Car::load_player_car(const uint8_t* p) {
     steer = f(0x108); steer_max = f(0x10c); braking = f(0x110); brake = f(0x114);
     body_pitch_ofs = f(0x124); drift_angle = f(0x128); body_roll_ofs = f(0x12c); body_ofs_y = i(0x134);
     track_heading = f(0x13c); gear_latch = i(0x140) != 0; throttle = f(0x144);
-    crash_state = i(0x148); crash_bounce = f(0x14c); crash_bounce_count = i(0x150);
+    crash_state = i(0x148); crash_bounce = f(0x14c); crash_bounce_count = i(0x150); spin_state = i(0x170);
     crash_pitch_rate = f(0x154); crash_roll_rate = f(0x15c);
     rpm_per_speed = f(0x174); engine_drag = f(0x178); brake_decel = f(0x17c); slide_threshold = f(0x180);
     grip_limit = f(0x184); skid_brake_limit = f(0x188); max_accel = f(0x18c); brake_skid_limit = f(0x190);

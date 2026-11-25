@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 
 namespace scr {
 
@@ -326,14 +327,14 @@ ChoiceFile Menu::save_choice() const {
     return c;
 }
 
-void Menu::race_result(int map, float best_lap, float total_time, int laps, bool finished) {
+int Menu::race_result(int map, float best_lap, float total_time, int laps, bool finished, bool replay_saved) {
     // menu_replay_files: insert into the track's top five (lower is better)
-    if (map < 1 || map > 6) return;
+    if (map < 1 || map > 6) return 0;
     const size_t t = size_t(map - 1) * kRecordStride;
     auto insert = [&](size_t table, float time, size_t extra, int extra_value) {
         int pos = 0;
         while (pos < 5 && choice_.getf(table + t + size_t(pos) * 4) <= time) ++pos;
-        if (pos >= 5) return;
+        if (pos >= 5) return -1;
         for (int i = 3; pos <= i; --i) {
             choice_.setf(table + t + size_t(i + 1) * 4, choice_.getf(table + t + size_t(i) * 4));
             choice_.set(table + t + 0x28 + size_t(i + 1) * 4, choice_.get(table + t + 0x28 + size_t(i) * 4));
@@ -344,9 +345,26 @@ void Menu::race_result(int map, float best_lap, float total_time, int laps, bool
         choice_.set(table + t + 0x28 + size_t(pos) * 4, table == kLapRecords ? 1 : 0);
         choice_.set(table + t + extra + size_t(pos) * 4, extra_value);
         choice_.setstr(table + t + 0x14 + size_t(pos) * 4, name);
+        return pos;
     };
     if (best_lap < 10000.0f) insert(kLapRecords, best_lap, 0x3c, 0);
-    if (finished && laps == 3) insert(kTotalRecords, total_time, 0x3c, game_mode);
+    if (!finished || laps != 3) return 0;
+    const int pos = insert(kTotalRecords, total_time, 0x3c, game_mode);
+    if (pos < 0 || !replay_saved) return 0;
+    // the lowest number no other total of the track has
+    int n = 1;
+    for (int i = 0; i < 5; ++i)
+        if (i != pos && choice_.get(kTotalRecords + t + 0x28 + size_t(i) * 4) == n) {
+            ++n;
+            i = -1;
+        }
+    choice_.set(kTotalRecords + t + 0x28 + size_t(pos) * 4, n);
+    return n;
+}
+
+void Menu::show_records() {
+    init_state(6);
+    brightness = 0;
 }
 
 void Menu::draw_loading(Framebuffer& fb, int map) {
@@ -734,6 +752,45 @@ void Menu::build_page_items(float dt) {
     }
 }
 
+bool Menu::type_letter(char c) {
+    // The table at 0x102e00 (names from MENU.DTR, in this order): what each cheat sets.
+    static const char* const kCheats[9] = {"TAZOR", "VTELO", "MONTY", "JOINT", "CLOCK", "ABURN", "INVER", "MIRRO", "UPDOW"};
+    c = char(std::toupper(static_cast<unsigned char>(c)));
+    if (c < 'A' || c > 'Z') return false;
+    // the letter goes at the end (the fifth place takes every further letter)
+    const int pos = std::clamp(cheat_len_, 0, 4);
+    cheat_buf_[size_t(pos)] = c;
+    if (cheat_len_ < 4) ++cheat_len_;
+    const int len = pos + 1;
+    int misses = 0;
+    for (int k = 0; k < 9; ++k) {
+        bool match = true;
+        for (int i = 0; i < len && match; ++i) match = kCheats[k][i] == cheat_buf_[size_t(i)];
+        if (!match) {
+            ++misses;
+            continue;
+        }
+        if (len == 5) {
+            switch (k) {
+            case 0: cars_unlocked = 1; break;           // TAZOR: the last car
+            case 1: tracks_unlocked = 3; break;         // VTELO: tracks up to 5
+            case 2: race_options = 1; break;            // MONTY: the second obstacles
+            case 3: race_options = 2; break;            // JOINT: the third obstacles
+            case 4: race_options ^= 4; break;           // CLOCK: the clock stands still
+            case 5: break;                              // ABURN: points at nothing
+            case 6: tracks_unlocked = 9; break;         // INVER: every track, reversed too
+            case 7: race_options ^= 0x10; break;        // MIRRO: the mirror world
+            case 8: race_options ^= 0x20; break;        // UPDOW: upside down
+            }
+            sounds.push_back(8);
+            cheat_len_ = 0;
+            return true;
+        }
+    }
+    if (misses == 9) cheat_len_ = 0;
+    return false;
+}
+
 void Menu::name_page_update(float dt) {
     // menu_letters_update: the selected letter tips towards the camera
     const int row = int(letter_) + 0x41;
@@ -895,6 +952,7 @@ void Menu::start_race() {
         r.map -= 6;
         r.mirrored = true;
     }
+    r.race_options = race_options;
     r.car = car;
     r.laps = kLaps[std::clamp(option(2), 0, 3)];
     r.level = option(1) == 3 ? 4 : option(1);
@@ -911,7 +969,9 @@ void Menu::start_race() {
         r.laps = 3;
         r.level = st.value;
     }
-    r.high_detail = option(0) == 2;
+    // race_load_track: 'L' files only for LOW (DAT_0011d2b4 < 1)
+    r.detail = std::clamp(option(0), 0, 2);
+    r.high_detail = r.detail >= 1;
     r.speech = option(3) == 1;
     r.music = option(4) == 1;
     r.name = name;
@@ -967,6 +1027,26 @@ void Menu::activate() {
             fade_rate_ = 1.5f;
             mode = 1;
             next_mode_ = 2;
+        } else if (mode == 6) {
+            // frontend_activate_item on the records: the selected total's replay, if its file is there
+            const size_t at = kTotalRecords + size_t(records_track_) * kRecordStride + size_t(records_row_) * 4;
+            const int n = choice_.get(at + 0x28);
+            const std::string file = "REPLAY" + std::to_string(records_track_) + std::to_string(n) + ".RPL";
+            std::string path;
+            std::error_code ec;
+            for (const std::string& d : replay_dirs)
+                if (path.empty() && std::filesystem::exists(d + file, ec)) path = d + file;
+            if (n == 0 || path.empty()) return;
+            MenuRace r;
+            r.game_mode = choice_.get(at + 0x3c) | 0x80;
+            r.map = records_track_ + 1;
+            r.detail = std::clamp(option(0), 0, 2);
+            r.high_detail = r.detail >= 1;
+            r.speech = option(3) == 1;
+            r.music = option(4) == 1;
+            r.name = name;
+            r.replay = path;
+            race = r;
         } else if (mode == 4) {
             draw_mode_ = mode;
             brightness = 0;
@@ -1115,6 +1195,15 @@ void Menu::handle_keys(const MenuKeys& k) {
                 ++sel;
                 sounds.push_back(1);
             }
+        } else if (mode == 6) {
+            // the records page: which total's replay Enter plays
+            if (key == 1 && records_row_ != 0) {
+                --records_row_;
+                sounds.push_back(4);
+            } else if (key == 2 && records_row_ < 4) {
+                ++records_row_;
+                sounds.push_back(4);
+            }
         } else if (mode == 4) {
             if (key == 1 && name_cursor_ != 0) {
                 --name_cursor_;
@@ -1197,6 +1286,12 @@ void Menu::update(const MenuKeys& keys, float dt) {
     ++frame_;
     handle_keys(keys);
     update_camera(dt);
+    // frontend_handle_keys / frontend_draw_frame: 30 seconds without a key on a menu page and
+    // frontend_run ends: the intro demo again
+    if (mode == 0) {
+        idle_ += dt;
+        if (30.0f < idle_) want_demo = true;
+    }
     // frontend_update_page
     switch (mode) {
     case 0: build_page_items(dt); break;
@@ -1312,6 +1407,12 @@ void Menu::draw(Framebuffer& fb, Renderer& renderer) {
             const uint8_t* row = bg.pixels.data() + size_t(y * bg.height / fb.height()) * size_t(bg.width);
             for (int x = 0; x < fb.width(); ++x) fb.at(x, y) = row[x * bg.width / fb.width()];
         }
+        // frontend_draw_frame: the MIRRO / UPDOW cheats flip the backdrop too
+        if (race_options & 0x10)
+            for (int y = 0; y < fb.height(); ++y) std::reverse(&fb.at(0, y), &fb.at(0, y) + fb.width());
+        if (race_options & 0x20)
+            for (int y = 0; y < fb.height() / 2; ++y)
+                std::swap_ranges(&fb.at(0, y), &fb.at(0, y) + fb.width(), &fb.at(0, fb.height() - 1 - y));
         fb.palette() = bg.palette();
     }
     for (const Item& it : items) {

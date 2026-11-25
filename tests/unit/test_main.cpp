@@ -1,9 +1,11 @@
 #include "testing.h"
+#include "debug_report.h"
 
 #include <cstring>
 #include <exception>
 
 int main(int argc, char** argv) {
+    install_debug_report(true);
     const char* filter = argc > 1 ? argv[1] : nullptr;
     int ran = 0, failed = 0, skipped = 0;
     for (const auto& c : testing::registry()) {

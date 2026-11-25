@@ -1,3 +1,4 @@
+#include "../debug_report.h"
 // tracecmp: replays a recording of the original game's player car (tools/dosbox/record-race.ps1)
 // through the ported physics, one frame at a time: each frame starts from the recorded state,
 // runs Car::update with that frame's controls and frame time, and is compared with the next
@@ -60,6 +61,7 @@ struct Field {
 } // namespace
 
 int main(int argc, char** argv) {
+    install_debug_report(true);
     if (argc < 4) {
         std::fprintf(stderr, "usage: tracecmp TRACE GFX/MAPnH.DAT MAPn [--from N] [--to N] [--all]\n");
         return 2;

@@ -100,9 +100,15 @@ struct MenuRace {
     int car = 0;         // CARS_DATA record (the two paints of each car are next to each other)
     int laps = 3;
     int level = 1;       // difficulty: opponent set 'A' + level
-    bool high_detail = true;  // DETAIL option (HI: GFX/MAPnH.DAT)
+    bool high_detail = true;  // DETAIL option: MID and HI load GFX/MAPnH.DAT, LOW MAPnL.DAT
+    int detail = 2;           // 0 low (no moving scenery), 1 mid, 2 hi (the original's far clip: we draw it all)
     bool speech = true, music = true;
     std::string name;
+    // g_race_options: bits 0-1 the obstacles' column of OSTACLES (MONTY 1, JOINT 2), 4 the
+    // clock stands still (CLOCK), 0x10 mirror (MIRRO: picture and steering), 0x20 upside down
+    // (UPDOW)
+    int race_options = 0;
+    std::string replay;  // the records page: play this REPLAY<track><n>.RPL (game_mode | 0x80) instead
 };
 
 class Menu {
@@ -111,12 +117,24 @@ public:
 
     // frontend_show_title
     void show_title();
+    // frontend_text_input: a letter typed anywhere in the menus. Five letters matching one
+    // of MENU.DTR's CHEATS (TAZOR VTELO MONTY JOINT CLOCK ABURN INVER MIRRO UPDOW) apply it
+    // (sound 8); a letter that fits none starts again. Returns true when a cheat took.
+    bool type_letter(char c);
+    int race_options = 0;  // g_race_options (the cheats; see MenuRace)
+    bool want_demo = false;  // left alone for 30 seconds: back to the intro demo
     // The saved state (read_choice_dat) and back (write_choice_dat).
     void load_choice(const ChoiceFile& c);
     ChoiceFile save_choice() const;
     // After a race (menu_replay_files): the best lap and, for 3-lap races, the total time go
     // into the track's top five under the player's name.
-    void race_result(int map, float best_lap, float total_time, int laps, bool finished);
+    // With the race's replay saved, a new total record gets a replay number (1..5, one no
+    // other record of the track has); the replay becomes REPLAY<map-1><n>.RPL. Returns it, or 0.
+    int race_result(int map, float best_lap, float total_time, int laps, bool finished, bool replay_saved = false);
+    // Back to the records page after one of its replays.
+    void show_records();
+    // Where REPLAY<track><n>.RPL are looked for (the records page's "R"): ours, then the game's.
+    std::vector<std::string> replay_dirs;
     // frontend_start_race's loading screen: LOAD<n>L.PCX and "LOADING".
     void draw_loading(Framebuffer& fb, int map);
     // One frame of frontend_draw_frame (keys, camera, page) at frame time dt.
@@ -228,6 +246,8 @@ private:
     int next_mode_ = 0;       // DAT_0011fac8
     int after_name_ = 3;      // DAT_0011d234
     int name_cursor_ = 0;     // DAT_0011d240
+    std::array<char, 5> cheat_buf_{};  // DAT_00120828: the letters typed so far
+    int cheat_len_ = 0;       // DAT_00120878
     float letter_ = 0;        // DAT_0011d238
     int tracks_seen_ = 0;     // DAT_00120818
     uint32_t frame_ = 0;      // g_frame_counter (blinking)

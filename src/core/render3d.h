@@ -72,10 +72,15 @@ struct Pose {
     // whole objects and never depth-tests, so a car's shadow (a flat quad tilted with the car)
     // always lies on the road; a bias keeps it from sinking into slopes here.
     float depth_bias = 0;
+    // Per-part placements for this frame (cars: lean, suspension, steering, wheel roll), by
+    // part index; parts beyond the end or without flags keep the file's.
+    const std::vector<PartPose>* parts = nullptr;
     // Road pieces (track placements of slot 0): they meet edge to edge but are transformed
     // separately, and the hairline cracks between them would show the sky; their polygons
     // reach a third of an original pixel past their edges.
     bool seal_edges = false;
+    // A car (object_compute_depth_dynamic: half the distance for the detail levels).
+    bool dynamic = false;
 };
 
 // The flat ground pieces of the scenery are tested and written as if this much further away,
@@ -106,6 +111,8 @@ public:
     Renderer& operator=(Renderer&&) noexcept;
 
     void set_textures(bool on) { textures_ = on; }
+    // The original's distant versions of objects (off: always the full detail).
+    void set_lod(bool on) { lod_ = on; }
     // Threads that fill pixels (<= 0: one per hardware thread, the default).
     void set_threads(int threads);
     void set_anim_counter(int32_t counter) { anim_counter_ = counter; }  // SimClock::anim_counter()
@@ -184,6 +191,7 @@ private:
     std::vector<float> wx_, wy_, wz_;
     std::vector<std::array<int, 2>> env_uv_;
     bool textures_ = true;
+    bool lod_ = false;
     int32_t anim_counter_ = 0;
 };
 

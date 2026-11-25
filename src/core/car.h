@@ -14,7 +14,7 @@
 //
 // crash_state: 0 driving, 2 just hit a wall too hard (car_set_state), 1 tumbling until the
 // fourth bounce, 5 wheelspin at the start, 6 wheelspin over.
-// Not ported yet: spins (spin_state), obstacles, debris. Sounds are cues for RaceAudio.
+// Sounds are cues for RaceAudio; obstacles are in core/obstacles.
 // Network catch-up (speed_factor at 0x300) stays 1.
 
 #include "core/track.h"
@@ -124,6 +124,7 @@ public:
     float drift_angle = 0;                 // 0x128
     float surface_grip = 1.0f;
     int crash_state = 0;                   // 0x148
+    int spin_state = 0;                    // 0x170: 1 starts a spin, 2 / 4 unwinding it
     float crash_bounce = 0;                // 0x14c
     int crash_bounce_count = 0;            // 0x150
     float crash_pitch_rate = 0, crash_roll_rate = 0;  // 0x154, 0x15c
@@ -153,6 +154,11 @@ public:
     // Tyre smoke: while the skid noise plays, during crash bounces and in crash state 5, a
     // puff leaves each rear wheel every 0.05 s; it follows the car's frame and lives 2/3 s.
     std::array<SmokePuff, 8> smoke{};
+    // car_sync_render_object's part table: body lean (x2 pitch, x4 roll), the body sections at
+    // their suspension height less body_lift, the front wheels steered (steer / (1.5 max)) and
+    // every wheel rolled by speed / 15 a frame.
+    int32_t wheel_roll = 0;
+    void part_poses(const Model& model, const CarParts& cp, std::vector<PartPose>& out, bool advance = true);
     float smoke_timer = 0;          // +0x304
     uint32_t frame_counter = 0;     // g_frame_counter (the frames this car has run)
     bool skid_sound = false;   // car_update_skid / crash state 5: the skid noise (sfx 0) plays
@@ -184,6 +190,8 @@ private:
     void update_track_heading(const Track& track);
     void body_from_wheels();
     void smoke_spawn();  // car_update_debris
+    void update_spin();  // car_update_spin
+    bool smoke_cue_ = false;  // car_update_skid's call of car_update_debris
     void smoke_update(); // car_sync_debris_objects
     void crash_update(const Track& track);
     void set_state(int s) { if (crash_state == 0) crash_state = s; }  // car_set_state

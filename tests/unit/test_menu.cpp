@@ -169,3 +169,52 @@ TEST_CASE("menu: championship steps, standings and qualifying") {
     run(m, 100);
     CHECK(m.champ_step == 52);  // LOSER!!
 }
+
+TEST_CASE("menu: cheats typed in the menus") {
+    if (!scr::find_game_dir()) SKIP("original game data not present");
+    auto a = load_menu();
+    REQUIRE(a.has_value());
+    scr::Menu m(*a);
+    m.show_title();
+    auto type = [&](const char* w) {
+        bool took = false;
+        for (const char* c = w; *c; ++c) took = m.type_letter(*c);
+        return took;
+    };
+    CHECK(!type("HELLO"));
+    CHECK(m.race_options == 0);
+    CHECK(type("MIRRO"));
+    CHECK(m.race_options == 0x10);
+    CHECK(type("xxUPDOW"));  // stray letters start the input again
+    CHECK(m.race_options == 0x30);
+    CHECK(type("MONTY"));    // sets the whole word: the mirror and upside down go
+    CHECK(m.race_options == 1);
+    CHECK(type("CLOCK"));
+    CHECK(m.race_options == 5);
+    CHECK(type("INVER"));
+    CHECK(m.tracks_unlocked == 9);
+    CHECK(type("TAZOR"));
+    CHECK(m.cars_unlocked == 1);
+}
+
+TEST_CASE("menu: replay numbers for new total records") {
+    if (!scr::find_game_dir()) SKIP("original game data not present");
+    auto a = load_menu();
+    REQUIRE(a.has_value());
+    scr::Menu m(*a);
+    m.load_choice(scr::ChoiceFile{});
+    // menu_replay_files: the lowest number no other total of the track has
+    CHECK(m.race_result(1, 30.0f, 100.0f, 3, true, true) == 1);
+    CHECK(m.race_result(1, 30.0f, 90.0f, 3, true, true) == 2);
+    CHECK(m.race_result(1, 30.0f, 95.0f, 3, true, false) == 0);  // no replay saved
+    CHECK(m.race_result(1, 30.0f, 80.0f, 5, true, true) == 0);   // only 3-lap races
+    CHECK(m.race_result(1, 30.0f, 85.0f, 3, true, true) == 3);
+    const scr::ChoiceFile c = m.save_choice();
+    const size_t t = 0x24c;  // MAP1's totals: 85 (3), 90 (2), 95 (none), 100 (1), 900
+    CHECK(c.getf(t) == 85.0f);
+    CHECK(c.get(t + 0x28) == 3);
+    CHECK(c.get(t + 0x28 + 4) == 2);
+    CHECK(c.get(t + 0x28 + 8) == 0);
+    CHECK(c.get(t + 0x28 + 12) == 1);
+    CHECK(m.race_result(2, 30.0f, 85.0f, 3, true, true) == 1);  // numbers are per track
+}

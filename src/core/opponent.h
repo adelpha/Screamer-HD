@@ -131,6 +131,8 @@ public:
 
     // race_frame: the player and the CPU cars, then the collisions between them.
     void update(const Track& track, const CarInput& in, float frame_time, int pow_row);
+    // The intro demo: the CPU cars alone, heard and simulated around the camera.
+    void update_attract(const Track& track, float frame_time, int pow_row, int listener_x, int listener_z);
 
     Car player;
     // Race state for the player (car_update_race_timers, car_on_checkpoint, car_complete_lap).
@@ -141,6 +143,7 @@ public:
     float countdown_timer = 0;
     int countdown_stage = -1;    // start light shown, -1 when the countdown is over
     bool timing_started = false;
+    bool clock_stopped = false;  // g_race_options & 4 (CLOCK): time_left does not run down
     float time_left = 15.0f;     // starts at 15 s, a timed checkpoint gives time_left / 5 + bonus
     float total_time = 0;        // PlayerCar 0x78c
     float lap_time = 0;          // PlayerCar 0x794

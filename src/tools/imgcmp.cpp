@@ -1,3 +1,4 @@
+#include "../debug_report.h"
 // imgcmp: compare two images (PNG/BMP) for the test harness.
 //
 //   imgcmp expected.png actual.png [--tolerance N] [--max-diff-fraction F]
@@ -27,6 +28,7 @@ scr::SurfacePtr crop(SDL_Surface* s, int x, int y, int w, int h) {
 } // namespace
 
 int main(int argc, char** argv) {
+    install_debug_report(true);
     if (argc < 3) {
         std::fprintf(stderr,
                      "usage: imgcmp expected actual [--tolerance N] [--max-diff-fraction F] [--diff out.png]\n"

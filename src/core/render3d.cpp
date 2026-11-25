@@ -182,17 +182,23 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
     std::array<ClipVert, 6> poly;
     for (size_t pi = 0; pi < model.parts.size(); ++pi) {
         if (part_mask && (pi >= part_mask->size() || !(*part_mask)[pi])) continue;
-        const Part& part = model.parts[pi];
+        const Part& full = model.parts[pi];
         // Part placement inside the object, then the object's.
-        const bool placed = part.angles != std::array<int32_t, 3>{};
-        Mat3 prot = placed ? multiply(rot, rotation(float(part.angles[0]), float(part.angles[1]), float(part.angles[2]))) : rot;
+        const PartPose* pp = pose.parts && pi < pose.parts->size() ? &(*pose.parts)[pi] : nullptr;
+        std::array<int32_t, 3> angles = full.angles;
+        std::array<int32_t, 3> offset = full.offset;
+        if (pp && pp->angles) angles = {pp->ax, pp->ay, pp->az};
+        if (pp && pp->y) offset[1] = pp->oy;
+        const bool placed = angles != std::array<int32_t, 3>{};
+        // (the yaw negated as for whole objects, so a part turns the way the game turns it)
+        Mat3 prot = placed ? multiply(rot, rotation(float(angles[0]), -float(angles[1]), float(angles[2]))) : rot;
         float ox, oy, oz;
-        apply(rot, float(part.offset[0]), float(part.offset[1]), float(part.offset[2]), ox, oy, oz);
-        if (!part.frames.empty()) {
+        apply(rot, float(offset[0]), float(offset[1]), float(offset[2]), ox, oy, oz);
+        if (!full.frames.empty()) {
             // A part of an animated object (object_load_bbox): this frame's matrix (stored by
             // columns; it also swaps y and z, which is why the game flips its back-face test
             // for these objects) and position, following the global animation counter.
-            const auto& fr = part.frames[size_t((int64_t(part.frames.size()) * (anim_counter_ & 0xffff)) >> 16) % part.frames.size()];
+            const auto& fr = full.frames[size_t((int64_t(full.frames.size()) * (anim_counter_ & 0xffff)) >> 16) % full.frames.size()];
             Mat3 pm{};
             for (int r = 0; r < 3; ++r)
                 for (int c = 0; c < 3; ++c) pm.m[r][c] = float(fr[size_t(c * 3 + r)]) / 16384.0f;
@@ -202,12 +208,38 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
         ox += pose.x - cam_->x;
         oy += pose.y - cam_->y;
         oz += pose.z - cam_->z;
-        if (part.radius >= 0) {
+        if (full.radius >= 0) {
             float rx, ry, rz, cx, cy, cz;
-            apply(prot, part.center[0], part.center[1], part.center[2], rx, ry, rz);
+            apply(prot, full.center[0], full.center[1], full.center[2], rx, ry, rz);
             apply(view_, rx + ox, ry + oy, rz + oz, cx, cy, cz);
-            if (!sphere_visible(cx, cy, cz, part.radius)) continue;
+            if (!sphere_visible(cx, cy, cz, full.radius)) continue;
         }
+        // object_compute_depth's distant versions (--lod; the full part otherwise): from 4000
+        // and 7000 units for track objects, from 12000 and 16000 for cars ('Z' parts count 8192
+        // nearer)
+        const Part* chosen = &full;
+        if (lod_) {
+            const auto& lods = model.lods;
+            if (!lods[0].empty() || !lods[1].empty()) {
+                float rx, ry, rz, cx, cy, cz;
+                apply(prot, full.center[0], full.center[1], full.center[2], rx, ry, rz);
+                apply(view_, rx + ox, ry + oy, rz + oz, cx, cy, cz);
+                const float dist = std::sqrt(cx * cx + cy * cy + cz * cz);
+                int level = 0;
+                if (pose.dynamic) {
+                    const float key = -dist * 0.5f + (!full.name.empty() && full.name[0] == 'Z' ? 8192.0f : 0.0f);
+                    level = key < -7999.0f ? 2 : key < -5999.0f ? 1 : 0;
+                } else {
+                    level = dist >= 7000.0f ? 2 : dist >= 4000.0f ? 1 : 0;
+                }
+                if (level > 0 && !lods[size_t(level - 1)].empty() && pi < lods[size_t(level - 1)].size()) {
+                    const LodPart& lp = lods[size_t(level - 1)][pi];
+                    chosen = lp.same ? &full : lp.present ? &lp.part : nullptr;
+                }
+            }
+        }
+        if (!chosen) continue;
+        const Part& part = *chosen;
         // A car's wheels: the original sorts an object's parts by distance and draws the
         // nearer wheels after the body, over the dark wheel-arch faces just outside them, and
         // the hub disc (..x, on the outside) after the tyre (..i).

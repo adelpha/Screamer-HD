@@ -23,7 +23,7 @@ void rotate_xz(int& ox, int& oz, int x, int z, float angle) {
 } // namespace
 
 bool Obstacles::load(const std::string& data_dat, const std::string& gfx_dat, const std::string& track_name,
-                     const std::string& spline, const Track& track) {
+                     const std::string& spline, const Track& track, int column) {
     list.clear();
     models.clear();
     hits = 0;
@@ -35,7 +35,8 @@ bool Obstacles::load(const std::string& data_dat, const std::string& gfx_dat, co
     auto values = DtrFile(std::string(dtr->begin(), dtr->end())).section("OSTACLES");
     if (!values) return false;
     std::vector<std::string> names;  // the first name of each row (g_race_options & 3 = 0)
-    for (size_t i = 0; i + 3 <= values->size(); i += 3) names.push_back((*values)[i].text);
+    column = std::clamp(column, 0, 2);
+    for (size_t i = 0; i + 3 <= values->size(); i += 3) names.push_back((*values)[i + size_t(column)].text);
     const auto lines = parse_splines(*spl);
     if (lines.empty() || lines[0].segments.empty()) return false;
     const RacingLine& line = lines[0];
