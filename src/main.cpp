@@ -165,7 +165,8 @@ void print_usage() {
         "                       (default: as saved, else 10)\n"
         "  --no-music           no CD music (from the CD image: SCREAM.cue/.bin, or SCREAM.DAT/.gog as Steam and GOG ship it)\n"
         "  --no-speech          no announcer\n"
-        "  --music-source SRC   cd, midi (the FM synth versions in DATA/MUSIC.DAT) or auto (default: CD if found)\n"
+        "  --music-source SRC   cd, midi (the FM synth versions in DATA/MUSIC.DAT) or auto (CD if found);\n"
+        "                       default: OPTIONS > SOUND's CD MUSIC (auto) / MIDI MUSIC\n"
         "  --record-audio FILE  write the sound of the run to a 44.1 kHz .wav (also headless)\n"
         "  --audio-filter MODE  linear (default) or nearest (the original driver's crunchier resampling)\n"
         "  --version, --help\n",
@@ -382,6 +383,7 @@ struct Shared {
     std::string choice_path;            // our copy of CONFIG/CHOICE.DAT
     // the SOUND page: announcer, the player's engine, other effects, music (0..kVolumeMax)
     std::array<int, 4> volumes{scr::kVolumeMax, scr::kVolumeMax, scr::kVolumeMax, scr::kVolumeMax};
+    bool music_midi = false;            // and its CD MUSIC / MIDI MUSIC line
     bool back_to_menu = false;          // the race asks to return to the menu
     bool attract_done = false;          // the intro demo is over (a key, or the credits ended)
     bool to_demo = false;               // the menu was left alone: the intro demo again
@@ -573,7 +575,39 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             mixer.set_group_volume(scr::SoundGroup(g), float(shared.volumes[size_t(g)]) / float(scr::kVolumeMax));
     };
     apply_group_volumes();
-    int radar = 1;                // M cycles 0 (off) .. 3 (DAT_0011d2a0)
+    // The music: the CD's track, or the MIDI tune on the FM synth (OPTIONS > SOUND, ours; the
+    // original plays MIDI only without the CD). --music-source cd|midi wins over the setting;
+    // CD falls back to MIDI when there is no CD image. Returns the CD track playing, 0 for none.
+    bool cd_open = false;
+    auto start_music = [&](int track_no, int song_no) -> int {
+        if (!opt.music || !((!opt.headless && !opt.mute) || !opt.record_audio.empty()) || !game_dir) return 0;
+        const std::string source = opt.music_source == "cd" || opt.music_source == "midi" ? opt.music_source
+                                   : shared.music_midi                                   ? "midi"
+                                                                                         : "auto";
+        mixer.set_music(nullptr);
+        if (source != "midi") {
+            if (!cd_open) {
+                auto cue = scr::find_cd_cue(*game_dir);
+                cd_open = cue && cd.open(*cue);
+                if (!cd_open) SDL_Log("no CD music (no CD image: SCREAM.cue/.bin or SCREAM.DAT/.gog)");
+            }
+            if (cd_open) {
+                auto music = std::make_shared<scr::CdAudioPlayer>(cd, track_no);
+                if (music->ok()) {
+                    mixer.set_music(music);
+                    return track_no;
+                }
+            }
+        }
+        if (source != "cd") {
+            auto music_dat = scr::resolve_game_file(*game_dir, "DATA/MUSIC.DAT");
+            auto song = music_dat ? scr::load_hmp_music(*music_dat, song_no) : nullptr;
+            if (song) mixer.set_music(song);
+            else SDL_Log("no MIDI music (DATA/MUSIC.DAT)");
+        }
+        return 0;
+    };
+    int radar = 1;               // M cycles 0 (off) .. 3 (DAT_0011d2a0)
     if (drive) {
         auto gen = scr::resolve_game_file(*game_dir, "DATA/GEN.DAT");
         auto ga = gen ? scr::Archive::open(*gen) : std::nullopt;
@@ -669,30 +703,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         } else {
             SDL_Log("no sound effects (DATA/SOUND.DAT not found)");
         }
-        if (opt.music && ((!opt.headless && !opt.mute) || !opt.record_audio.empty())) {
-            const int map = opt.track.size() >= 4 ? std::atoi(opt.track.c_str() + 3) - 1 : 0;
-            bool playing = false;
-            if (opt.music_source != "midi") {
-                auto cue = scr::find_cd_cue(*game_dir);
-                if (cue && cd.open(*cue)) {
-                    auto music = std::make_shared<scr::CdAudioPlayer>(cd, scr::cd_track_for_race(map));
-                    if (music->ok()) {
-                        mixer.set_music(music);
-                        playing = true;
-                        cd_track = scr::cd_track_for_race(map);
-                    }
-                } else {
-                    SDL_Log("no CD music (no CD image: SCREAM.cue/.bin or SCREAM.DAT/.gog)");
-                }
-            }
-            if (!playing && opt.music_source != "cd") {
-                // The game's MIDI music on the FM synth, as it plays without the CD.
-                auto music_dat = scr::resolve_game_file(*game_dir, "DATA/MUSIC.DAT");
-                auto song = music_dat ? scr::load_hmp_music(*music_dat, scr::music_for_race(map)) : nullptr;
-                if (song) mixer.set_music(song);
-                else SDL_Log("no MIDI music (DATA/MUSIC.DAT)");
-            }
-        }
+        const int map = opt.track.size() >= 4 ? std::atoi(opt.track.c_str() + 3) - 1 : 0;
+        cd_track = start_music(scr::cd_track_for_race(map), scr::music_for_race(map));
         if (!opt.headless && !opt.mute) {
             const SDL_AudioSpec spec{SDL_AUDIO_F32, 2, 44100};
             audio_stream = SDL_OpenAudioDeviceStream(
@@ -758,6 +770,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 if (auto orig = scr::resolve_game_file(*game_dir, "CONFIG/CHOICE.DAT")) choice.load(*orig);
             shared.menu->load_choice(choice);
             shared.menu->set_volumes(shared.volumes);  // as main read them (or --volumes)
+            shared.menu->set_music_midi(shared.music_midi);
         }
         menu = &*shared.menu;
         menu->quit = false;
@@ -808,22 +821,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 }
             }
         }
-        if (opt.music && ((!opt.headless && !opt.mute) || !opt.record_audio.empty())) {
-            // the menu tune: CD track 4 or MUSIC3
-            bool playing = false;
-            if (opt.music_source != "midi") {
-                if (auto cue = scr::find_cd_cue(*game_dir); cue && cd.open(*cue)) {
-                    auto music = std::make_shared<scr::CdAudioPlayer>(cd, scr::kCdTrackMenu);
-                    if (music->ok()) {
-                        mixer.set_music(music);
-                        playing = true;
-                    }
-                }
-            }
-            if (!playing && opt.music_source != "cd")
-                if (auto md2 = scr::resolve_game_file(*game_dir, "DATA/MUSIC.DAT"))
-                    if (auto song = scr::load_hmp_music(*md2, scr::kMusicMenu)) mixer.set_music(song);
-        }
+        // the menu tune: CD track 4 or MUSIC3
+        start_music(scr::kCdTrackMenu, scr::kMusicMenu);
         if (!opt.headless && !opt.mute) {
             const SDL_AudioSpec spec{SDL_AUDIO_F32, 2, 44100};
             audio_stream = SDL_OpenAudioDeviceStream(
@@ -1751,6 +1750,12 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     mk.right |= k == "right";
                 }
                 menu->update(mk, clock.frame_time());
+                if (menu->music_midi() != shared.music_midi) {
+                    // CD MUSIC / MIDI MUSIC: the menu tune again from the other source, saved
+                    shared.music_midi = menu->music_midi();
+                    start_music(scr::kCdTrackMenu, scr::kMusicMenu);
+                    if (!shared.choice_path.empty()) menu->save_choice().save(shared.choice_path);
+                }
                 if (menu->volumes() != shared.volumes) {
                     // the SOUND page: heard (the menu's music and clicks) and saved straight away
                     shared.volumes = menu->volumes();
@@ -1985,7 +1990,10 @@ int main(int argc, char** argv) {
     // The SOUND page's volumes: saved after our CHOICE.DAT's own bytes, --volumes for this run.
     if (!shared.choice_path.empty()) {
         scr::ChoiceFile choice;
-        if (choice.load(shared.choice_path)) std::copy(choice.volume.begin(), choice.volume.end(), shared.volumes.begin());
+        if (choice.load(shared.choice_path)) {
+            std::copy(choice.volume.begin(), choice.volume.end(), shared.volumes.begin());
+            shared.music_midi = choice.music_midi != 0;
+        }
     }
     if (!opt.volumes.empty()) {
         size_t i = 0;
