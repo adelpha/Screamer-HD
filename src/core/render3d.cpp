@@ -220,6 +220,7 @@ void Renderer::draw_placement_range(Geo& g, size_t i0, size_t i1) {
         // through. (Only ground below the eye: flat ceilings overhead keep their depth.)
         if (p.slot != 0 && m.flat && float(p.y + m.flat_y) < cam_->y) pose.depth_bias = -kFlatGroundBias;
         pose.seal_edges = p.slot == 0;
+        if (weld_joints_ && i < track_->welds.size() && !track_->welds[i].empty()) pose.shifts = &track_->welds[i];
         draw_model_into(g, m, pose, nullptr);
     }
 }
@@ -388,6 +389,14 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
             apply(prot, part.vertices[i].x, part.vertices[i].y, part.vertices[i].z, rx, ry, rz);
             apply(view_, rx + ox, ry + oy, rz + oz, g.wx[i], g.wy[i], g.wz[i]);
         }
+        if (pose.shifts && chosen == &full)
+            for (const VertexShift& sh : *pose.shifts) {
+                if (sh.part != pi || sh.vertex >= nv) continue;
+                const Vec3i16& v = part.vertices[sh.vertex];
+                float rx, ry, rz;
+                apply(prot, float(v.x) + sh.dx, float(v.y) + sh.dy, float(v.z) + sh.dz, rx, ry, rz);
+                apply(view_, rx + ox, ry + oy, rz + oz, g.wx[sh.vertex], g.wy[sh.vertex], g.wz[sh.vertex]);
+            }
         // Reflection UVs (object_transform_float): the view direction to the vertex reflected
         // off the vertex normal, u from its x and v from its z, 127 * component + 127 - scroll.
         const bool env = (part.flags & 0x2000) && part.vertex_normals.size() >= nv;

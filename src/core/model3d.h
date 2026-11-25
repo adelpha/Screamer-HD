@@ -107,6 +107,13 @@ struct Model {
     int flat_y = 0;
 };
 
+// A vertex of a placed object drawn a little away from where the file has it (Track::welds):
+// the shift is in the object's own axes.
+struct VertexShift {
+    uint16_t part = 0, vertex = 0;
+    float dx = 0, dy = 0, dz = 0;
+};
+
 // A part's placement set by the game for one frame (the instance's part table, f_10 in
 // g_objects, 0x20 bytes per part): angles in 2048 units replacing the file's, and the height.
 struct PartPose {

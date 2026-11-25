@@ -87,6 +87,8 @@ struct Pose {
     bool seal_edges = false;
     // A car (object_compute_depth_dynamic: half the distance for the detail levels).
     bool dynamic = false;
+    // Vertices drawn a little away from the model's (Track::welds), or null.
+    const std::vector<VertexShift>* shifts = nullptr;
 };
 
 // The flat ground pieces of the scenery are tested and written as if this much further away,
@@ -134,6 +136,9 @@ public:
     // of only the edges a face shares with no other face of its part. Past shared edges the
     // faces paint over their neighbours, which eats thin faces such as the painted lines.
     void set_seal_all_edges(bool on) { seal_all_edges_ = on; }
+    // The track's placements drawn with the corners of neighbouring road pieces moved together
+    // (Track::welds); off: where the file puts them, with the lines stepping at the joints.
+    void set_weld_joints(bool on) { weld_joints_ = on; }
     void set_mipmaps(bool on, float sharpness = 1.4f) { mipmaps_ = on; mip_sharpness_ = sharpness; }
     // Threads that fill pixels (<= 0: one per hardware thread, the default).
     void set_threads(int threads);
@@ -249,6 +254,7 @@ private:
     bool mipmaps_ = false;
     bool clamp_edges_ = true;
     bool seal_all_edges_ = false;
+    bool weld_joints_ = true;
     float mip_sharpness_ = 1.4f;
     bool skip_ = false;
     bool fade_ = false;            // the view-distance fade is on this frame

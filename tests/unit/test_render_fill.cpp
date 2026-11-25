@@ -5,6 +5,7 @@
 #include "core/render3d_fill.h"
 #include "core/track.h"
 
+#include <cmath>
 #include <cstring>
 #include <set>
 
@@ -286,4 +287,42 @@ TEST_CASE("model3d: open edges and strips of a part's faces") {
     CHECK(!f[0].strip);
     CHECK(!f[1].strip);
     CHECK(f[2].strip);
+}
+
+TEST_CASE("track: corners of neighbouring road pieces are welded half way") {
+    // two square pieces end to end, the second 20 units to the side and turned a little
+    scr::Track t;
+    scr::Model m;
+    scr::Part part;
+    part.vertices = {{0, 0, 0}, {1000, 0, 0}, {1000, 0, 1000}, {0, 0, 1000}};
+    scr::Face f;
+    f.count = 4;
+    f.vtx = {0, 1, 2, 3, 0, 0};
+    part.faces = {f};
+    m.parts.push_back(part);
+    scr::compute_bounds(m);
+    t.objects.push_back(m);
+    scr::Placement a, b;
+    a.slot = b.slot = 0;
+    b.x = 20;
+    b.z = 1000;
+    b.ay = 3;
+    t.placements = {a, b};
+    scr::weld_road_joints(t);
+    REQUIRE(t.welds.size() == 2);
+    // the far corners of the first meet the near corners of the second; the others stay
+    REQUIRE(t.welds[0].size() == 2);
+    REQUIRE(t.welds[1].size() == 2);
+    for (const scr::VertexShift& s : t.welds[0]) {
+        CHECK((s.vertex == 2 || s.vertex == 3));
+        CHECK(std::fabs(s.dx - 10.0f) < 6.0f);  // half of the 20 units, give or take the turn
+        CHECK(std::fabs(s.dy) < 0.01f);
+    }
+    for (const scr::VertexShift& s : t.welds[1]) CHECK((s.vertex == 0 || s.vertex == 1));
+    // a piece far from any other keeps its corners
+    scr::Track lone;
+    lone.objects.push_back(m);
+    lone.placements = {a};
+    scr::weld_road_joints(lone);
+    CHECK(lone.welds[0].empty());
 }

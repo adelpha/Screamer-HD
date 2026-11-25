@@ -65,10 +65,11 @@ struct Options {
     std::string upload;             // --upload: how the picture gets to the renderer (index | rgba; empty: index when the renderer can)
     bool perf = false;              // print the 3D render time per frame at the end
     bool lod = false;               // the original's distant versions of objects (off: full detail)
-    bool mipmaps = false;           // --mipmaps on|off: squeezed textures from their smaller versions (ours; F10 in a race)
+    bool mipmaps = true;            // --mipmaps on|off: squeezed textures from their smaller versions (ours; F10 in a race)
     float mip_sharpness = 1.4f;     // --mip-sharpness
     bool clamp_edges = true;        // --texture-edges clamp|wrap
     bool seal_all = false;          // --seal-edges all|open
+    bool weld_joints = true;        // --weld-joints on|off
     int threads = 0;                // renderer threads (0: one per hardware thread)
     std::string fill;               // --fill: the pixel filler's build (sse2 | avx2; empty: the widest the CPU has)
     bool fullscreen = false;
@@ -134,7 +135,8 @@ void print_usage() {
         "  --lod                draw distant objects in the original's simpler versions (default: full detail)\n"
         "  --threads N          threads drawing the 3D view (default: one per CPU thread)\n"
         "  --mipmaps on|off     draw squeezed (distant) textures from averaged smaller versions: steadier, softer\n"
-        "                       (default off; F10 switches in a race). --mip-sharpness X: 1 sharper .. 2 softer (1.4)\n"
+        "                       (default on; F10 switches in a race). --mip-sharpness X: 1 sharper .. 2 softer (1.4)\n"
+        "  --weld-joints off    road pieces where the track file puts them (their lines step at every joint)\n"
         "  --seal-edges all     road pieces reach past every face edge, as before (the painted lines break up)\n"
         "  --texture-edges wrap texel coordinates wrap at the edges of every polygon, as before\n"
         "  --fill sse2|avx2     the build of the pixel filler (default: avx2 when the CPU has it; same picture)\n"
@@ -290,6 +292,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--mipmaps") o.mipmaps = std::string(next("--mipmaps")) != "off";
         else if (a == "--texture-edges") o.clamp_edges = std::string(next("--texture-edges")) != "wrap";
         else if (a == "--seal-edges") o.seal_all = std::string(next("--seal-edges")) == "all";
+        else if (a == "--weld-joints") o.weld_joints = std::string(next("--weld-joints")) != "off";
         else if (a == "--mip-sharpness") o.mip_sharpness = float(std::atof(next("--mip-sharpness")));
         else if (a == "--threads") o.threads = std::atoi(next("--threads"));
         else if (a == "--fill") o.fill = next("--fill");
@@ -750,6 +753,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     renderer3d.set_mipmaps(opt.mipmaps, opt.mip_sharpness);
     renderer3d.set_clamp_edges(opt.clamp_edges);
     renderer3d.set_seal_all_edges(opt.seal_all);
+    renderer3d.set_weld_joints(opt.weld_joints);
 
     // --scene menu: the front end (kept by main across races)
     scr::Menu* menu = nullptr;
