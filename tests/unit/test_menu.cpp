@@ -204,24 +204,40 @@ TEST_CASE("menu: CHOICE.DAT keeps our volumes after the original's bytes") {
     scr::ChoiceFile c;
     CHECK((c.volume == std::array<int32_t, 4>{10, 10, 10, 10}));
     c.volume = {3, 0, 7, 10};
+    c.music_midi = 1;
     c.set(0x14, 2);
     REQUIRE(c.save(path.string()));
-    CHECK(std::filesystem::file_size(path) == 0x460 + 4 + 4 + 16);
+    CHECK(std::filesystem::file_size(path) == 0x460 + 4 + 4 + 20);
     scr::ChoiceFile d;
     REQUIRE(d.load(path.string()));
     CHECK((d.volume == std::array<int32_t, 4>{3, 0, 7, 10}));
+    CHECK(d.music_midi == 1);
     CHECK(d.get(0x14) == 2);
+    // only the four volumes (as the first version wrote them): CD music
+    {
+        std::FILE* f = std::fopen(path.string().c_str(), "r+b");
+        REQUIRE(f != nullptr);
+        const int32_t four = 4;
+        std::fseek(f, 0x464, SEEK_SET);
+        std::fwrite(&four, 4, 1, f);
+        std::fclose(f);
+    }
+    REQUIRE(d.load(path.string()));
+    CHECK((d.volume == std::array<int32_t, 4>{3, 0, 7, 10}));
+    CHECK(d.music_midi == 0);
     // the original's file (0x460 bytes, nothing after them): the defaults
     std::filesystem::resize_file(path, 0x460);
     scr::ChoiceFile e;
     e.volume = {1, 1, 1, 1};
+    e.music_midi = 1;
     REQUIRE(e.load(path.string()));
     CHECK((e.volume == std::array<int32_t, 4>{10, 10, 10, 10}));
+    CHECK(e.music_midi == 0);
     CHECK(e.get(0x14) == 2);
     std::filesystem::remove(path);
 }
 
-TEST_CASE("menu: OPTIONS > SOUND sets the four volumes") {
+TEST_CASE("menu: OPTIONS > SOUND sets the four volumes and the music source") {
     if (!scr::find_game_dir()) SKIP("original game data not present");
     auto a = load_menu();
     REQUIRE(a.has_value());
@@ -247,7 +263,7 @@ TEST_CASE("menu: OPTIONS > SOUND sets the four volumes") {
     // its lines: "ANNOUNCER 10" ... (one block per letter)
     int letters = 0;
     for (const auto& it : m.items) letters += it.ch != -1;
-    CHECK(letters == int(std::string("ANNOUNCER 10ENGINE 10EFFECTS 5MUSIC 10").size()));
+    CHECK(letters == int(std::string("ANNOUNCER 10ENGINE 10EFFECTS 5MUSIC 10CD MUSIC").size()));
     press([](scr::MenuKeys& k) { k.left = true; });   // announcer 9
     press([](scr::MenuKeys& k) { k.right = true; });  // back to 10, not past it
     press([](scr::MenuKeys& k) { k.right = true; });
@@ -260,6 +276,16 @@ TEST_CASE("menu: OPTIONS > SOUND sets the four volumes") {
     press([](scr::MenuKeys& k) { k.enter = true; });  // music wraps to 0
     CHECK((m.volumes() == std::array<int, 4>{9, 9, 6, 0}));
     CHECK((m.save_choice().volume == std::array<int32_t, 4>{9, 9, 6, 0}));
+    CHECK(!m.music_midi());
+    press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.enter = true; });  // CD MUSIC -> MIDI MUSIC
+    CHECK(m.music_midi());
+    CHECK(m.save_choice().music_midi == 1);
+    letters = 0;
+    for (const auto& it : m.items) letters += it.ch != -1;
+    CHECK(letters == int(std::string("ANNOUNCER 9ENGINE 9EFFECTS 6MUSIC 0MIDI MUSIC").size()));
+    press([](scr::MenuKeys& k) { k.enter = true; });  // and back
+    CHECK(!m.music_midi());
     press([](scr::MenuKeys& k) { k.esc = true; });
     CHECK(m.page == 1);
 }

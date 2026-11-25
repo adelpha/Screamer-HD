@@ -39,6 +39,7 @@ std::vector<std::string> text_lines(const Archive& a, const std::string& name) {
 // page and change a volume (Enter or right: up, wrapping to 0; left: down).
 constexpr int kOwnText = 1000, kActionSound = 2000, kActionVolume = 2001;
 constexpr int kSoundPage = 7;
+constexpr size_t kMusicSourceLine = 4;  // the SOUND page's CD MUSIC / MIDI MUSIC
 
 // The page tables at 0x102de4 (text index, action, value, max).
 std::vector<std::vector<Menu::Entry>> default_pages() {
@@ -54,12 +55,13 @@ std::vector<std::vector<Menu::Entry>> default_pages() {
         {{31, 31, 0, 0}, {32, 31, 0, 1}, {33, 31, 0, 2}, {34, 31, 0, 3}, {35, 31, 0, 4}, {36, 31, 0, 5}},
         // 7 (ours) SOUND: the four volumes
         {{kOwnText + 1, kActionVolume, kVolumeMax, kVolumeMax}, {kOwnText + 2, kActionVolume, kVolumeMax, kVolumeMax},
-         {kOwnText + 3, kActionVolume, kVolumeMax, kVolumeMax}, {kOwnText + 4, kActionVolume, kVolumeMax, kVolumeMax}},
+         {kOwnText + 3, kActionVolume, kVolumeMax, kVolumeMax}, {kOwnText + 4, kActionVolume, kVolumeMax, kVolumeMax},
+         {kOwnText + 5, 1234, 0, 1}},  // CD MUSIC / MIDI MUSIC
     };
 }
 
 // The lines of our own pages (MENU.TXT has none for them).
-const char* const kOwnTexts[] = {"SOUND", "ANNOUNCER", "ENGINE", "EFFECTS", "MUSIC"};
+const char* const kOwnTexts[] = {"SOUND", "ANNOUNCER", "ENGINE", "EFFECTS", "MUSIC", "CD MUSIC", "MIDI MUSIC"};
 
 // Fly-in variants (0x102218): start x, y, z and the spiral radii.
 constexpr int kVariants[8][5] = {
@@ -206,6 +208,7 @@ enum : int { kChampPos = 0, kChampTrack = 1, kChampTime = 2, kChampScore = 3, kC
 namespace {
 constexpr size_t kLapRecords = 0x6c, kTotalRecords = 0x24c, kRecordStride = 0x50;
 constexpr char kExtMagic[4] = {'S', 'C', 'R', 'X'};  // our settings after the original's 0x460 bytes
+constexpr size_t kExtValues = 5;                       // the four volumes, music_midi
 }
 
 ChoiceFile::ChoiceFile() {
@@ -256,14 +259,16 @@ bool ChoiceFile::load(const std::string& path) {
     raw = buf;
     // our settings after the original's bytes
     volume.fill(kVolumeMax);
+    music_midi = 0;
     char magic[4]{};
     int32_t count = 0;
     if (std::fread(magic, 1, 4, f) == 4 && std::memcmp(magic, kExtMagic, 4) == 0 &&
         std::fread(&count, 4, 1, f) == 1 && count > 0) {
-        for (size_t i = 0; i < size_t(count) && i < volume.size(); ++i) {
+        for (size_t i = 0; i < size_t(count) && i < kExtValues; ++i) {
             int32_t v = 0;
             if (std::fread(&v, 4, 1, f) != 1) break;
-            volume[i] = std::clamp(v, 0, kVolumeMax);
+            if (i < volume.size()) volume[i] = std::clamp(v, 0, kVolumeMax);
+            else music_midi = v ? 1 : 0;
         }
     }
     std::fclose(f);
@@ -274,9 +279,12 @@ bool ChoiceFile::save(const std::string& path) const {
     std::FILE* f = std::fopen(path.c_str(), "wb");
     if (!f) return false;
     bool ok = std::fwrite(raw.data(), 1, raw.size(), f) == raw.size();
-    const int32_t count = int32_t(volume.size());
+    std::array<int32_t, kExtValues> ext{};
+    std::copy(volume.begin(), volume.end(), ext.begin());
+    ext[4] = music_midi;
+    const int32_t count = int32_t(ext.size());
     ok = ok && std::fwrite(kExtMagic, 1, 4, f) == 4 && std::fwrite(&count, 4, 1, f) == 1 &&
-         std::fwrite(volume.data(), 4, volume.size(), f) == volume.size();
+         std::fwrite(ext.data(), 4, ext.size(), f) == ext.size();
     std::fclose(f);
     return ok;
 }
@@ -319,6 +327,7 @@ void Menu::load_choice(const ChoiceFile& c) {
     pages[1][3].value = c.get(0x438) ? 1 : 0;
     pages[1][4].value = c.get(0x43c) ? 1 : 0;
     for (size_t i = 0; i < c.volume.size(); ++i) pages[kSoundPage][i].value = std::clamp(c.volume[i], 0, kVolumeMax);
+    pages[kSoundPage][kMusicSourceLine].value = c.music_midi ? 1 : 0;
     cars_unlocked = std::clamp(c.get(0x42c), 0, 2);
     tracks_unlocked = std::clamp(c.get(0x454), 0, 9);
     tracks_seen_ = c.get(0x458);
@@ -346,6 +355,7 @@ ChoiceFile Menu::save_choice() const {
     c.set(0x43c, pages[1][4].value);
     const auto v = volumes();
     std::copy(v.begin(), v.end(), c.volume.begin());
+    c.music_midi = music_midi() ? 1 : 0;
     c.set(0x45c, pages[1][1].max);
     c.set(0x42c, cars_unlocked);
     c.set(0x454, tracks_unlocked);
@@ -616,7 +626,8 @@ void Menu::setup_name_page() {
 
 std::string Menu::entry_text(const Entry& e) const {
     if (e.text >= kOwnText) {
-        const size_t i = size_t(e.text - kOwnText);
+        // the cycled lines (1234) show the text of their value, like MENU.TXT's
+        const size_t i = size_t(e.text - kOwnText + (e.action == kActionVolume ? 0 : e.value));
         std::string s = i < std::size(kOwnTexts) ? kOwnTexts[i] : "";
         if (e.action == kActionVolume) s += " " + std::to_string(e.value);
         return s;
@@ -630,6 +641,9 @@ std::array<int, 4> Menu::volumes() const {
     for (size_t i = 0; i < v.size(); ++i) v[i] = pages[kSoundPage][i].value;
     return v;
 }
+
+bool Menu::music_midi() const { return pages[kSoundPage][kMusicSourceLine].value != 0; }
+void Menu::set_music_midi(bool midi) { pages[kSoundPage][kMusicSourceLine].value = midi ? 1 : 0; }
 
 void Menu::set_volumes(const std::array<int, 4>& v) {
     for (size_t i = 0; i < v.size(); ++i) pages[kSoundPage][i].value = std::clamp(v[i], 0, kVolumeMax);
