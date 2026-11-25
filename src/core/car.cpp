@@ -416,10 +416,12 @@ void Car::part_poses(const Model& model, const CarParts& cp, std::vector<PartPos
     if (advance) wheel_roll = chop(double(wheel_roll) - double(speed) / 15.0) & 0x7fe;
     const int32_t steer_ay =
         steer_max != 0.0f ? chop(double(steer) * 1024.0 / (double(steer_max) * 1.5) / 3.141592741012573) & 0x7ff : 0;
+    // car_sync_render_object: only the hubs (..x) roll; the tyres (..i) are modelled only
+    // where they show below the body, so they keep still (the front ones steer)
     for (int i : cp.wheels) {
         PartPose& p = out[size_t(i)];
         p.angles = true;
-        p.ax = wheel_roll;
+        p.ax = model.parts[size_t(i)].name.back() == 'x' ? wheel_roll : 0;
     }
     for (int i : cp.steered) out[size_t(i)].ay = steer_ay;
 }

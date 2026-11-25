@@ -1499,9 +1499,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                                 pp[size_t(pi2)].az = lz;
                             }
                             if (step && !freecam) player->cpu_roll[i] = int32_t(double(player->cpu_roll[i]) - double(o.speed) / 15.0) & 0x7fe;
-                            for (int pi2 : cp.wheels) {
+                            for (int pi2 : cp.wheels) {  // (the hubs roll, the tyres do not)
                                 pp[size_t(pi2)].angles = true;
-                                pp[size_t(pi2)].ax = player->cpu_roll[i];
+                                pp[size_t(pi2)].ax = cm.parts[size_t(pi2)].name.back() == 'x' ? player->cpu_roll[i] : 0;
                             }
                             op.parts = &pp;
                         }
