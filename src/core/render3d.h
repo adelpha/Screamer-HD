@@ -180,6 +180,7 @@ private:
         std::vector<ClipVert> deferred_verts;
         std::vector<Fill> fills;
         std::vector<Tri> tris;
+        std::vector<std::array<int, 2>> tri_rows;  // each triangle's first and last row (for the fill threads to pick theirs)
         std::vector<float> wx, wy, wz;
         std::vector<std::array<int, 2>> env_uv;
         float edge_slack = 0;  // for the polygons of the model being drawn
@@ -215,8 +216,6 @@ private:
     bool placements_pending_ = false;  // draw_placements() was called,
     size_t placements_at_ = 0;         // after this many draw_model() calls
     bool geometry_done_ = false;
-    std::vector<std::vector<detail::TriRef>> band_tris_;  // per band of rows, the triangles reaching it (in order)
-    std::vector<int> row_band_;
     std::vector<int> bg_columns_;  // background_columns() of this frame
     uint8_t sky_ = 0;
     bool clear_at_finish_ = false;

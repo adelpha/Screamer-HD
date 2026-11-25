@@ -270,6 +270,7 @@ void Renderer::Geo::clear() {
     deferred_verts.clear();
     fills.clear();
     tris.clear();
+    tri_rows.clear();
     stats = {};
     edge_slack = 0;
 }
@@ -461,23 +462,6 @@ RenderStats Renderer::finish() {
     if (!pool_) pool_ = std::make_unique<WorkerPool>();
     const int h = fb_->height();
     const int bands = std::max(1, std::min(h / 4, pool_->threads() * 6));
-    // each band gets the list of triangles that reach it, in drawing order
-    band_tris_.resize(size_t(bands));
-    for (auto& l : band_tris_) l.clear();
-    row_band_.resize(size_t(h));
-    for (int b = 0; b < bands; ++b)
-        for (int y = h * b / bands; y < h * (b + 1) / bands; ++y) row_band_[size_t(y)] = b;
-    auto bin = [&](const Geo& o) {
-        const Fill* const fills = o.fills.data();
-        for (const Tri& t : o.tris) {
-            if (t.y1 < 0 || t.y0 >= h) continue;
-            const int y0 = std::clamp(t.y0, 0, h - 1), y1 = std::clamp(t.y1, 0, h - 1);
-            const detail::TriRef ref{&t, fills + t.fill};
-            for (int b = row_band_[size_t(y0)]; b <= row_band_[size_t(y1)]; ++b) band_tris_[size_t(b)].push_back(ref);
-        }
-    };
-    for (size_t k = 0; k < job_count_; ++k) bin(job_geo_[k]);
-    bin(g);  // (the translucent polygons, last)
     if (!fill_rows_) set_fill_path(FillPath::Auto);
     detail::FillContext ctx{};
     ctx.pixels = fb_->pixels();
@@ -492,13 +476,26 @@ RenderStats Renderer::finish() {
     ctx.fade_start = fade_start_;
     ctx.fade_range = fade_range_;
     pool_->run(bands, [&](int b) {
-        const auto& list = band_tris_[size_t(b)];
         const int y0 = h * b / bands, y1 = h * (b + 1) / bands;
         // (cleared here, the band's rows are still in the cache when its polygons are filled)
         if (clear_at_finish_) clear_rows(y0, y1);
+        // the triangles that reach the band, in drawing order: every job's, then the
+        // translucent polygons
+        static thread_local std::vector<detail::TriRef> list;
+        list.clear();
+        auto collect = [&](const Geo& o) {
+            const Tri* const tris = o.tris.data();
+            const Fill* const fills = o.fills.data();
+            const std::array<int, 2>* const rows = o.tri_rows.data();
+            for (size_t i = 0, n = o.tri_rows.size(); i < n; ++i)
+                if (rows[i][1] >= y0 && rows[i][0] < y1) list.push_back({tris + i, fills + tris[i].fill});
+        };
+        for (size_t k = 0; k < job_count_; ++k) collect(job_geo_[k]);
+        collect(g);
         fill_rows_(ctx, y0, y1, list.data(), list.size());
     });
     g.tris.clear();
+    g.tri_rows.clear();
     g.fills.clear();
     job_count_ = 0;
     return g.stats;
@@ -625,6 +622,7 @@ void Renderer::draw_polygon(Geo& g, const ClipVert* in, size_t count, const Mate
         const int y1 = std::min(fb.height() - 1, int(std::ceil(std::max({a.y, b.y, c.y}))));
         if (x0 > x1 || y0 > y1) continue;
         g.tris.push_back({a, b, c, y0, y1, x0, x1, fill_index});
+        g.tri_rows.push_back({y0, y1});
         used = true;
     }
     if (used) g.fills.push_back(fill);
