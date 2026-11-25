@@ -256,7 +256,9 @@ TEST_CASE("menu: OPTIONS > SOUND sets the four volumes and the music source") {
     for (int i = 0; i < 4; ++i) press([](scr::MenuKeys& k) { k.down = true; });
     press([](scr::MenuKeys& k) { k.enter = true; });  // OPTIONS
     REQUIRE(m.page == 1);
-    for (int i = 0; i < 5; ++i) press([](scr::MenuKeys& k) { k.down = true; });
+    // DETAIL, DIFFICULTY, LAPS, SOUND (in place of SPEECH and MUSIC), VIEW RECORDS
+    CHECK(m.pages[1].size() == 5);
+    for (int i = 0; i < 3; ++i) press([](scr::MenuKeys& k) { k.down = true; });
     press([](scr::MenuKeys& k) { k.enter = true; });  // SOUND
     REQUIRE(m.page == 7);
     run(m, 60);
