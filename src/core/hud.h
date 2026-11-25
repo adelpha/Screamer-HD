@@ -127,8 +127,9 @@ public:
     std::vector<uint8_t> cockpit;
     CockpitLayout layout;
     // view: 1 dashboard (COCKnn), 2 compact gauges (IMPRES, the default); radar 0 (off) .. 3.
+    // advance: the needles move (once per game step; drawing between steps passes false).
     void draw(Framebuffer& fb, const HudState& s, const std::array<uint8_t, 256>& darken075, float frame_time,
-              int pow_row, int view = 2, int radar = 1);
+              int pow_row, int view = 2, int radar = 1, bool advance = true);
 
     void draw_cd_panel(Framebuffer& fb, const CdPanel& p);
     std::vector<uint8_t> cdfront;  // CDFRONTL.PKC

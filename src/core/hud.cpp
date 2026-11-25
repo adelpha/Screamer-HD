@@ -289,7 +289,7 @@ void Hud::draw_needle(HudSurface& s, int cx, int cy, int len, float angle, uint8
 }
 
 void Hud::draw(Framebuffer& fb, const HudState& st, const std::array<uint8_t, 256>& darken075, float frame_time,
-               int pow_row, int view, int radar) {
+               int pow_row, int view, int radar, bool advance) {
     (void)frame_time;
     HudSurface s(fb);
     // hud_draw_cockpit: the labels, then the gauges of the chosen view.
@@ -298,11 +298,11 @@ void Hud::draw(Framebuffer& fb, const HudState& st, const std::array<uint8_t, 25
         // The dashboard: speed and rev needles (lerp k 0x5a), the gear as a sprite.
         s.rle(cockpit);
         const float speed_target = st.speed / st.maxspd * 4.084070563316345f;
-        speed_needle_ = (speed_needle_ - speed_target) * pow_table(pow_row, 0x5a) + speed_target;
+        if (advance) speed_needle_ = (speed_needle_ - speed_target) * pow_table(pow_row, 0x5a) + speed_target;
         draw_needle(s, layout.speed_x, layout.speed_y, layout.needle_len, speed_needle_, 0xff);
         float rpm_target = st.rpm / st.maxrpm * 3.612831652164459f;
         if (3.612831652164459f < rpm_target) rpm_target = 3.612831652164459f;
-        rpm_needle_ = (rpm_needle_ - rpm_target) * pow_table(pow_row, 0x5a) + rpm_target;
+        if (advance) rpm_needle_ = (rpm_needle_ - rpm_target) * pow_table(pow_row, 0x5a) + rpm_target;
         draw_needle(s, layout.rpm_x, layout.rpm_y, layout.needle_len, rpm_needle_, 0xff);
         const size_t g = size_t(std::clamp(st.gear, 0, 6));
         s.sprite(sprites, st.gear + layout.gear_sprite, layout.gear[g][0], layout.gear[g][1]);
@@ -315,7 +315,7 @@ void Hud::draw(Framebuffer& fb, const HudState& st, const std::array<uint8_t, 25
         s.text(fonts, 0x130, 0xbb, buf, 2, 1);
         float target = st.rpm / st.maxrpm * kPi;
         if (kPi < target) target = kPi;
-        rpm_needle_ = (rpm_needle_ - target) * pow_table(pow_row, 0x5a) + target;
+        if (advance) rpm_needle_ = (rpm_needle_ - target) * pow_table(pow_row, 0x5a) + target;
         draw_needle(s, 0x10f, 0xa8, 0x1e, rpm_needle_, 0x75);
     }
     // hud_draw: time left (centred), lap n/N, position, three times.
