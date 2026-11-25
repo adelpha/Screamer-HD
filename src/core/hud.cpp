@@ -68,7 +68,11 @@ std::optional<HudSprites> HudSprites::parse(const std::vector<uint8_t>& d) {
     return s;
 }
 
-HudSurface::HudSurface(Framebuffer& fb) : fb_(fb), sx_(float(fb.width()) / 320.0f), sy_(float(fb.height()) / 200.0f) {}
+HudSurface::HudSurface(Framebuffer& fb) : fb_(fb), sx_(float(fb.width()) / 320.0f), sy_(float(fb.height()) / 200.0f) {
+    // where each of the 320x200 pixels starts in the framebuffer
+    for (int x = 0; x <= 320; ++x) xs_[size_t(x)] = int(float(x) * sx_);
+    for (int y = 0; y <= 200; ++y) ys_[size_t(y)] = int(float(y) * sy_);
+}
 
 void HudSurface::set_clip(int x0, int y0, int x1, int y1) {
     clip_[0] = std::max(0, x0);
@@ -79,10 +83,10 @@ void HudSurface::set_clip(int x0, int y0, int x1, int y1) {
 
 void HudSurface::pixel(int x, int y, uint8_t c) {
     if (x < clip_[0] || y < clip_[1] || x >= clip_[2] || y >= clip_[3]) return;
-    const int x0 = int(float(x) * sx_), x1 = std::max(x0 + 1, int(float(x + 1) * sx_));
-    const int y0 = int(float(y) * sy_), y1 = std::max(y0 + 1, int(float(y + 1) * sy_));
-    for (int py = y0; py < y1 && py < fb_.height(); ++py)
-        for (int px = x0; px < x1 && px < fb_.width(); ++px) fb_.at(px, py) = c;
+    const int x0 = xs_[size_t(x)], x1 = std::min(fb_.width(), std::max(x0 + 1, xs_[size_t(x) + 1]));
+    const int y0 = ys_[size_t(y)], y1 = std::min(fb_.height(), std::max(y0 + 1, ys_[size_t(y) + 1]));
+    if (x0 >= x1) return;
+    for (int py = y0; py < y1; ++py) std::memset(&fb_.at(x0, py), c, size_t(x1 - x0));
 }
 
 void HudSurface::line(int x0, int y0, int x1, int y1, uint8_t c) {
@@ -181,8 +185,16 @@ void HudSurface::darken(int x, int y, int w, int h, const std::array<uint8_t, 25
     // In framebuffer pixels, so the 3D view underneath keeps its resolution.
     const int x0 = int(float(x) * sx_), x1 = int(float(x + w) * sx_);
     const int y0 = int(float(y) * sy_), y1 = int(float(y + h) * sy_);
-    for (int py = std::max(0, y0); py < y1 && py < fb_.height(); ++py)
-        for (int px = std::max(0, x0); px < x1 && px < fb_.width(); ++px) fb_.at(px, py) = table[fb_.at(px, py)];
+    const int xa = std::max(0, x0), xb = std::min(x1, fb_.width());
+    const int ya = std::max(0, y0), yb = std::min(y1, fb_.height());
+    if (xa >= xb) return;
+    // (the table in a local: the bytes written could be anything as far as the compiler knows)
+    const std::array<uint8_t, 256> t = table;
+    for (int py = ya; py < yb; ++py) {
+        uint8_t* const row = &fb_.at(xa, py);
+        const int n = xb - xa;
+        for (int i = 0; i < n; ++i) row[i] = t[row[i]];
+    }
 }
 
 bool Hud::load(const std::string& game_dat) {

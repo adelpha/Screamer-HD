@@ -35,7 +35,10 @@ no manual steps.
 | `--track NAME` | Track for `--scene track` (default `MAP2`, loaded from `GFX/<NAME>L.DAT`). |
 | `--camera X,Y,Z,YAW,PITCH[,ROLL]` | Camera for `--scene track` in game units (angles 0..2047). Default: the first placement. `48459,196,7124,472,2005,0` is the intro race at the start gate. |
 | `--render-size WxH` | Framebuffer size for the 3D scene (default 320x200), e.g. `1280x800`. |
-| `--threads N` | Threads that fill the 3D view (default: one per CPU thread). The picture is the same for any number. |
+| `--threads N` | Threads that draw the 3D view (default: one per CPU thread). The picture is the same for any number. |
+| `--fill sse2\|avx2` | Which build of the pixel filler runs (`src/core/render3d_fill.inl`, built for both; default: AVX2 when the CPU has it). Both give the same picture. |
+| `--hidden` | Like `--headless` (fixed steps, no sound device), but with the real video driver and renderer (Direct3D on the graphics card) on a window that is never shown. For checking and timing what a real run does: `--screenshot` reads the picture back from the graphics card, `--perf` shows the real upload and present times. |
+| `--upload index\|rgba` | How the picture gets to SDL: as an 8-bit texture with the palette (default; the graphics card looks the colours up) or converted to RGBA first (the old way; still used with SDL's software renderer, which scales RGBA faster). Same picture. |
 | `--perf` | Profile the main loop (core/profiler.h): pictures and game steps per second, and the time per picture in each part (events, game step, blending, 3D geometry, 3D fill, HUD, texture upload, present), every 5 seconds and at exit. |
 | `--view-distance X` | How far the 3D view reaches, in multiples of the original's far clip on HI detail (43,808 units); the last quarter fades out in a 4x4 ordered dither. Default 2; 0 draws everything. In a race F9 / Shift+F9 step through 1, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8. |
 | `--tween-test` | Headless: one tick per loop, so every other picture is drawn between game steps (checks the blending; with `--perf`, measures the cost per picture). `--capture-from N` starts `--capture-every` at frame N. |
@@ -74,6 +77,29 @@ no manual steps.
 * **smoke**: the executable starts and exits cleanly.
 * **gamedata**: checks the local original files against `reference/manifest/screamer_files.sha256`
   (skipped when the files are absent).
+
+## Renderer changes: same picture, how fast
+
+The 3D pictures come from the game's data, so there are no golden images of them in the
+repository. A change that must not alter the picture is checked against the build before it:
+
+```
+.\tools\render-compare.ps1 -Exe <old screamer.exe> -Out artifacts\perf\base    # before (keep a copy of the old bin folder)
+.\tools\render-compare.ps1 -Out artifacts\perf\new -Against artifacts\perf\base  # after: "all scenes identical"
+```
+It runs 23 headless scenes (a race on every track at 1600x1000, odd sizes, the original size,
+the view-distance, detail, flat and cheat options, every view, pictures between steps, time
+attack, cones, the intro demo, the menu, a still with cars, a whole replay), saves about 480
+frames and the game's state at the end, and compares them file by file. `-ExtraArgs` adds
+options to every run (`'--fill','sse2'`, `'--threads','1'`), `-Filter` picks scenes.
+`tests/unit/test_render_fill.cpp` does the same in small without game data: a made-up scene
+through every build of the filler, with the hashes of the pictures the renderer gave before
+its fill loop was rewritten.
+
+`.\tools\render-bench.ps1 [-Exe a.exe, b.exe] [-Runs 5] [-Size 1600x1000] [-ExtraArgs ...]` times a
+headless race with `--perf` and prints the best and median per part of the loop; several
+builds are run turn by turn. (Headless, "texture upload" and "present" are SDL's software
+renderer; use `--hidden --perf` for the graphics card's.)
 
 ## imgcmp
 

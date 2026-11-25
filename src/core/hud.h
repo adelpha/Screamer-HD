@@ -68,6 +68,8 @@ public:
 private:
     Framebuffer& fb_;
     float sx_, sy_;
+    std::array<int, 321> xs_{};  // int(x * sx_): the framebuffer column where pixel x starts
+    std::array<int, 201> ys_{};
     int clip_[4]{0, 0, 320, 200};
 };
 

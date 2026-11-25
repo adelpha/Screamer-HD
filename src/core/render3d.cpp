@@ -3,8 +3,11 @@
 #include "core/worker_pool.h"
 
 #include <algorithm>
-#include <emmintrin.h>
 #include <cmath>
+#include <cstring>
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
 
 namespace scr {
 namespace {
@@ -14,7 +17,7 @@ constexpr float kEdgeSlack = 0.35f;  // pixels at 320x200, scaled with the heigh
 constexpr float kAngle = 6.28318530718f / 2048.0f;
 constexpr float kNear = 16.0f;
 
-enum class Mode { Textured, Transparent, Flat, Darken, Translucent };
+using Mode = detail::FillMode;
 
 Mode material_mode(const Material* m) {
     if (!m) return Mode::Flat;
@@ -64,22 +67,76 @@ void Renderer::set_threads(int threads) {
     pool_ = std::make_unique<WorkerPool>(threads);
 }
 
-void Renderer::begin(const Track& track, const Camera& cam, Framebuffer& fb, uint8_t sky) {
+namespace {
+bool cpu_has_avx2() {
+#ifdef _MSC_VER
+    int r[4];
+    __cpuid(r, 0);
+    if (r[0] < 7) return false;
+    __cpuid(r, 1);
+    // OSXSAVE and AVX, and the system keeps the YMM registers
+    if ((r[2] & 0x18000000) != 0x18000000 || (_xgetbv(0) & 6) != 6) return false;
+    __cpuidex(r, 7, 0);
+    return (r[1] & (1 << 5)) != 0;
+#else
+    return __builtin_cpu_supports("avx2");
+#endif
+}
+} // namespace
+
+bool Renderer::set_fill_path(FillPath path) {
+    static const bool avx2 = cpu_has_avx2();
+    if (path == FillPath::Avx2 && !avx2) return false;
+    fill_rows_ = path == FillPath::Sse2 || !avx2 ? detail::fill_rows_sse2 : detail::fill_rows_avx2;
+    return true;
+}
+
+const char* Renderer::fill_path_name() const {
+    return fill_rows_ == detail::fill_rows_sse2 ? "sse2" : fill_rows_ == detail::fill_rows_avx2 ? "avx2" : "auto";
+}
+
+namespace detail {
+uint8_t library_texel(const MaterialLibrary* lib, const Material* mat, int u, int v, int frame) {
+    return lib->texel(*mat, u, v, frame);
+}
+
+void tri_edge_slack(const Tri& t, float slack, float area, float out[3]) {
+    const float s = -slack / std::fabs(area);
+    out[0] = s * std::hypot(t.c.x - t.b.x, t.c.y - t.b.y);
+    out[1] = s * std::hypot(t.a.x - t.c.x, t.a.y - t.c.y);
+    out[2] = s * std::hypot(t.b.x - t.a.x, t.b.y - t.a.y);
+}
+} // namespace detail
+void Renderer::clear_rows(int y0, int y1) {
+    Framebuffer& fb = *fb_;
+    const int w = fb.width();
+    std::fill(depth_.begin() + ptrdiff_t(y0) * w, depth_.begin() + ptrdiff_t(y1) * w, 0.0f);
+    if (!bg_columns_.empty()) draw_background_rows(*track_->background, *cam_, fb, y0, y1, bg_columns_.data());
+    else std::fill(&fb.at(0, y0), &fb.at(0, y0) + size_t(y1 - y0) * size_t(w), sky_);
+}
+
+void Renderer::begin(const Track& track, const Camera& cam, Framebuffer& fb, uint8_t sky, bool clear_at_finish) {
     if (skip_) return;
     track_ = &track;
     cam_ = &cam;
     fb_ = &fb;
+    sky_ = sky;
+    clear_at_finish_ = clear_at_finish;
     geo_.clear();
+    model_jobs_.clear();
+    placements_pending_ = false;
+    geometry_done_ = false;
+    job_count_ = 0;
     if (!pool_) pool_ = std::make_unique<WorkerPool>();
     depth_.resize(size_t(fb.width()) * size_t(fb.height()));
     const int w = fb.width(), h = fb.height();
-    const int bands = std::max(1, std::min(h, pool_->threads() * 2));
-    pool_->run(bands, [&](int b) {
-        const int y0 = h * b / bands, y1 = h * (b + 1) / bands;
-        for (int y = y0; y < y1; ++y) std::fill(&fb.at(0, y), &fb.at(0, y) + w, sky);
-        std::fill(depth_.begin() + ptrdiff_t(y0) * w, depth_.begin() + ptrdiff_t(y1) * w, 0.0f);
-        if (track.background) draw_background_rows(*track.background, cam, fb, y0, y1);
-    });
+    // (the background covers every pixel when there is one; the sky colour otherwise)
+    bg_columns_.clear();
+    if (track.background) background_columns(*track.background, cam, fb, bg_columns_);
+    if (!clear_at_finish) {
+        const int bands = std::max(1, std::min(h, pool_->threads() * 2));
+        pool_->run(bands, [&](int b) { clear_rows(h * b / bands, h * (b + 1) / bands); });
+    }
 
     // World -> camera with the rotation built by matrix_from_angles (camera_build_matrices):
     // a0 = pitch, a1 = yaw, a2 = roll. Matched against the original's screen for the same
@@ -132,38 +189,81 @@ bool Renderer::sphere_visible(float x, float y, float z, float r) const {
 }
 
 RenderStats Renderer::draw_track(const Track& track, const Camera& cam, Framebuffer& fb, uint8_t sky) {
-    begin(track, cam, fb, sky);
+    begin(track, cam, fb, sky, true);
     draw_placements();
     return finish();
 }
 
 void Renderer::draw_placements() {
     if (skip_) return;
-    // The placements in chunks on all threads, each into its own lists; the lists are then
-    // joined in placement order, so the result is the same as drawing them one by one.
+    placements_pending_ = true;
+    placements_at_ = model_jobs_.size();
+}
+
+void Renderer::draw_model(const Model& model, const Pose& pose, const std::vector<bool>* part_mask) {
+    if (skip_) return;
+    model_jobs_.push_back({&model, pose, part_mask});
+}
+
+void Renderer::draw_placement_range(Geo& g, size_t i0, size_t i1) {
     const auto& all = track_->placements;
-    const int chunks = std::max(1, std::min(int(all.size() / 32), pool_->threads() * 4));
-    if (chunk_geo_.size() < size_t(chunks)) chunk_geo_.resize(size_t(chunks));
-    pool_->run(chunks, [&](int k) {
-        Geo& g = chunk_geo_[size_t(k)];
+    for (size_t i = i0; i < i1; ++i) {
+        const Placement& p = all[i];
+        const float dx = float(p.x) - cam_->x, dz = float(p.z) - cam_->z;
+        if (std::fabs(dx) > cam_->far_distance || std::fabs(dz) > cam_->far_distance) continue;
+        const Model& m = track_->objects[size_t(p.object)];
+        Pose pose{float(p.x), float(p.y), float(p.z), float(p.ax), float(p.ay), float(p.az), p.animation, p.reflection};
+        // The original draws whole objects far to near (cell by cell) without a depth
+        // buffer, and the track relies on the order: flat ground quads beside the road are
+        // drawn before the road and its verges, which cover them where the quad pokes
+        // through. (Only ground below the eye: flat ceilings overhead keep their depth.)
+        if (p.slot != 0 && m.flat && float(p.y + m.flat_y) < cam_->y) pose.depth_bias = -kFlatGroundBias;
+        pose.seal_edges = p.slot == 0;
+        draw_model_into(g, m, pose, nullptr);
+    }
+}
+
+void Renderer::flush_geometry() {
+    if (skip_ || geometry_done_) return;
+    geometry_done_ = true;
+    // Everything drawn since begin(), on all threads: the track's placements a few at a time
+    // and each model, every job into lists of its own. The lists are then used in the order
+    // of the draw calls, so the result is the same as drawing one thing after another.
+    constexpr size_t kPlacementsPerJob = 8;
+    const size_t placements = placements_pending_ ? track_->placements.size() : 0;
+    const size_t chunks = (placements + kPlacementsPerJob - 1) / kPlacementsPerJob;
+    const size_t models = model_jobs_.size();
+    job_count_ = chunks + models;
+    if (job_geo_.size() < job_count_) job_geo_.resize(job_count_);
+    // job order: the models drawn before draw_placements(), the placements, the other models
+    const size_t before = placements_pending_ ? placements_at_ : models;
+    pool_->run(int(job_count_), [&](int job) {
+        Geo& g = job_geo_[size_t(job)];
         g.clear();
-        const size_t i0 = all.size() * size_t(k) / size_t(chunks), i1 = all.size() * size_t(k + 1) / size_t(chunks);
-        for (size_t i = i0; i < i1; ++i) {
-            const Placement& p = all[i];
-            const float dx = float(p.x) - cam_->x, dz = float(p.z) - cam_->z;
-            if (std::fabs(dx) > cam_->far_distance || std::fabs(dz) > cam_->far_distance) continue;
-            const Model& m = track_->objects[size_t(p.object)];
-            Pose pose{float(p.x), float(p.y), float(p.z), float(p.ax), float(p.ay), float(p.az), p.animation, p.reflection};
-            // The original draws whole objects far to near (cell by cell) without a depth
-            // buffer, and the track relies on the order: flat ground quads beside the road are
-            // drawn before the road and its verges, which cover them where the quad pokes
-            // through. (Only ground below the eye: flat ceilings overhead keep their depth.)
-            if (p.slot != 0 && m.flat && float(p.y + m.flat_y) < cam_->y) pose.depth_bias = -kFlatGroundBias;
-            pose.seal_edges = p.slot == 0;
-            draw_model_into(g, m, pose, nullptr);
+        const size_t k = size_t(job);
+        if (k >= before && k < before + chunks) {
+            const size_t c = k - before;
+            draw_placement_range(g, c * kPlacementsPerJob, std::min(placements, (c + 1) * kPlacementsPerJob));
+        } else {
+            const ModelJob& m = model_jobs_[k < before ? k : k - chunks];
+            draw_model_into(g, *m.model, m.pose, m.part_mask);
         }
     });
-    for (int k = 0; k < chunks; ++k) geo_.append(chunk_geo_[size_t(k)]);
+    // the translucent polygons and the counts of all jobs together
+    Geo& all = geo_;
+    for (size_t k = 0; k < job_count_; ++k) {
+        const Geo& o = job_geo_[k];
+        const uint32_t vert0 = uint32_t(all.deferred_verts.size());
+        for (Deferred d : o.deferred) {
+            d.first += vert0;
+            all.deferred.push_back(d);
+        }
+        all.deferred_verts.insert(all.deferred_verts.end(), o.deferred_verts.begin(), o.deferred_verts.end());
+        all.stats.objects += o.stats.objects;
+        all.stats.faces += o.stats.faces;
+    }
+    model_jobs_.clear();
+    placements_pending_ = false;
 }
 
 void Renderer::Geo::clear() {
@@ -171,29 +271,9 @@ void Renderer::Geo::clear() {
     deferred_verts.clear();
     fills.clear();
     tris.clear();
+    tri_rows.clear();
     stats = {};
     edge_slack = 0;
-}
-
-void Renderer::Geo::append(const Geo& o) {
-    const uint32_t fill0 = uint32_t(fills.size()), vert0 = uint32_t(deferred_verts.size());
-    fills.insert(fills.end(), o.fills.begin(), o.fills.end());
-    for (Tri t : o.tris) {
-        t.fill += fill0;
-        tris.push_back(t);
-    }
-    for (Deferred d : o.deferred) {
-        d.first += vert0;
-        deferred.push_back(d);
-    }
-    deferred_verts.insert(deferred_verts.end(), o.deferred_verts.begin(), o.deferred_verts.end());
-    stats.objects += o.stats.objects;
-    stats.faces += o.stats.faces;
-}
-
-void Renderer::draw_model(const Model& model, const Pose& pose, const std::vector<bool>* part_mask) {
-    if (skip_) return;
-    draw_model_into(geo_, model, pose, part_mask);
 }
 
 void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, const std::vector<bool>* part_mask) {
@@ -369,6 +449,7 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
 RenderStats Renderer::finish() {
     Geo& g = geo_;
     if (skip_) return g.stats;
+    flush_geometry();
     g.edge_slack = 0;
     // Translucent polygons do not write depth; draw them far to near over the opaque scene.
     std::stable_sort(g.deferred.begin(), g.deferred.end(),
@@ -382,21 +463,42 @@ RenderStats Renderer::finish() {
     if (!pool_) pool_ = std::make_unique<WorkerPool>();
     const int h = fb_->height();
     const int bands = std::max(1, std::min(h / 4, pool_->threads() * 6));
-    // each band gets the list of triangles that reach it, in drawing order
-    band_tris_.resize(size_t(bands));
-    for (auto& l : band_tris_) l.clear();
-    row_band_.resize(size_t(h));
-    for (int b = 0; b < bands; ++b)
-        for (int y = h * b / bands; y < h * (b + 1) / bands; ++y) row_band_[size_t(y)] = b;
-    for (size_t i = 0; i < g.tris.size(); ++i) {
-        const Tri& t = g.tris[i];
-        const int y0 = std::clamp(t.y0, 0, h - 1), y1 = std::clamp(t.y1, 0, h - 1);
-        if (t.y1 < 0 || t.y0 >= h) continue;
-        for (int b = row_band_[size_t(y0)]; b <= row_band_[size_t(y1)]; ++b) band_tris_[size_t(b)].push_back(uint32_t(i));
-    }
-    pool_->run(bands, [&](int b) { fill_rows(h * b / bands, h * (b + 1) / bands, band_tris_[size_t(b)]); });
+    if (!fill_rows_) set_fill_path(FillPath::Auto);
+    detail::FillContext ctx{};
+    ctx.pixels = fb_->pixels();
+    ctx.depth = depth_.data();
+    ctx.width = fb_->width();
+    ctx.height = h;
+    ctx.lib = track_->materials ? &*track_->materials : nullptr;
+    ctx.shade = track_->shade_table.data();
+    ctx.darken = track_->darken.data();
+    ctx.fade = fade_;
+    ctx.fade_iz = fade_iz_;
+    ctx.fade_start = fade_start_;
+    ctx.fade_range = fade_range_;
+    pool_->run(bands, [&](int b) {
+        const int y0 = h * b / bands, y1 = h * (b + 1) / bands;
+        // (cleared here, the band's rows are still in the cache when its polygons are filled)
+        if (clear_at_finish_) clear_rows(y0, y1);
+        // the triangles that reach the band, in drawing order: every job's, then the
+        // translucent polygons
+        static thread_local std::vector<detail::TriRef> list;
+        list.clear();
+        auto collect = [&](const Geo& o) {
+            const Tri* const tris = o.tris.data();
+            const Fill* const fills = o.fills.data();
+            const std::array<int, 2>* const rows = o.tri_rows.data();
+            for (size_t i = 0, n = o.tri_rows.size(); i < n; ++i)
+                if (rows[i][1] >= y0 && rows[i][0] < y1) list.push_back({tris + i, fills + tris[i].fill});
+        };
+        for (size_t k = 0; k < job_count_; ++k) collect(job_geo_[k]);
+        collect(g);
+        fill_rows_(ctx, y0, y1, list.data(), list.size());
+    });
     g.tris.clear();
+    g.tri_rows.clear();
     g.fills.clear();
+    job_count_ = 0;
     return g.stats;
 }
 
@@ -404,27 +506,47 @@ void Renderer::draw_background(const PcxImage& bck, const Camera& cam, Framebuff
     draw_background_rows(bck, cam, fb, 0, fb.height());
 }
 
-void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Framebuffer& fb, int y0, int y1) {
+void Renderer::background_columns(const PcxImage& bck, const Camera& cam, const Framebuffer& fb, std::vector<int>& column) {
+    column.clear();
     if (bck.width <= 0 || bck.height <= 0) return;
+    const float scale = float(fb.height()) / 200.0f;
+    const int yaw = int(std::lround(cam.yaw)) & 0x7ff;
+    const int x_offset = ((0x7ff - yaw) >> 1) & 0x1ff;
+    column.resize(size_t(fb.width()));
+    for (int x = 0; x < fb.width(); ++x)
+        column[size_t(x)] = (x_offset + int(float(x) / scale * 320.0f / (float(fb.width()) / scale))) % bck.width;
+}
+
+void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Framebuffer& fb, int y0, int y1) {
+    std::vector<int> column;
+    background_columns(bck, cam, fb, column);
+    if (!column.empty()) draw_background_rows(bck, cam, fb, y0, y1, column.data());
+}
+
+void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Framebuffer& fb, int y0, int y1, const int* column) {
     const float scale = float(fb.height()) / 200.0f;
     // Horizon: projection centre + focal * sin(pitch) (matched against frozen frames of the original).
     const float horizon = (cam.center_y + cam.focal * std::sin(cam.pitch * kAngle)) * scale;
     const float top = horizon - 234.0f * scale;
-    const int yaw = int(std::lround(cam.yaw)) & 0x7ff;
-    const int x_offset = ((0x7ff - yaw) >> 1) & 0x1ff;
     const uint8_t fill = bck.pixels[size_t(bck.height - 1) * bck.width];
-    std::vector<int> column(size_t(fb.width()));
-    for (int x = 0; x < fb.width(); ++x)
-        column[size_t(x)] = (x_offset + int(float(x) / scale * 320.0f / (float(fb.width()) / scale))) % bck.width;
+    const int w = fb.width();
+    int drawn_sy = -1;                 // the panorama row of the last row drawn from it,
+    const uint8_t* drawn = nullptr;    // and that row: the next rows are often the same
     for (int y = y0; y < y1; ++y) {
         const int sy = int(std::floor((float(y) - top) / scale));
         uint8_t* dst = &fb.at(0, y);
         if (sy < 0 || sy >= bck.height) {
-            std::fill(dst, dst + fb.width(), fill);
+            std::fill(dst, dst + w, fill);
+            continue;
+        }
+        if (sy == drawn_sy) {
+            std::memcpy(dst, drawn, size_t(w));
             continue;
         }
         const uint8_t* src = bck.pixels.data() + size_t(sy) * size_t(bck.width);
-        for (int x = 0; x < fb.width(); ++x) dst[x] = src[column[size_t(x)]];
+        for (int x = 0; x < w; ++x) dst[x] = src[column[x]];
+        drawn_sy = sy;
+        drawn = dst;
     }
 }
 
@@ -483,7 +605,15 @@ void Renderer::draw_polygon(Geo& g, const ClipVert* in, size_t count, const Mate
         const uint32_t base = mat->frame_pixels.empty() ? mat->pixels
                                                         : mat->frame_pixels[size_t(fill.frame) % mat->frame_pixels.size()];
         const size_t end = size_t(base) + size_t(mat->height - 1) * 256 + size_t(mat->width);
-        if (end <= lib->data().size()) fill.texels = lib->data().data() + base;
+        // (the fillers wrap u and v with 16-bit arithmetic; anything larger goes texel by texel)
+        if (end <= lib->data().size() && mat->width <= 32767 && mat->height <= 32767) fill.texels = lib->data().data() + base;
+        fill.wide_reads = end + 3 <= lib->data().size();
+        fill.width = mat->width;
+        fill.height = mat->height;
+        fill.ubias = (16384 + mat->width - 1) / mat->width * mat->width;
+        fill.vbias = (16384 + mat->height - 1) / mat->height * mat->height;
+        fill.umagic = 65536 / mat->width;
+        fill.vmagic = 65536 / mat->height;
         if ((mat->width & (mat->width - 1)) == 0) fill.wmask = mat->width - 1;
         if ((mat->height & (mat->height - 1)) == 0) fill.hmask = mat->height - 1;
     }
@@ -503,234 +633,10 @@ void Renderer::draw_polygon(Geo& g, const ClipVert* in, size_t count, const Mate
         const int y1 = std::min(fb.height() - 1, int(std::ceil(std::max({a.y, b.y, c.y}))));
         if (x0 > x1 || y0 > y1) continue;
         g.tris.push_back({a, b, c, y0, y1, x0, x1, fill_index});
+        g.tri_rows.push_back({y0, y1});
         used = true;
     }
     if (used) g.fills.push_back(fill);
-}
-
-// One row of a triangle: the barycentric weights and the interpolated 1/z, u/z, v/z at x0
-// and their steps per pixel.
-struct Renderer::Span {
-    float w0, w1, w2, iz, uz, vz;
-    float k0, k1, k2, diz, duz, dvz;
-    float e0, e1, e2;
-    uint8_t* row;
-    float* drow;
-    int x0, x1, y;
-};
-
-namespace {
-// 4x4 ordered-dither thresholds (Bayer), (n + 0.5) / 16, each row twice so four lanes can be
-// read from any column.
-alignas(16) const float kBayer[4][8] = {
-    {0.03125f, 0.53125f, 0.15625f, 0.65625f, 0.03125f, 0.53125f, 0.15625f, 0.65625f},
-    {0.78125f, 0.28125f, 0.90625f, 0.40625f, 0.78125f, 0.28125f, 0.90625f, 0.40625f},
-    {0.21875f, 0.71875f, 0.09375f, 0.59375f, 0.21875f, 0.71875f, 0.09375f, 0.59375f},
-    {0.96875f, 0.46875f, 0.84375f, 0.34375f, 0.96875f, 0.46875f, 0.84375f, 0.34375f},
-};
-} // namespace
-
-
-template <Renderer::Kind K>
-void Renderer::span(Span& s, const Fill& fl, const MaterialLibrary* lib, bool bias) const {
-    // Four pixels at a time (SSE2): the edge tests, the depth test, the perspective divide and
-    // the texel coordinates in vector registers, then each passing pixel on its own (texel
-    // fetch, transparency, write).
-    // Everything the pixels need, in locals: the frame's bytes alias everything else, so
-    // the compiler would otherwise reload these after every pixel written.
-    const Mode mode = Mode(fl.mode);
-    uint8_t* const row = s.row;
-    float* const drow = s.drow;
-    const uint8_t* const texels = fl.texels;
-    const int wmask = fl.wmask, hmask = fl.hmask;
-    const uint8_t flat = fl.flat;
-    const bool writes_depth = fl.writes_depth;
-    const uint8_t* const shade = track_->shade_table.data();
-    const uint8_t* const darken = track_->darken.data();
-    const Material* const mat = fl.mat;
-    const int frame = fl.frame;
-    auto pixel = [=](int x, float tz, int iu, int iv) {
-        uint8_t& dst = row[x];
-        if constexpr (K == Kind::Darken) {
-            (void)tz; (void)iu; (void)iv; (void)mode; (void)texels; (void)wmask; (void)hmask; (void)flat;
-            (void)writes_depth; (void)shade; (void)mat; (void)frame; (void)lib; (void)drow;
-            dst = darken[dst];
-        } else {
-            (void)darken;
-            uint8_t col = flat;
-            if constexpr (K == Kind::Library) {
-                col = lib->texel(*mat, iu, iv, frame);
-            } else if constexpr (K == Kind::Texels) {
-                if (wmask >= 0) iu &= wmask;
-                else if ((iu %= mat->width) < 0) iu += mat->width;
-                if (hmask >= 0) iv &= hmask;
-                else if ((iv %= mat->height) < 0) iv += mat->height;
-                col = texels[size_t(iv) * 256 + size_t(iu)];
-            } else if constexpr (K != Kind::Flat) {
-                col = texels[size_t(iv & hmask) * 256 + size_t(iu & wmask)];
-            } else {
-                (void)iu; (void)iv;
-            }
-            if constexpr (K == Kind::Library || K == Kind::Texels) {
-                if (mode == Mode::Transparent && col == 0) return;
-                if (mode == Mode::Translucent) {
-                    dst = shade[size_t(col & 63) * 256 + dst];
-                    return;
-                }
-            } else if constexpr (K == Kind::TransparentPow2) {
-                if (col == 0) return;
-            }
-            if constexpr (K == Kind::TranslucentPow2) {
-                (void)tz; (void)writes_depth; (void)drow;
-                dst = shade[size_t(col & 63) * 256 + dst];
-            } else {
-                if (writes_depth) drow[x] = tz;
-                dst = col;
-            }
-        }
-    };
-    const __m128 lane = _mm_setr_ps(0.0f, 1.0f, 2.0f, 3.0f);
-    const __m128 k0 = _mm_set1_ps(s.k0), k1 = _mm_set1_ps(s.k1), k2 = _mm_set1_ps(s.k2);
-    const __m128 diz = _mm_set1_ps(s.diz), duz = _mm_set1_ps(s.duz), dvz = _mm_set1_ps(s.dvz);
-    const __m128 e0 = _mm_set1_ps(s.e0), e1 = _mm_set1_ps(s.e1), e2 = _mm_set1_ps(s.e2);
-    const __m128 tie = _mm_set1_ps(1.0005f), one = _mm_set1_ps(1.0f), small = _mm_set1_ps(1e-3f);
-    const __m128 vbias = _mm_set1_ps(fl.depth_bias);
-    for (int x = s.x0; x <= s.x1; x += 4) {
-        // lane j is pixel x + j: start + step * (x - x0 + j)
-        const __m128 n = _mm_add_ps(_mm_set1_ps(float(x - s.x0)), lane);
-        const __m128 w0 = _mm_add_ps(_mm_set1_ps(s.w0), _mm_mul_ps(k0, n));
-        const __m128 w1 = _mm_add_ps(_mm_set1_ps(s.w1), _mm_mul_ps(k1, n));
-        const __m128 w2 = _mm_add_ps(_mm_set1_ps(s.w2), _mm_mul_ps(k2, n));
-        int in = _mm_movemask_ps(_mm_and_ps(_mm_and_ps(_mm_cmpge_ps(w0, e0), _mm_cmpge_ps(w1, e1)), _mm_cmpge_ps(w2, e2)));
-        const int left = s.x1 - x + 1;
-        if (left < 4) in &= (1 << left) - 1;
-        if (!in) continue;
-        const __m128 iz = _mm_add_ps(_mm_set1_ps(s.iz), _mm_mul_ps(diz, n));
-        if (fade_) {
-            // the view distance: past fade_depth, fewer pixels the further, none past far_depth
-            const __m128 beyond = _mm_cmplt_ps(iz, _mm_set1_ps(fade_iz_));
-            if (in & _mm_movemask_ps(beyond)) {
-                const __m128 depth = _mm_sub_ps(_mm_div_ps(one, iz), _mm_set1_ps(128.0f));
-                const __m128 frac = _mm_div_ps(_mm_sub_ps(depth, _mm_set1_ps(fade_start_)), _mm_set1_ps(fade_range_));
-                const __m128 thr = _mm_loadu_ps(&kBayer[s.y & 3][x & 3]);
-                in &= _mm_movemask_ps(_mm_or_ps(_mm_cmplt_ps(frac, thr), _mm_andnot_ps(beyond, _mm_castsi128_ps(_mm_set1_epi32(-1)))));
-                if (!in) continue;
-            }
-        }
-        // Coplanar surfaces (road decals on the road, shadows) are resolved like the
-        // original's painter's order: the later polygon wins near-ties.
-        const __m128 tz = bias ? _mm_div_ps(iz, _mm_max_ps(small, _mm_sub_ps(one, _mm_mul_ps(vbias, iz)))) : iz;
-        __m128 dz;
-        if (left >= 4) {
-            dz = _mm_loadu_ps(s.drow + x);
-        } else {
-            alignas(16) float d[4] = {0, 0, 0, 0};
-            for (int j = 0; j < left; ++j) d[j] = s.drow[x + j];
-            dz = _mm_load_ps(d);
-        }
-        const int pass = in & _mm_movemask_ps(_mm_cmpnlt_ps(_mm_mul_ps(tz, tie), dz));
-        if (!pass) continue;
-        alignas(16) float tzs[4];
-        alignas(16) int32_t ius[4] = {0, 0, 0, 0}, ivs[4] = {0, 0, 0, 0};
-        _mm_store_ps(tzs, tz);
-        if constexpr (K != Kind::Flat && K != Kind::Darken) {
-            const __m128 rz = _mm_div_ps(one, iz);
-            const __m128 fu = _mm_mul_ps(_mm_add_ps(_mm_set1_ps(s.uz), _mm_mul_ps(duz, n)), rz);
-            const __m128 fv = _mm_mul_ps(_mm_add_ps(_mm_set1_ps(s.vz), _mm_mul_ps(dvz, n)), rz);
-            // floor: truncate, then one down where that went up (below zero)
-            __m128i iu = _mm_cvttps_epi32(fu), iv = _mm_cvttps_epi32(fv);
-            iu = _mm_add_epi32(iu, _mm_castps_si128(_mm_cmplt_ps(fu, _mm_cvtepi32_ps(iu))));
-            iv = _mm_add_epi32(iv, _mm_castps_si128(_mm_cmplt_ps(fv, _mm_cvtepi32_ps(iv))));
-            _mm_store_si128(reinterpret_cast<__m128i*>(ius), iu);
-            _mm_store_si128(reinterpret_cast<__m128i*>(ivs), iv);
-        }
-        for (int j = 0; j < 4; ++j)
-            if (pass & (1 << j)) pixel(x + j, tzs[j], ius[j], ivs[j]);
-    }
-}
-
-void Renderer::fill_rows(int band0, int band1, const std::vector<uint32_t>& tris) {
-    Framebuffer& fb = *fb_;
-    const MaterialLibrary* lib = track_->materials ? &*track_->materials : nullptr;
-    const size_t width = size_t(fb.width());
-    for (const uint32_t ti : tris) {
-        const Tri& t = geo_.tris[ti];
-        if (t.y1 < band0 || t.y0 >= band1) continue;
-        const Fill& fl = geo_.fills[t.fill];
-        const Mode mode = Mode(fl.mode);
-        const Scr& a = t.a;
-        const Scr& b = t.b;
-        const Scr& c = t.c;
-        const float area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-        const float inv = 1.0f / area;
-        // Along a row w0, w1 and w2 are linear in x (w = k x + m): where all three can be
-        // positive bounds the span; the exact test below still decides each pixel.
-        const float k0 = (b.y - c.y) * inv, k1 = (c.y - a.y) * inv, k2 = -k0 - k1;
-        // Road polygons reach a little past their edges (Pose::seal_edges).
-        float e0 = 0, e1 = 0, e2 = 0;
-        if (fl.edge_slack > 0) {
-            const float s = -fl.edge_slack / std::fabs(area);
-            e0 = s * std::hypot(c.x - b.x, c.y - b.y);
-            e1 = s * std::hypot(a.x - c.x, a.y - c.y);
-            e2 = s * std::hypot(b.x - a.x, b.y - a.y);
-        }
-        const int ya = std::max(t.y0, band0), yb = std::min(t.y1, band1 - 1);
-        for (int y = ya; y <= yb; ++y) {
-            const float py = float(y) + 0.5f;
-            int x0 = t.x0, x1 = t.x1;
-            {
-                const float m0 = (b.x * (c.y - py) - (b.y - py) * c.x) * inv;
-                const float m1 = (c.x * (a.y - py) - (c.y - py) * a.x) * inv;
-                const float m2 = 1.0f - m0 - m1;
-                float lo = -1e30f, hi = 1e30f;
-                bool empty = false;
-                auto bound = [&](float k, float m) {
-                    if (k > 1e-9f) lo = std::max(lo, -m / k);
-                    else if (k < -1e-9f) hi = std::min(hi, -m / k);
-                    else if (m < -1e-3f) empty = true;
-                };
-                bound(k0, m0 - e0);
-                bound(k1, m1 - e1);
-                bound(k2, m2 - e2);
-                if (empty) continue;
-                // px = x + 0.5, with a pixel to spare either side
-                if (lo > -1e29f) x0 = std::max(x0, int(std::floor(std::min(lo, 1e8f))) - 2);
-                if (hi < 1e29f) x1 = std::min(x1, int(std::ceil(std::max(hi, -1e8f))) + 1);
-            }
-            uint8_t* row = &fb.at(0, y);
-            float* drow = depth_.data() + size_t(y) * width;
-            // The barycentric weights and the interpolated 1/z, u/z, v/z are linear along the
-            // row: start them at x0 and step them one pixel at a time.
-            const float px0 = float(x0) + 0.5f;
-            Span sp;
-            sp.w0 = ((b.x - px0) * (c.y - py) - (b.y - py) * (c.x - px0)) * inv;
-            sp.w1 = ((c.x - px0) * (a.y - py) - (c.y - py) * (a.x - px0)) * inv;
-            sp.w2 = 1.0f - sp.w0 - sp.w1;
-            sp.iz = sp.w0 * a.iz + sp.w1 * b.iz + sp.w2 * c.iz;
-            sp.uz = sp.w0 * a.uz + sp.w1 * b.uz + sp.w2 * c.uz;
-            sp.vz = sp.w0 * a.vz + sp.w1 * b.vz + sp.w2 * c.vz;
-            sp.k0 = k0; sp.k1 = k1; sp.k2 = k2;
-            sp.diz = k0 * a.iz + k1 * b.iz + k2 * c.iz;
-            sp.duz = k0 * a.uz + k1 * b.uz + k2 * c.uz;
-            sp.dvz = k0 * a.vz + k1 * b.vz + k2 * c.vz;
-            sp.e0 = e0; sp.e1 = e1; sp.e2 = e2;
-            sp.row = row; sp.drow = drow;
-            sp.x0 = x0; sp.x1 = x1; sp.y = y;
-            // the inner loop specialised for the fill's mode (no per-pixel decisions)
-            const bool textured = mode != Mode::Flat && fl.use_texels;
-            const bool bias = fl.depth_bias != 0;
-            if (mode == Mode::Darken) span<Kind::Darken>(sp, fl, lib, bias);
-            else if (!textured) span<Kind::Flat>(sp, fl, lib, bias);
-            else if (!fl.texels) span<Kind::Library>(sp, fl, lib, bias);
-            else if (fl.wmask >= 0 && fl.hmask >= 0) {
-                if (mode == Mode::Translucent) span<Kind::TranslucentPow2>(sp, fl, lib, bias);
-                else if (mode == Mode::Transparent) span<Kind::TransparentPow2>(sp, fl, lib, bias);
-                else span<Kind::TexturedPow2>(sp, fl, lib, bias);
-            } else {
-                span<Kind::Texels>(sp, fl, lib, bias);
-            }
-        }
-    }
 }
 
 } // namespace scr

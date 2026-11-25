@@ -18,6 +18,8 @@ add_library(screamer_core STATIC
   core/fm_synth.cpp
   core/pcx.cpp
   core/render3d.cpp
+  core/render3d_fill_sse2.cpp
+  core/render3d_fill_avx2.cpp
   core/worker_pool.cpp
   core/tv_camera.cpp
   core/profiler.cpp
@@ -27,6 +29,12 @@ add_library(screamer_core STATIC
   core/testpattern.cpp
   core/track.cpp
 )
+# The AVX2 build of the pixel filler: this file only, used when the CPU has AVX2.
+if(MSVC)
+  set_source_files_properties(core/render3d_fill_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+else()
+  set_source_files_properties(core/render3d_fill_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2")
+endif()
 target_include_directories(screamer_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(screamer_core PUBLIC SDL3::SDL3 nuked_opl3)
 target_compile_definitions(screamer_core PUBLIC

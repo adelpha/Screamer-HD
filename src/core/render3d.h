@@ -16,6 +16,7 @@
 //   14-15 mat14_draw  translucent: new = shade_table[texel * 256 + old] (MAPn.SMG)
 
 #include "core/framebuffer.h"
+#include "core/render3d_fill.h"
 #include "core/track.h"
 
 #include <array>
@@ -104,10 +105,11 @@ constexpr int material_frame(int frames, int32_t animation, int32_t anim_counter
 
 class WorkerPool;
 
-// Objects and parts whose bounding sphere lies wholly outside the view are skipped; polygons
-// are clipped and projected as they come, and their pixels are filled at finish(), by all CPU
-// cores at once, each taking bands of rows. Every pixel sees the polygons in the order they
-// were drawn, so the picture does not depend on the number of threads.
+// Objects and parts whose bounding sphere lies wholly outside the view are skipped. The draw
+// calls only note what to draw; flush_geometry() (or finish()) then transforms, clips and
+// projects everything on all CPU cores, and finish() fills the pixels, each core taking bands
+// of rows (render3d_fill.h). Every pixel sees the polygons in the order they were drawn, so
+// the picture does not depend on the number of threads.
 class Renderer {
 public:
     Renderer();
@@ -120,6 +122,11 @@ public:
     void set_lod(bool on) { lod_ = on; }
     // Threads that fill pixels (<= 0: one per hardware thread, the default).
     void set_threads(int threads);
+    // Which build of the pixel filler runs: Auto is the widest the CPU has. All give the same
+    // picture; choosing one is for tests and measurements. False if the CPU cannot run it.
+    enum class FillPath { Auto, Sse2, Avx2 };
+    bool set_fill_path(FillPath path);
+    const char* fill_path_name() const;
     WorkerPool* pool() { return pool_.get(); }
     // Skipped frames (a game step that is not shown): begin .. finish do nothing.
     void set_skip(bool skip) { skip_ = skip; }  // the fill threads, for other per-pixel work
@@ -131,10 +138,18 @@ public:
 
     // Lower-level use: begin a frame, draw the track and extra objects (cars), then finish,
     // which draws the translucent polygons back to front.
-    void begin(const Track& track, const Camera& cam, Framebuffer& fb, uint8_t sky = 0);
+    // clear_at_finish: the picture is cleared (sky, background) by finish() rather than here,
+    // which is quicker; for callers that draw nothing into fb themselves in between.
+    void begin(const Track& track, const Camera& cam, Framebuffer& fb, uint8_t sky = 0, bool clear_at_finish = false);
     void draw_placements();
     // Draws `model` (only the parts whose part_mask entry is true, when a mask is given).
+    // The drawing itself happens later, on all threads (flush_geometry): the model, the mask
+    // and what the pose points to (parts, env) must stay as they are until then, and no two
+    // models drawn in a frame may share an EnvScroll.
     void draw_model(const Model& model, const Pose& pose, const std::vector<bool>* part_mask = nullptr);
+    // Transforms, clips and projects everything drawn since begin() (finish() does it if the
+    // caller has not; apart from it, only for timing the two stages separately).
+    void flush_geometry();
     RenderStats finish();
 
     // The sky/background band, like render_draw_background: panorama row 234 sits on the
@@ -155,26 +170,9 @@ private:
         float depth;
         float depth_bias;
     };
-    struct Scr {
-        float x, y, iz, uz, vz;
-    };
-    // What a polygon's pixels are filled with.
-    struct Fill {
-        const Material* mat;
-        const uint8_t* texels;  // the frame's pixels when every texel lies inside the library, else null
-        int mode;               // Mode
-        int frame;
-        int wmask, hmask;       // size - 1 for power-of-two sizes, else -1
-        uint8_t flat;
-        bool use_texels, writes_depth;
-        float depth_bias;       // in units of d = 128 - z
-        float edge_slack;       // pixels the polygon reaches past its edges
-    };
-    struct Tri {
-        Scr a, b, c;
-        int y0, y1, x0, x1;
-        uint32_t fill;
-    };
+    using Scr = detail::Scr;
+    using Fill = detail::Fill;  // what a polygon's pixels are filled with
+    using Tri = detail::Tri;
     // Clips, projects and queues the polygon's triangles.
     // What drawing produces before the pixels are filled: one set per thread while the
     // placements are drawn, joined in order afterwards.
@@ -183,36 +181,50 @@ private:
         std::vector<ClipVert> deferred_verts;
         std::vector<Fill> fills;
         std::vector<Tri> tris;
+        std::vector<std::array<int, 2>> tri_rows;  // each triangle's first and last row (for the fill threads to pick theirs)
         std::vector<float> wx, wy, wz;
         std::vector<std::array<int, 2>> env_uv;
         float edge_slack = 0;  // for the polygons of the model being drawn
         RenderStats stats{};
         void clear();
-        void append(const Geo& o);
     };
+    struct ModelJob {
+        const Model* model;
+        Pose pose;
+        const std::vector<bool>* part_mask;
+    };
+    void draw_placement_range(Geo& g, size_t i0, size_t i1);
     void draw_model_into(Geo& g, const Model& model, const Pose& pose, const std::vector<bool>* part_mask);
     void draw_polygon(Geo& g, const ClipVert* poly, size_t count, const Material* mat, uint8_t face_color,
                       int32_t animation, int32_t reflection, float depth_bias = 0);
     bool sphere_visible(float x, float y, float z, float r) const;
-    void fill_rows(int y0, int y1, const std::vector<uint32_t>& tris);
-    enum class Kind { Darken, Flat, Library, Texels, TexturedPow2, TransparentPow2, TranslucentPow2 };
-    struct Span;
-    template <Kind K>
-    void span(Span& s, const Fill& fl, const MaterialLibrary* lib, bool bias) const;
+    // Rows y0 .. y1 - 1 before anything is drawn: no depth, the background or the sky colour.
+    void clear_rows(int y0, int y1);
+    // The panorama column under each framebuffer column (empty: no panorama).
+    static void background_columns(const PcxImage& bck, const Camera& cam, const Framebuffer& fb, std::vector<int>& column);
+    static void draw_background_rows(const PcxImage& bck, const Camera& cam, Framebuffer& fb, int y0, int y1, const int* column);
+
 
     const Track* track_ = nullptr;
     const Camera* cam_ = nullptr;
     Framebuffer* fb_ = nullptr;
     Mat3 view_{};
     std::vector<float> depth_;  // 1/z per pixel
-    Geo geo_;
-    std::vector<Geo> chunk_geo_;
-    std::vector<std::vector<uint32_t>> band_tris_;  // per band of rows, the triangles reaching it (in order)
-    std::vector<int> row_band_;
+    Geo geo_;                          // the translucent polygons of all jobs, and their triangles
+    std::vector<Geo> job_geo_;         // what each geometry job produced (the first job_count_ are this frame's)
+    size_t job_count_ = 0;
+    std::vector<ModelJob> model_jobs_; // draw_model() calls since begin(), in order
+    bool placements_pending_ = false;  // draw_placements() was called,
+    size_t placements_at_ = 0;         // after this many draw_model() calls
+    bool geometry_done_ = false;
+    std::vector<int> bg_columns_;  // background_columns() of this frame
+    uint8_t sky_ = 0;
+    bool clear_at_finish_ = false;
     // view frustum planes in camera space (unit normals, offsets), for sphere_visible
     std::array<std::array<float, 4>, 4> planes_{};
     int plane_count_ = 0;
     std::unique_ptr<WorkerPool> pool_;
+    detail::FillRowsFn fill_rows_ = nullptr;  // null: not chosen yet (Auto)
     bool textures_ = true;
     bool lod_ = false;
     bool skip_ = false;

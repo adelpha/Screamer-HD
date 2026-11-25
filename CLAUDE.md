@@ -25,6 +25,10 @@ disassembly dumps, or Ghidra projects to git. Hashes, notes and our own code are
   artifacts\ghidra\STARTL\dump. `.\tools\ghidra\runtime-probe.ps1` reads globals from the running original.
   Details: docs/REVERSING.md.
 - Compare images: `build\debug\bin\imgcmp.exe expected.png actual.png --diff d.png`.
+- Renderer changes that must not alter the picture: `.\tools\render-compare.ps1 -Out artifacts\perf\new -Against artifacts\perf\base`
+  (23 headless scenes against the frames of the build before, made with `-Exe <old exe> -Out artifacts\perf\base`);
+  speed: `.\tools\render-bench.ps1 [-Exe old.exe, new.exe]`. `--hidden` runs like `--headless` on the real
+  renderer (graphics card) with a window that is never shown.
 
 Full details: docs/HARNESS.md.
 
