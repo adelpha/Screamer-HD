@@ -1,5 +1,6 @@
 #include "testing.h"
 
+#include "core/mipmaps.h"
 #include "core/render3d.h"
 #include "core/render3d_fill.h"
 #include "core/track.h"
@@ -119,6 +120,8 @@ scr::Track make_track() {
     for (auto& b : bck.pixels) b = uint8_t(next_random(seed) % 16);
     bck.vga_pal.resize(768, 0);
     t.background = std::move(bck);
+    for (size_t i = 0; i < 256; ++i) t.palette[i] = {uint8_t(next_random(seed)), uint8_t(next_random(seed)), uint8_t(next_random(seed))};
+    t.mips = std::make_shared<const scr::MipSet>(scr::build_mipmaps(*t.materials, t.palette));
     return t;
 }
 
@@ -127,12 +130,19 @@ struct Options {
     int threads = 0;
     bool clear_at_finish = true;
     bool fade = true;
+    // as the renderer drew before the painted lines were looked after: every face edge of a
+    // road piece sealed, texel coordinates wrapping at every polygon's edges
+    bool old_look = true;
+    bool mipmaps = false;
 };
 
 std::vector<uint8_t> draw(const scr::Track& track, int width, int height, const Options& o) {
     scr::Renderer r;
     if (!r.set_fill_path(o.path)) return {};
     r.set_threads(o.threads);
+    r.set_seal_all_edges(o.old_look);
+    r.set_clamp_edges(!o.old_look);
+    r.set_mipmaps(o.mipmaps);
     scr::Camera cam;
     cam.z = 600;
     if (o.fade) {
@@ -225,6 +235,23 @@ TEST_CASE("render fill: the same picture from every build of the filler, any thr
     const std::vector<uint8_t> b = draw(track, 320, 200, plain);
     if (!b.empty()) CHECK(a == b);
 
+    // today's look, without and with the smaller texture versions
+    for (bool mipmaps : {false, true}) {
+        Options n;
+        n.old_look = false;
+        n.mipmaps = mipmaps;
+        n.path = scr::Renderer::FillPath::Sse2;
+        n.threads = 1;
+        const std::vector<uint8_t> ref = draw(track, 333, 211, n);
+        CHECK(std::set<uint8_t>(ref.begin(), ref.end()).size() > 100);
+        CHECK(ref != draw(track, 333, 211, Options{scr::Renderer::FillPath::Sse2, 1}));
+        n.threads = 4;
+        CHECK(draw(track, 333, 211, n) == ref);
+        n.path = scr::Renderer::FillPath::Avx2;
+        const std::vector<uint8_t> other = draw(track, 333, 211, n);
+        if (!other.empty()) CHECK(other == ref);
+    }
+
 #if defined(_MSC_VER) && defined(_M_X64)
     // The pictures of the renderer before its fill loop was rewritten for speed (the same
     // scene built against that code). Only where the maths library is the one they came
@@ -236,4 +263,27 @@ TEST_CASE("render fill: the same picture from every build of the filler, any thr
     CHECK(fnv(draw(track, 333, 211, o)) == 0x38021cc07407a6faull);
     CHECK(fnv(a) == 0xe1cf4952b8026133ull);
 #endif
+}
+
+TEST_CASE("model3d: open edges and strips of a part's faces") {
+    // two quads side by side (sharing an edge) and a long narrow one apart
+    scr::Model m;
+    scr::Part part;
+    part.vertices = {{0, 0, 0}, {500, 0, 0}, {500, 0, 500}, {0, 0, 500}, {1000, 0, 0}, {1000, 0, 500},
+                     {2000, 0, 0}, {2100, 0, 0}, {2100, 0, 1000}, {2000, 0, 1000}};
+    scr::Face a, b, c;
+    a.count = b.count = c.count = 4;
+    a.vtx = {0, 1, 2, 3, 0, 0};
+    b.vtx = {1, 4, 5, 2, 0, 0};
+    c.vtx = {6, 7, 8, 9, 0, 0};
+    part.faces = {a, b, c};
+    m.parts.push_back(part);
+    scr::compute_bounds(m);
+    const auto& f = m.parts[0].faces;
+    CHECK(f[0].open_edges == 0b1101);  // all but the edge 1-2
+    CHECK(f[1].open_edges == 0b0111);  // all but the edge 2-1
+    CHECK(f[2].open_edges == 0b1111);
+    CHECK(!f[0].strip);
+    CHECK(!f[1].strip);
+    CHECK(f[2].strip);
 }

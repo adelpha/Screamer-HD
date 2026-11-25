@@ -31,6 +31,7 @@
 #include "core/pcx.h"
 
 #include <array>
+#include <memory>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -87,6 +88,8 @@ private:
     std::vector<Material> materials_;
 };
 
+struct MipSet;
+
 struct Track {
     std::vector<Model> objects;
     std::vector<Placement> placements;
@@ -96,6 +99,8 @@ struct Track {
     std::vector<TrackPoint> points;
     std::vector<TrackSection> sections;
     std::optional<MaterialLibrary> materials;
+    // Smaller versions of the materials' textures (core/mipmaps.h), in this palette; may be null.
+    std::shared_ptr<const MipSet> mips;
     std::optional<PcxImage> background;
     Palette palette{};
     std::vector<uint8_t> shade_table;          // MAPn.SMG, 64 x 256 (empty if missing)

@@ -9,6 +9,7 @@ add_library(screamer_core STATIC
   core/gamedata.cpp
   core/image.cpp
   core/menu.cpp
+  core/mipmaps.cpp
   core/model3d.cpp
   core/obstacles.cpp
   core/opponent.cpp

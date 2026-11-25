@@ -20,6 +20,22 @@ namespace detail {
 
 enum class FillMode : int { Textured, Transparent, Flat, Darken, Translucent };
 
+// Smaller versions of a texture for where it is drawn squeezed (core/mipmaps.h), halved
+// along u and along v separately: level (lu, lv) is size >> lu wide and size >> lv high
+// (rounded, at least 1), its rows one after the other.
+constexpr int kMipLevels = 8;
+struct MipAxis {
+    int32_t size;         // texels at this level
+    int32_t mask;         // size - 1 for a power of two, else -1
+    int32_t bias, magic;  // see wrap_mod
+    float scale;          // level texels per texel of the full texture
+};
+struct MipTexture {
+    int32_t levels_u, levels_v;  // at least 1 (the full texture)
+    MipAxis u[kMipLevels], v[kMipLevels];
+    const uint8_t* texels[kMipLevels][kMipLevels];  // [lv][lu]; four bytes can be read at every texel
+};
+
 struct Scr {
     float x, y, iz, uz, vz;
 };
@@ -38,6 +54,11 @@ struct Fill {
     uint8_t flat;
     bool use_texels, writes_depth;
     bool wide_reads;        // four bytes can be read at every texel (AVX2 gathers)
+    // The polygon's corners all lie inside the texture (it shows a piece of it, not repeats):
+    // texel coordinates just outside, at its edges, stay on the edge texel and do not
+    // come round from the far side of the texture.
+    bool clamp_uv;
+    const MipTexture* mip;  // the smaller versions to draw from where the texture is squeezed, or null
     float depth_bias;       // in units of d = 128 - z
     float edge_slack;       // pixels the polygon reaches past its edges
 };
@@ -46,6 +67,7 @@ struct Tri {
     Scr a, b, c;
     int y0, y1, x0, x1;
     uint32_t fill;
+    uint8_t sealed;  // bit 0: the edge b-c is moved out by the fill's edge_slack, 1: c-a, 2: a-b
 };
 
 // A triangle to fill and what with.
@@ -64,6 +86,7 @@ struct FillContext {
     bool fade;              // the view-distance fade is on
     float fade_iz;          // 1 / (128 + fade_depth): pixels with a smaller 1/z are in the fade
     float fade_start, fade_range;
+    float mip_sharpness;    // a level is used from 1 / sharpness of its texels per pixel on
 };
 
 // Fills rows band0 .. band1 - 1 with the listed triangles, in order.

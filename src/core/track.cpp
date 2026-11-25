@@ -1,6 +1,7 @@
 #include "core/track.h"
 
 #include "core/archive.h"
+#include "core/mipmaps.h"
 
 #include <algorithm>
 #include <climits>
@@ -328,6 +329,7 @@ std::optional<Track> load_track(const std::string& dat_path, const std::string& 
     t.darken075 = build_darken_table(col->data(), 0.75f);
     if (auto smg = a->read(name + ".SMG"); smg && smg->size() >= 64 * 256) t.shade_table = std::move(*smg);
     if (auto bck = a->read(name + ".BCK")) t.background = decode_pcx(*bck);
+    t.mips = std::make_shared<const MipSet>(build_mipmaps(*t.materials, t.palette));
     return t;
 }
 

@@ -36,6 +36,9 @@ SCR_INLINE VF vdiv(VF a, VF b) { return _mm256_div_ps(a, b); }
 SCR_INLINE VF vmax(VF a, VF b) { return _mm256_max_ps(a, b); }
 SCR_INLINE VF vmin(VF a, VF b) { return _mm256_min_ps(a, b); }
 SCR_INLINE VF vneg(VF a) { return _mm256_xor_ps(a, _mm256_set1_ps(-0.0f)); }
+SCR_INLINE VF vabs(VF a) { return _mm256_andnot_ps(_mm256_set1_ps(-0.0f), a); }
+SCR_INLINE VI vishr23(VI a) { return _mm256_srli_epi32(a, 23); }
+SCR_INLINE VI vimadd(VI a, VI b) { return _mm256_madd_epi16(a, b); }
 SCR_INLINE VF vcmpgt(VF a, VF b) { return _mm256_cmp_ps(a, b, _CMP_GT_OS); }
 SCR_INLINE VI vior(VI a, VI b) { return _mm256_or_si256(a, b); }
 SCR_INLINE VI vixor(VI a, VI b) { return _mm256_xor_si256(a, b); }
@@ -81,6 +84,9 @@ SCR_INLINE VF vdiv(VF a, VF b) { return _mm_div_ps(a, b); }
 SCR_INLINE VF vmax(VF a, VF b) { return _mm_max_ps(a, b); }
 SCR_INLINE VF vmin(VF a, VF b) { return _mm_min_ps(a, b); }
 SCR_INLINE VF vneg(VF a) { return _mm_xor_ps(a, _mm_set1_ps(-0.0f)); }
+SCR_INLINE VF vabs(VF a) { return _mm_andnot_ps(_mm_set1_ps(-0.0f), a); }
+SCR_INLINE VI vishr23(VI a) { return _mm_srli_epi32(a, 23); }
+SCR_INLINE VI vimadd(VI a, VI b) { return _mm_madd_epi16(a, b); }
 SCR_INLINE VF vcmpgt(VF a, VF b) { return _mm_cmpgt_ps(a, b); }
 SCR_INLINE VI vior(VI a, VI b) { return _mm_or_si128(a, b); }
 SCR_INLINE VI vixor(VI a, VI b) { return _mm_xor_si128(a, b); }
@@ -114,7 +120,7 @@ SCR_INLINE VI vimulhi16(VI a, VI b) { return _mm_mulhi_epu16(a, b); }
 SCR_INLINE VI vimullo16(VI a, VI b) { return _mm_mullo_epi16(a, b); }
 #endif
 
-enum class Kind { Darken, Flat, Library, Opaque, Transparent, Translucent };
+enum class Kind { Darken, Flat, Library, Opaque, Transparent, Translucent, OpaqueMip, TransparentMip };
 
 // 4x4 ordered-dither thresholds (Bayer), (n + 0.5) / 16, each row three times so a group's
 // lanes can be read from any column.
@@ -166,6 +172,10 @@ SCR_INLINE int wrap_scalar(int i, int size, int mask) {
 // any coordinates).
 template <Kind K>
 SCR_INLINE void pixel_general(const FillContext& c, const Fill& fl, uint8_t* row, float* drow, int x, float tz, int iu, int iv) {
+    if (fl.clamp_uv) {
+        iu = imin2(imax2(iu, 0), fl.width - 1);
+        iv = imin2(imax2(iv, 0), fl.height - 1);
+    }
     uint8_t col;
     if constexpr (K == Kind::Library) {
         col = library_texel(c.lib, fl.mat, iu, iv, fl.frame);
@@ -206,6 +216,52 @@ SCR_INLINE void store_pixels(uint8_t* p, __m256i col, __m256i mask) {
 // a < b ? b : a and b < a ? b : a, lane by lane (signed)
 SCR_INLINE VI vimax(VI a, VI b) { return vixor(a, viand(vixor(a, b), vigt(b, a))); }
 SCR_INLINE VI vimin(VI a, VI b) { return vixor(a, viand(vixor(a, b), vigt(a, b))); }
+
+// The group's texels (at: their places in texels) to its pixels px[lane] and depths dp[lane],
+// for the lanes of pass; with Holes, texel 0 leaves the pixel as it is. vectors: the whole
+// group lies in the row and four bytes can be read at every texel.
+template <bool Holes>
+SCR_INLINE void put_texels(const uint8_t* texels, VI at, int pass, [[maybe_unused]] bool vectors, [[maybe_unused]] VF dz, VF tz,
+                           bool writes_depth, uint8_t* px, float* dp) {
+#if SCR_FILL_AVX2
+    if (vectors) {
+        __m256i m = lanes_from_bits(pass);
+        // (lanes that are not drawn may hold any index: they are not read)
+        const __m256i col = _mm256_mask_i32gather_epi32(_mm256_setzero_si256(), reinterpret_cast<const int*>(texels), at, m, 1);
+        if constexpr (Holes) {
+            m = _mm256_andnot_si256(_mm256_cmpeq_epi32(_mm256_and_si256(col, _mm256_set1_epi32(0xff)), _mm256_setzero_si256()), m);
+            if (_mm256_testz_si256(m, m)) return;
+        }
+        if (writes_depth) _mm256_storeu_ps(dp, _mm256_blendv_ps(dz, tz, _mm256_castsi256_ps(m)));
+        store_pixels(px, col, m);
+        return;
+    }
+#endif
+    alignas(32) float tzs[kLanes];
+    alignas(32) int32_t ats[kLanes];
+    vstore(tzs, tz);
+    vistore(ats, at);
+    for (int j = 0; j < kLanes; ++j) {
+        if (!(pass & (1 << j))) continue;
+        const uint8_t col = texels[size_t(uint32_t(ats[j]))];
+        if constexpr (Holes) {
+            if (col == 0) continue;
+        }
+        if (writes_depth) dp[j] = tzs[j];
+        px[j] = col;
+    }
+}
+
+// floor(v) as the vector code does it: truncated, then one down where that went up
+SCR_INLINE int floor_int(float v) {
+    const int t = to_int(v);
+    return v < float(t) ? wrapping_add(t, -1) : t;
+}
+SCR_INLINE int lowest_bit(int bits) {
+    int j = 0;
+    while (!(bits & (1 << j))) ++j;
+    return j;
+}
 
 // One triangle's rows inside a band. The rows are set up several at a time (lane j is row
 // y + j), then each row's pixels are filled in groups (lane j is pixel x + j).
@@ -254,6 +310,16 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
     [[maybe_unused]] const VI ubias = viset1(fl.ubias), vbias2 = viset1(fl.vbias);
     [[maybe_unused]] const VI umagic = viset1(fl.umagic), vmagic = viset1(fl.vmagic);
     [[maybe_unused]] const VI range = viset1(0x4000);
+    [[maybe_unused]] const bool clamp_uv = fl.clamp_uv;
+    [[maybe_unused]] const VI last_u = viset1(fl.width - 1), last_v = viset1(fl.height - 1);
+    // (the mip kinds) how u/z, v/z and 1/z change from one row to the next
+    [[maybe_unused]] const MipTexture* const mip = fl.mip;
+    const float k0y = (pc.x - pb.x) * inv, k1y = (pa.x - pc.x) * inv, k2y = -k0y - k1y;
+    [[maybe_unused]] const VF vdizy = vset1(k0y * pa.iz + k1y * pb.iz + k2y * pc.iz);
+    [[maybe_unused]] const VF vduzy = vset1(k0y * pa.uz + k1y * pb.uz + k2y * pc.uz);
+    [[maybe_unused]] const VF vdvzy = vset1(k0y * pa.vz + k1y * pb.vz + k2y * pc.vz);
+    [[maybe_unused]] const VF sharp = vset1(c.mip_sharpness);
+    [[maybe_unused]] const VI top_u = viset1(mip ? mip->levels_u - 1 : 0), top_v = viset1(mip ? mip->levels_v - 1 : 0);
     [[maybe_unused]] const uint8_t* const texels = fl.texels;
     [[maybe_unused]] const bool wide_reads = fl.wide_reads;
     [[maybe_unused]] const uint8_t flat = fl.flat;
@@ -405,7 +471,68 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
                     iv = viadd(iv, vcast(vcmplt(fv, vcvt(iv))));
                     alignas(32) float tzs[kLanes];
                     alignas(32) int32_t ius[kLanes], ivs[kLanes];
-                    if constexpr (K == Kind::Library) {
+                    if constexpr (K == Kind::OpaqueMip || K == Kind::TransparentMip) {
+                        // How many texels a pixel covers along u and along v (the larger of
+                        // its step to the next pixel and to the next row), and from that the
+                        // level for each: the whole power of two in it.
+                        const VF gu = vmax(vabs(vmul(vsub(vduz, vmul(fu, vdiz)), rz)), vabs(vmul(vsub(vduzy, vmul(fu, vdizy)), rz)));
+                        const VF gv = vmax(vabs(vmul(vsub(vdvz, vmul(fv, vdiz)), rz)), vabs(vmul(vsub(vdvzy, vmul(fv, vdizy)), rz)));
+                        const VI zero = viset1(0), exp0 = viset1(127);
+                        const VI lu = vimin(vimax(visub(vishr23(vcast(vmul(gu, sharp))), exp0), zero), top_u);
+                        const VI lv = vimin(vimax(visub(vishr23(vcast(vmul(gv, sharp))), exp0), zero), top_v);
+                        alignas(32) int32_t lus[kLanes], lvs[kLanes];
+                        vistore(lus, lu);
+                        vistore(lvs, lv);
+                        const int first = lowest_bit(pass);
+                        const MipAxis& au = mip->u[lus[first]];
+                        const MipAxis& av = mip->v[lvs[first]];
+                        // usually the whole group is at one level, and is done as one
+                        bool together = (pass & vbits(vcastf(viand(vieq(lu, viset1(lus[first])), vieq(lv, viset1(lvs[first])))))) == pass;
+                        if (together) {
+                            const VF su = vmul(fu, vset1(au.scale)), sv = vmul(fv, vset1(av.scale));
+                            VI ju = vcvtt(su), jv = vcvtt(sv);
+                            ju = viadd(ju, vcast(vcmplt(su, vcvt(ju))));
+                            jv = viadd(jv, vcast(vcmplt(sv, vcvt(jv))));
+                            VI big = zero;
+                            if (clamp_uv) {
+                                ju = vimin(vimax(ju, zero), viset1(au.size - 1));
+                                jv = vimin(vimax(jv, zero), viset1(av.size - 1));
+                            } else {
+                                if (au.mask < 0) big = viadd(ju, range);
+                                if (av.mask < 0) big = vior(big, viadd(jv, range));
+                            }
+                            together = (pass & small_lanes(big)) == pass;
+                            if (together) {
+                                if (!clamp_uv) {
+                                    ju = au.mask >= 0 ? viand(ju, viset1(au.mask)) : wrap_mod(ju, viset1(au.size), viset1(au.bias), viset1(au.magic));
+                                    jv = av.mask >= 0 ? viand(jv, viset1(av.mask)) : wrap_mod(jv, viset1(av.size), viset1(av.bias), viset1(av.magic));
+                                }
+                                put_texels<K == Kind::TransparentMip>(mip->texels[lvs[first]][lus[first]], viadd(vimadd(jv, viset1(au.size)), ju),
+                                                                      pass, whole, dz, tz, writes_depth, row + x, drow + x);
+                            }
+                        }
+                        if (!together) {
+                            // pixel by pixel: each at its own level
+                            alignas(32) float fus[kLanes], fvs[kLanes];
+                            vstore(tzs, tz);
+                            vstore(fus, fu);
+                            vstore(fvs, fv);
+                            for (int j = 0; j < kLanes; ++j) {
+                                if (!(pass & (1 << j))) continue;
+                                const MipAxis& bu = mip->u[lus[j]];
+                                const MipAxis& bv = mip->v[lvs[j]];
+                                const int ru = floor_int(fus[j] * bu.scale), rv = floor_int(fvs[j] * bv.scale);
+                                const int tu = clamp_uv ? imin2(imax2(ru, 0), bu.size - 1) : wrap_scalar(ru, bu.size, bu.mask);
+                                const int tv = clamp_uv ? imin2(imax2(rv, 0), bv.size - 1) : wrap_scalar(rv, bv.size, bv.mask);
+                                const uint8_t col = mip->texels[lvs[j]][lus[j]][size_t(tv) * size_t(bu.size) + size_t(tu)];
+                                if constexpr (K == Kind::TransparentMip) {
+                                    if (col == 0) continue;
+                                }
+                                if (writes_depth) drow[x + j] = tzs[j];
+                                row[x + j] = col;
+                            }
+                        }
+                    } else if constexpr (K == Kind::Library) {
                         vstore(tzs, tz);
                         vistore(ius, iu);
                         vistore(ivs, iv);
@@ -415,8 +542,13 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
                         // The quick way wraps u and v to the texture in the vector registers;
                         // it needs coordinates of ordinary size.
                         VI big = viset1(0);
-                        if (wmask < 0) big = viadd(iu, range);
-                        if (hmask < 0) big = vior(big, viadd(iv, range));
+                        if (clamp_uv) {
+                            iu = vimin(vimax(iu, big), last_u);
+                            iv = vimin(vimax(iv, big), last_v);
+                        } else {
+                            if (wmask < 0) big = viadd(iu, range);
+                            if (hmask < 0) big = vior(big, viadd(iv, range));
+                        }
                         if ((pass & small_lanes(big)) != pass) {
                             vstore(tzs, tz);
                             vistore(ius, iu);
@@ -425,42 +557,20 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
                                 if (pass & (1 << j)) pixel_general<K>(c, fl, row, drow, x + j, tzs[j], ius[j], ivs[j]);
                             continue;
                         }
-                        iu = wmask >= 0 ? viand(iu, vwmask) : wrap_mod(iu, vwidth, ubias, umagic);
-                        iv = hmask >= 0 ? viand(iv, vhmask) : wrap_mod(iv, vheight, vbias2, vmagic);
-                        const VI at = viadd(vishl8(iv), iu);  // the texture's rows are 256 apart
-#if SCR_FILL_AVX2
-                        if constexpr (K != Kind::Translucent) {
-                            if (whole && wide_reads) {
-                                __m256i m = lanes_from_bits(pass);
-                                // (lanes that are not drawn may hold any index: they are not read)
-                                const __m256i col =
-                                    _mm256_mask_i32gather_epi32(_mm256_setzero_si256(), reinterpret_cast<const int*>(texels), at, m, 1);
-                                if constexpr (K == Kind::Transparent) {
-                                    m = _mm256_andnot_si256(
-                                        _mm256_cmpeq_epi32(_mm256_and_si256(col, _mm256_set1_epi32(0xff)), _mm256_setzero_si256()), m);
-                                    if (_mm256_testz_si256(m, m)) continue;
-                                }
-                                if (writes_depth) _mm256_storeu_ps(drow + x, _mm256_blendv_ps(dz, tz, _mm256_castsi256_ps(m)));
-                                store_pixels(row + x, col, m);
-                                continue;
-                            }
+                        if (!clamp_uv) {
+                            iu = wmask >= 0 ? viand(iu, vwmask) : wrap_mod(iu, vwidth, ubias, umagic);
+                            iv = hmask >= 0 ? viand(iv, vhmask) : wrap_mod(iv, vheight, vbias2, vmagic);
                         }
-#endif
-                        vstore(tzs, tz);
-                        vistore(ius, at);
-                        for (int j = 0; j < kLanes; ++j) {
-                            if (!(pass & (1 << j))) continue;
-                            const uint8_t col = texels[size_t(uint32_t(ius[j]))];
-                            uint8_t& dst = row[x + j];
-                            if constexpr (K == Kind::Translucent) {
-                                dst = shade[size_t(col & 63) * 256 + dst];
-                            } else {
-                                if constexpr (K == Kind::Transparent) {
-                                    if (col == 0) continue;
+                        const VI at = viadd(vishl8(iv), iu);  // the texture's rows are 256 apart
+                        if constexpr (K == Kind::Translucent) {
+                            vistore(ius, at);
+                            for (int j = 0; j < kLanes; ++j)
+                                if (pass & (1 << j)) {
+                                    uint8_t& dst = row[x + j];
+                                    dst = shade[size_t(texels[size_t(uint32_t(ius[j]))] & 63) * 256 + dst];
                                 }
-                                if (writes_depth) drow[x + j] = tzs[j];
-                                dst = col;
-                            }
+                        } else {
+                            put_texels<K == Kind::Transparent>(texels, at, pass, whole && wide_reads, dz, tz, writes_depth, row + x, drow + x);
                         }
                     }
                 }
@@ -481,6 +591,9 @@ void SCR_FILL_NAME(fill_rows)(const FillContext& ctx, int band0, int band1, cons
         if (mode == FillMode::Darken) fill_tri<Kind::Darken>(ctx, t, fl, band0, band1);
         else if (!(mode != FillMode::Flat && fl.use_texels)) fill_tri<Kind::Flat>(ctx, t, fl, band0, band1);
         else if (!fl.texels) fill_tri<Kind::Library>(ctx, t, fl, band0, band1);
+        else if (fl.mip && mode != FillMode::Translucent)
+            mode == FillMode::Transparent ? fill_tri<Kind::TransparentMip>(ctx, t, fl, band0, band1)
+                                          : fill_tri<Kind::OpaqueMip>(ctx, t, fl, band0, band1);
         else if (mode == FillMode::Translucent) fill_tri<Kind::Translucent>(ctx, t, fl, band0, band1);
         else if (mode == FillMode::Transparent) fill_tri<Kind::Transparent>(ctx, t, fl, band0, band1);
         else fill_tri<Kind::Opaque>(ctx, t, fl, band0, band1);
