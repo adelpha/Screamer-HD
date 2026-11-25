@@ -36,7 +36,8 @@ no manual steps.
 | `--camera X,Y,Z,YAW,PITCH[,ROLL]` | Camera for `--scene track` in game units (angles 0..2047). Default: the first placement. `48459,196,7124,472,2005,0` is the intro race at the start gate. |
 | `--render-size WxH` | Framebuffer size for the 3D scene (default 320x200), e.g. `1280x800`. |
 | `--threads N` | Threads that fill the 3D view (default: one per CPU thread). The picture is the same for any number. |
-| `--perf` | Print the average and worst time the 3D view took to draw, at exit. |
+| `--perf` | Profile the main loop (core/profiler.h): pictures and game steps per second, and the time per picture in each part (events, game step, blending, 3D geometry, 3D fill, HUD, texture upload, present), every 5 seconds and at exit. |
+| `--tween-test` | Headless: one tick per loop, so every other picture is drawn between game steps (checks the blending; with `--perf`, measures the cost per picture). `--capture-from N` starts `--capture-every` at frame N. |
 | `--lod` | Draw distant objects in the original's simpler versions (from 4000/7000 units, cars from 12000/16000). Off by default: full detail everywhere. |
 | `--reversed` | Drive the track the other way (the menu's tracks 7-12): racing lines and the rest from `DATA/MAPnI.DAT`. |
 | `--race-options N` | The cheats' `g_race_options`: 1 / 2 the other obstacles (MONTY / JOINT), 4 the clock stops (CLOCK), 0x10 mirror world (MIRRO), 0x20 upside down (UPDOW). In the menus the cheats are typed as words. |

@@ -9,6 +9,7 @@
 
 #include "core/animations.h"
 #include "core/attract.h"
+#include "core/profiler.h"
 #include "core/replay.h"
 #include "core/tv_camera.h"
 #include "core/archive.h"
@@ -882,6 +883,14 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     clock.add_ticks(scr::SimClock::kMinTicksPerFrame);  // draw frame 0 immediately
     int exit_code = 0;
 
+    // --perf: the loop's time by section (core/profiler.h), reported every 5 seconds
+    auto prof_last = std::chrono::steady_clock::now();
+    auto prof_report_at = prof_last + std::chrono::seconds(5);
+    auto mark = [&](scr::prof::Section sec) {
+        const auto t = std::chrono::steady_clock::now();
+        scr::prof::add(sec, uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(t - prof_last).count()));
+        prof_last = t;
+    };
     while (running) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
@@ -949,10 +958,12 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             }
         }
         if (!running) break;
+        mark(scr::prof::Events);
 
         // Headless runs advance exactly 2 ticks per loop, so output depends only on the
         // frame count. Interactive runs count real 10 ms ticks, like the timer interrupt.
-        bool stepped = false;
+        bool stepped = false;   // a picture was drawn
+        bool catching_up = false;  // a step that is not drawn: the next one is already due
         if (opt.headless) {
             if (frame > 0 || opt.tween_test) clock.add_ticks(opt.tween_test ? 1 : scr::SimClock::kMinTicksPerFrame);
         } else {
@@ -968,10 +979,14 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         const bool interactive = !opt.headless || opt.tween_test;
         const bool tween = !step && interactive && have_prev && track && player && !paused && prompt < 0 && !freecam;
         if (step || tween) {
-            // Interactive runs: frames of exactly 2 ticks (50 a second) as the original on a
-            // machine that keeps up, unless this one falls behind (then all of them, as the
-            // original does on a slow one).
-            if (step) clock.begin_frame(!interactive || clock.pending_ticks() > 3 ? UINT32_MAX : 2);
+            // Interactive runs: every step is exactly 2 ticks, so the game plays the same at any
+            // frame rate. Behind (another step already due): this step is not drawn, the next
+            // one is; more than half a second behind (a stall): the extra time is dropped.
+            if (step && interactive && clock.pending_ticks() > 50) clock.drop_ticks(clock.pending_ticks() - 2);
+            if (step) clock.begin_frame(interactive ? 2 : UINT32_MAX);
+            const bool skip_draw = step && interactive && !opt.headless && clock.frame_ready();
+            catching_up = skip_draw;
+            renderer3d.set_skip(skip_draw);
             // how far the display is between the last step and the next (1: at the last step)
             const float alpha = !interactive || !have_prev ? 1.0f
                 : std::clamp(float(double(clock.pending_ticks() * scr::SimClock::kTickNs + tick_acc) /
@@ -1297,6 +1312,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 // obstacles_update (game state, once a step)
                 if (step && !freecam) obstacles.update(*track, clock.frame_time());
                 if (step && !player && !freecam) anims.update(int(cam.x), int(cam.z), clock.frame_time());
+                mark(scr::prof::Step);
                 // what is drawn: between the previous step and this one
                 const bool blend = player && have_prev && alpha < 1.0f && !freecam;
                 const scr::Camera draw_cam = blend ? tween_camera(prev_cam, step_cam, alpha) : cam;
@@ -1313,6 +1329,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         draw_opps = player->race.opponents;
                     }
                 }
+                mark(scr::prof::Tween);
                 const auto perf_t0 = std::chrono::steady_clock::now();
                 renderer3d.begin(*track, draw_cam, fb);
                 renderer3d.draw_placements();
@@ -1512,7 +1529,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     if (shadow) renderer3d.draw_model(*shadow, c.pose);
                     renderer3d.draw_model(c.model, c.pose);
                 }
+                mark(scr::prof::Geometry);
                 renderer3d.finish();
+                mark(scr::prof::Fill);
                 // MIRRO / UPDOW: race_frame flips the 3D picture (not the HUD) after drawing it
                 if (opt.race_options & 0x30) {
                     const int fw = fb.width(), fh = fb.height();
@@ -1668,7 +1687,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             } else {
                 scr::draw_test_pattern(fb, frame);
             }
-            stepped = true;
+            stepped = !skip_draw;
             if (step && !opt.record_audio.empty()) {
                 // One frame of sound per simulated frame (2 ticks = 1/50 s at 44.1 kHz).
                 const int n = int(44100 * 2 / 100);
@@ -1713,12 +1732,14 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 }
             }
         }
+        mark(stepped ? scr::prof::Hud : scr::prof::Other);
         if (stepped) {
             void* pixels; int pitch;
             if (SDL_LockTexture(tex, nullptr, &pixels, &pitch)) {
-                fb.to_rgba(static_cast<uint8_t*>(pixels), pitch);
+                fb.to_rgba(static_cast<uint8_t*>(pixels), pitch, renderer3d.pool());
                 SDL_UnlockTexture(tex);
             }
+            mark(scr::prof::Upload);
         }
 
         int ow, oh;
@@ -1745,7 +1766,21 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             }
             running = false;
         }
-        SDL_RenderPresent(renderer);
+        // Interactive runs present only new pictures (vsync paces the loop then); with nothing
+        // new and no step due, wait a little instead of spinning.
+        if (stepped || opt.headless) SDL_RenderPresent(renderer);
+        else if (!catching_up) SDL_Delay(1);
+        mark(scr::prof::Present);
+        if (stepped) scr::prof::frame_done(step);
+        if (opt.perf && prof_last >= prof_report_at) {
+            prof_report_at = prof_last + std::chrono::seconds(5);
+            const std::string rep = scr::prof::report();
+            if (!rep.empty()) std::fputs(rep.c_str(), stderr);
+        }
+    }
+    if (opt.perf) {
+        const std::string rep = scr::prof::report();
+        if (!rep.empty()) std::fputs(rep.c_str(), stderr);
     }
 
     SDL_Log("frames=%llu", static_cast<unsigned long long>(frame));

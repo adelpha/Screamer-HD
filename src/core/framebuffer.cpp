@@ -1,6 +1,9 @@
 #include "core/framebuffer.h"
 
+#include "core/worker_pool.h"
+
 #include <algorithm>
+#include <cstring>
 
 namespace scr {
 
@@ -26,18 +29,26 @@ void Framebuffer::fill_rect(int x, int y, int w, int h, uint8_t index) {
     }
 }
 
-void Framebuffer::to_rgba(uint8_t* dst, int dst_pitch) const {
-    for (int y = 0; y < height_; ++y) {
-        const uint8_t* src = &pixels_[static_cast<size_t>(y) * width_];
-        uint8_t* row = dst + static_cast<size_t>(y) * dst_pitch;
-        for (int x = 0; x < width_; ++x) {
-            const Rgb& c = palette_[src[x]];
-            row[x * 4 + 0] = c.r;
-            row[x * 4 + 1] = c.g;
-            row[x * 4 + 2] = c.b;
-            row[x * 4 + 3] = 255;
-        }
+void Framebuffer::to_rgba(uint8_t* dst, int dst_pitch, WorkerPool* pool) const {
+    // one 32-bit word per palette entry, in memory order R, G, B, A
+    uint32_t lut[256];
+    for (int i = 0; i < 256; ++i) {
+        const uint8_t px[4] = {palette_[size_t(i)].r, palette_[size_t(i)].g, palette_[size_t(i)].b, 255};
+        std::memcpy(&lut[i], px, 4);
     }
+    auto rows = [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y) {
+            const uint8_t* src = &pixels_[static_cast<size_t>(y) * width_];
+            uint32_t* row = reinterpret_cast<uint32_t*>(dst + static_cast<size_t>(y) * dst_pitch);
+            for (int x = 0; x < width_; ++x) row[x] = lut[src[x]];
+        }
+    };
+    if (!pool || height_ < 64) {
+        rows(0, height_);
+        return;
+    }
+    const int bands = std::min(height_ / 16, pool->threads() * 2);
+    pool->run(bands, [&](int b) { rows(height_ * b / bands, height_ * (b + 1) / bands); });
 }
 
 } // namespace scr

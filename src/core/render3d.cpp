@@ -64,14 +64,11 @@ void Renderer::set_threads(int threads) {
 }
 
 void Renderer::begin(const Track& track, const Camera& cam, Framebuffer& fb, uint8_t sky) {
+    if (skip_) return;
     track_ = &track;
     cam_ = &cam;
     fb_ = &fb;
-    stats_ = {};
-    deferred_.clear();
-    deferred_verts_.clear();
-    fills_.clear();
-    tris_.clear();
+    geo_.clear();
     if (!pool_) pool_ = std::make_unique<WorkerPool>();
     depth_.resize(size_t(fb.width()) * size_t(fb.height()));
     const int w = fb.width(), h = fb.height();
@@ -131,22 +128,65 @@ RenderStats Renderer::draw_track(const Track& track, const Camera& cam, Framebuf
 }
 
 void Renderer::draw_placements() {
-    for (const Placement& p : track_->placements) {
-        const float dx = float(p.x) - cam_->x, dz = float(p.z) - cam_->z;
-        if (std::fabs(dx) > cam_->far_distance || std::fabs(dz) > cam_->far_distance) continue;
-        const Model& m = track_->objects[size_t(p.object)];
-        Pose pose{float(p.x), float(p.y), float(p.z), float(p.ax), float(p.ay), float(p.az), p.animation, p.reflection};
-        // The original draws whole objects far to near (cell by cell) without a depth buffer,
-        // and the track relies on the order: flat ground quads beside the road are drawn
-        // before the road and its verges, which cover them where the quad pokes through.
-        // (Only ground below the eye: flat ceilings overhead keep their depth.)
-        if (p.slot != 0 && m.flat && float(p.y + m.flat_y) < cam_->y) pose.depth_bias = -kFlatGroundBias;
-        pose.seal_edges = p.slot == 0;
-        draw_model(m, pose);
+    if (skip_) return;
+    // The placements in chunks on all threads, each into its own lists; the lists are then
+    // joined in placement order, so the result is the same as drawing them one by one.
+    const auto& all = track_->placements;
+    const int chunks = std::max(1, std::min(int(all.size() / 32), pool_->threads() * 4));
+    if (chunk_geo_.size() < size_t(chunks)) chunk_geo_.resize(size_t(chunks));
+    pool_->run(chunks, [&](int k) {
+        Geo& g = chunk_geo_[size_t(k)];
+        g.clear();
+        const size_t i0 = all.size() * size_t(k) / size_t(chunks), i1 = all.size() * size_t(k + 1) / size_t(chunks);
+        for (size_t i = i0; i < i1; ++i) {
+            const Placement& p = all[i];
+            const float dx = float(p.x) - cam_->x, dz = float(p.z) - cam_->z;
+            if (std::fabs(dx) > cam_->far_distance || std::fabs(dz) > cam_->far_distance) continue;
+            const Model& m = track_->objects[size_t(p.object)];
+            Pose pose{float(p.x), float(p.y), float(p.z), float(p.ax), float(p.ay), float(p.az), p.animation, p.reflection};
+            // The original draws whole objects far to near (cell by cell) without a depth
+            // buffer, and the track relies on the order: flat ground quads beside the road are
+            // drawn before the road and its verges, which cover them where the quad pokes
+            // through. (Only ground below the eye: flat ceilings overhead keep their depth.)
+            if (p.slot != 0 && m.flat && float(p.y + m.flat_y) < cam_->y) pose.depth_bias = -kFlatGroundBias;
+            pose.seal_edges = p.slot == 0;
+            draw_model_into(g, m, pose, nullptr);
+        }
+    });
+    for (int k = 0; k < chunks; ++k) geo_.append(chunk_geo_[size_t(k)]);
+}
+
+void Renderer::Geo::clear() {
+    deferred.clear();
+    deferred_verts.clear();
+    fills.clear();
+    tris.clear();
+    stats = {};
+    edge_slack = 0;
+}
+
+void Renderer::Geo::append(const Geo& o) {
+    const uint32_t fill0 = uint32_t(fills.size()), vert0 = uint32_t(deferred_verts.size());
+    fills.insert(fills.end(), o.fills.begin(), o.fills.end());
+    for (Tri t : o.tris) {
+        t.fill += fill0;
+        tris.push_back(t);
     }
+    for (Deferred d : o.deferred) {
+        d.first += vert0;
+        deferred.push_back(d);
+    }
+    deferred_verts.insert(deferred_verts.end(), o.deferred_verts.begin(), o.deferred_verts.end());
+    stats.objects += o.stats.objects;
+    stats.faces += o.stats.faces;
 }
 
 void Renderer::draw_model(const Model& model, const Pose& pose, const std::vector<bool>* part_mask) {
+    if (skip_) return;
+    draw_model_into(geo_, model, pose, part_mask);
+}
+
+void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, const std::vector<bool>* part_mask) {
     // The glass scroll: movement since the last frame, in camera space, times the rate;
     // rounded to nearest (FIST) and wrapped to the 256-texel reflection map.
     int env_off_x = 0, env_off_z = 0;
@@ -172,8 +212,8 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
         apply(view_, pose.x - cam_->x, pose.y - cam_->y, pose.z - cam_->z, cx, cy, cz);
         if (!sphere_visible(cx, cy, cz, model.radius)) return;
     }
-    ++stats_.objects;
-    edge_slack_ = pose.seal_edges ? kEdgeSlack * float(fb_->height()) / 200.0f : 0.0f;
+    ++g.stats.objects;
+    g.edge_slack = pose.seal_edges ? kEdgeSlack * float(fb_->height()) / 200.0f : 0.0f;
 
     // The game turns objects the other way round from the camera: negate the yaw (checked
     // against the original: walls facing the road, cars seen from behind in the intro).
@@ -251,27 +291,27 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
         // the hub disc (..x, on the outside) after the tyre (..i).
         const float bias = pose.depth_bias + (part.wheel ? kWheelBias + (part.name.back() == 'x' ? 16.0f : 0.0f) : 0.0f);
         const size_t nv = part.vertices.size();
-        wx_.resize(nv); wy_.resize(nv); wz_.resize(nv);
+        g.wx.resize(nv); g.wy.resize(nv); g.wz.resize(nv);
         for (size_t i = 0; i < nv; ++i) {
             float rx, ry, rz;
             apply(prot, part.vertices[i].x, part.vertices[i].y, part.vertices[i].z, rx, ry, rz);
-            apply(view_, rx + ox, ry + oy, rz + oz, wx_[i], wy_[i], wz_[i]);
+            apply(view_, rx + ox, ry + oy, rz + oz, g.wx[i], g.wy[i], g.wz[i]);
         }
         // Reflection UVs (object_transform_float): the view direction to the vertex reflected
         // off the vertex normal, u from its x and v from its z, 127 * component + 127 - scroll.
         const bool env = (part.flags & 0x2000) && part.vertex_normals.size() >= nv;
         if (env) {
-            env_uv_.resize(nv);
+            g.env_uv.resize(nv);
             for (size_t i = 0; i < nv; ++i) {
                 const auto& n0 = part.vertex_normals[i];
                 float rnx, rny, rnz, nx, ny, nz;
                 apply(prot, n0[0], n0[1], n0[2], rnx, rny, rnz);
                 apply(view_, rnx, rny, rnz, nx, ny, nz);
-                const double len = std::sqrt(double(wx_[i]) * wx_[i] + double(wy_[i]) * wy_[i] + double(wz_[i]) * wz_[i]);
-                const double vx = len > 0 ? wx_[i] / len : 0, vy = len > 0 ? wy_[i] / len : 0, vz = len > 0 ? wz_[i] / len : 0;
+                const double len = std::sqrt(double(g.wx[i]) * g.wx[i] + double(g.wy[i]) * g.wy[i] + double(g.wz[i]) * g.wz[i]);
+                const double vx = len > 0 ? g.wx[i] / len : 0, vy = len > 0 ? g.wy[i] / len : 0, vz = len > 0 ? g.wz[i] / len : 0;
                 const double d2 = 2.0 * (vx * nx + vy * ny + vz * nz);
                 const double rx = double(nx) * d2 - vx, rz = double(nz) * d2 - vz;
-                env_uv_[i] = {int(std::lrint(rx * 127.0)) + 127 - env_off_x, int(std::lrint(rz * 127.0)) + 127 - env_off_z};
+                g.env_uv[i] = {int(std::lrint(rx * 127.0)) + 127 - env_off_x, int(std::lrint(rz * 127.0)) + 127 - env_off_z};
             }
         }
         for (const Face& f : part.faces) {
@@ -283,7 +323,7 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
             const size_t v0 = f.vtx[0];
             // (render_patch_cull_jge: the animated objects' parts keep the other side.)
             if (v0 >= nv) continue;
-            const float facing = wx_[v0] * cnx + wy_[v0] * cny + wz_[v0] * cnz;
+            const float facing = g.wx[v0] * cnx + g.wy[v0] * cny + g.wz[v0] * cnz;
             if (part.frames.empty() ? facing < 0 : facing >= 0) continue;
             const Material* mat = lib ? lib->find(f.material) : nullptr;
             size_t n = 0;
@@ -291,10 +331,10 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
             for (int i = 0; i < f.count && i < 6; ++i) {
                 const size_t vi = f.vtx[size_t(i)];
                 if (vi >= nv) { n = 0; break; }
-                ClipVert cv{wx_[vi], wy_[vi], wz_[vi], 0, 0};
+                ClipVert cv{g.wx[vi], g.wy[vi], g.wz[vi], 0, 0};
                 if (mat && env && (mat->type >> 1) == 5) {
-                    cv.u = float(env_uv_[vi][0]) * float(mat->width) / 256.0f;
-                    cv.v = float(env_uv_[vi][1]) * float(mat->height) / 256.0f;
+                    cv.u = float(g.env_uv[vi][0]) * float(mat->width) / 256.0f;
+                    cv.v = float(g.env_uv[vi][1]) * float(mat->height) / 256.0f;
                 } else if (mat && vi < part.uvs.size()) {
                     cv.u = float(part.uvs[vi][0]) * float(mat->width) / 256.0f;  // (u * width) >> 5 with 3 fraction bits
                     cv.v = float(part.uvs[vi][1]) * float(mat->height) / 256.0f;
@@ -303,37 +343,51 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
                 poly[n++] = cv;
             }
             if (n < 3) continue;
-            ++stats_.faces;
+            ++g.stats.faces;
             const Mode mode = material_mode(mat);
             if (mode == Mode::Translucent || mode == Mode::Darken) {
-                deferred_.push_back({uint32_t(deferred_verts_.size()), uint32_t(n), mat, f.color, pose.animation,
+                g.deferred.push_back({uint32_t(g.deferred_verts.size()), uint32_t(n), mat, f.color, pose.animation,
                                      pose.reflection, depth, bias});
-                deferred_verts_.insert(deferred_verts_.end(), poly.begin(), poly.begin() + ptrdiff_t(n));
+                g.deferred_verts.insert(g.deferred_verts.end(), poly.begin(), poly.begin() + ptrdiff_t(n));
                 continue;
             }
-            draw_polygon(poly.data(), n, mat, f.color, pose.animation, pose.reflection, bias);
+            draw_polygon(g, poly.data(), n, mat, f.color, pose.animation, pose.reflection, bias);
         }
     }
 }
 
 RenderStats Renderer::finish() {
-    edge_slack_ = 0;
+    Geo& g = geo_;
+    if (skip_) return g.stats;
+    g.edge_slack = 0;
     // Translucent polygons do not write depth; draw them far to near over the opaque scene.
-    std::stable_sort(deferred_.begin(), deferred_.end(),
+    std::stable_sort(g.deferred.begin(), g.deferred.end(),
                      [](const Deferred& a, const Deferred& b) { return a.depth > b.depth; });
-    for (const Deferred& d : deferred_)
-        draw_polygon(deferred_verts_.data() + d.first, d.count, d.mat, d.color, d.animation, d.reflection, d.depth_bias);
-    deferred_.clear();
-    deferred_verts_.clear();
+    for (const Deferred& d : g.deferred)
+        draw_polygon(g, g.deferred_verts.data() + d.first, d.count, d.mat, d.color, d.animation, d.reflection, d.depth_bias);
+    g.deferred.clear();
+    g.deferred_verts.clear();
     // Fill the pixels: bands of rows, several per thread so that the busy parts of the
     // screen are shared out.
     if (!pool_) pool_ = std::make_unique<WorkerPool>();
     const int h = fb_->height();
     const int bands = std::max(1, std::min(h / 4, pool_->threads() * 6));
-    pool_->run(bands, [&](int b) { fill_rows(h * b / bands, h * (b + 1) / bands); });
-    tris_.clear();
-    fills_.clear();
-    return stats_;
+    // each band gets the list of triangles that reach it, in drawing order
+    band_tris_.resize(size_t(bands));
+    for (auto& l : band_tris_) l.clear();
+    row_band_.resize(size_t(h));
+    for (int b = 0; b < bands; ++b)
+        for (int y = h * b / bands; y < h * (b + 1) / bands; ++y) row_band_[size_t(y)] = b;
+    for (size_t i = 0; i < g.tris.size(); ++i) {
+        const Tri& t = g.tris[i];
+        const int y0 = std::clamp(t.y0, 0, h - 1), y1 = std::clamp(t.y1, 0, h - 1);
+        if (t.y1 < 0 || t.y0 >= h) continue;
+        for (int b = row_band_[size_t(y0)]; b <= row_band_[size_t(y1)]; ++b) band_tris_[size_t(b)].push_back(uint32_t(i));
+    }
+    pool_->run(bands, [&](int b) { fill_rows(h * b / bands, h * (b + 1) / bands, band_tris_[size_t(b)]); });
+    g.tris.clear();
+    g.fills.clear();
+    return g.stats;
 }
 
 void Renderer::draw_background(const PcxImage& bck, const Camera& cam, Framebuffer& fb) {
@@ -364,7 +418,7 @@ void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Fram
     }
 }
 
-void Renderer::draw_polygon(const ClipVert* in, size_t count, const Material* mat, uint8_t face_color, int32_t animation,
+void Renderer::draw_polygon(Geo& g, const ClipVert* in, size_t count, const Material* mat, uint8_t face_color, int32_t animation,
                             int32_t reflection, float depth_bias) {
     const Framebuffer& fb = *fb_;
     const MaterialLibrary* lib = track_->materials ? &*track_->materials : nullptr;
@@ -407,7 +461,7 @@ void Renderer::draw_polygon(const ClipVert* in, size_t count, const Material* ma
     fill.flat = mode == Mode::Flat && mat && (mat->type >> 1) == 4 ? face_color : (mat ? mat->color : 15);
     fill.writes_depth = mode != Mode::Translucent && mode != Mode::Darken;
     fill.depth_bias = depth_bias;
-    fill.edge_slack = fill.writes_depth ? edge_slack_ : 0.0f;
+    fill.edge_slack = fill.writes_depth ? g.edge_slack : 0.0f;
     // mat10_draw takes its frame from the instance's +0x3c word, the others from the
     // animation phase (cell_begin).
     fill.frame = !mat ? 0
@@ -423,7 +477,7 @@ void Renderer::draw_polygon(const ClipVert* in, size_t count, const Material* ma
         if ((mat->width & (mat->width - 1)) == 0) fill.wmask = mat->width - 1;
         if ((mat->height & (mat->height - 1)) == 0) fill.hmask = mat->height - 1;
     }
-    const uint32_t fill_index = uint32_t(fills_.size());
+    const uint32_t fill_index = uint32_t(g.fills.size());
     bool used = false;
 
     // Fan triangulation; the triangles are filled in finish().
@@ -438,19 +492,87 @@ void Renderer::draw_polygon(const ClipVert* in, size_t count, const Material* ma
         const int y0 = std::max(0, int(std::floor(std::min({a.y, b.y, c.y}))));
         const int y1 = std::min(fb.height() - 1, int(std::ceil(std::max({a.y, b.y, c.y}))));
         if (x0 > x1 || y0 > y1) continue;
-        tris_.push_back({a, b, c, y0, y1, x0, x1, fill_index});
+        g.tris.push_back({a, b, c, y0, y1, x0, x1, fill_index});
         used = true;
     }
-    if (used) fills_.push_back(fill);
+    if (used) g.fills.push_back(fill);
 }
 
-void Renderer::fill_rows(int band0, int band1) {
+// One row of a triangle: the barycentric weights and the interpolated 1/z, u/z, v/z at x0
+// and their steps per pixel.
+struct Renderer::Span {
+    float w0, w1, w2, iz, uz, vz;
+    float k0, k1, k2, diz, duz, dvz;
+    float e0, e1, e2;
+    uint8_t* row;
+    float* drow;
+    int x0, x1;
+};
+
+
+template <Renderer::Kind K>
+void Renderer::span(Span& s, const Fill& fl, const MaterialLibrary* lib, bool bias) const {
+    float w0 = s.w0, w1 = s.w1, w2 = s.w2, iz = s.iz, uz = s.uz, vz = s.vz;
+    const Mode mode = Mode(fl.mode);
+    for (int x = s.x0; x <= s.x1; ++x, w0 += s.k0, w1 += s.k1, w2 += s.k2, iz += s.diz, uz += s.duz, vz += s.dvz) {
+        if (w0 < s.e0 || w1 < s.e1 || w2 < s.e2) continue;
+        float& dz = s.drow[x];
+        // Coplanar surfaces (road decals on the road, shadows) are resolved like the
+        // original's painter's order: the later polygon wins near-ties.
+        const float tz = bias ? iz / std::max(1e-3f, 1.0f - fl.depth_bias * iz) : iz;
+        if (tz * 1.0005f < dz) continue;
+        uint8_t& dst = s.row[x];
+        if constexpr (K == Kind::Darken) {
+            dst = track_->darken[dst];
+            continue;
+        } else {
+            uint8_t col = fl.flat;
+            if constexpr (K != Kind::Flat) {
+                const float rz = 1.0f / iz;
+                const float fu = uz * rz, fv = vz * rz;
+                int iu = int(fu), iv = int(fv);  // floor: truncate, one down below zero
+                iu -= fu < float(iu);
+                iv -= fv < float(iv);
+                if constexpr (K == Kind::Library) {
+                    col = lib->texel(*fl.mat, iu, iv, fl.frame);
+                } else if constexpr (K == Kind::Texels) {
+                    const Material& m = *fl.mat;
+                    if (fl.wmask >= 0) iu &= fl.wmask;
+                    else if ((iu %= m.width) < 0) iu += m.width;
+                    if (fl.hmask >= 0) iv &= fl.hmask;
+                    else if ((iv %= m.height) < 0) iv += m.height;
+                    col = fl.texels[size_t(iv) * 256 + size_t(iu)];
+                } else {
+                    col = fl.texels[size_t(iv & fl.hmask) * 256 + size_t(iu & fl.wmask)];
+                }
+                if constexpr (K == Kind::Library || K == Kind::Texels) {
+                    if (mode == Mode::Transparent && col == 0) continue;
+                    if (mode == Mode::Translucent) {
+                        dst = track_->shade_table[size_t(col & 63) * 256 + dst];
+                        continue;
+                    }
+                } else if constexpr (K == Kind::TransparentPow2) {
+                    if (col == 0) continue;
+                }
+            }
+            if constexpr (K == Kind::TranslucentPow2) {
+                dst = track_->shade_table[size_t(col & 63) * 256 + dst];
+            } else {
+                if (fl.writes_depth) dz = tz;
+                dst = col;
+            }
+        }
+    }
+}
+
+void Renderer::fill_rows(int band0, int band1, const std::vector<uint32_t>& tris) {
     Framebuffer& fb = *fb_;
     const MaterialLibrary* lib = track_->materials ? &*track_->materials : nullptr;
     const size_t width = size_t(fb.width());
-    for (const Tri& t : tris_) {
+    for (const uint32_t ti : tris) {
+        const Tri& t = geo_.tris[ti];
         if (t.y1 < band0 || t.y0 >= band1) continue;
-        const Fill& fl = fills_[t.fill];
+        const Fill& fl = geo_.fills[t.fill];
         const Mode mode = Mode(fl.mode);
         const Scr& a = t.a;
         const Scr& b = t.b;
@@ -493,46 +615,35 @@ void Renderer::fill_rows(int band0, int band1) {
             }
             uint8_t* row = &fb.at(0, y);
             float* drow = depth_.data() + size_t(y) * width;
-            for (int x = x0; x <= x1; ++x) {
-                const float px = float(x) + 0.5f;
-                const float w0 = ((b.x - px) * (c.y - py) - (b.y - py) * (c.x - px)) * inv;
-                const float w1 = ((c.x - px) * (a.y - py) - (c.y - py) * (a.x - px)) * inv;
-                const float w2 = 1.0f - w0 - w1;
-                if (w0 < e0 || w1 < e1 || w2 < e2) continue;
-                const float iz = w0 * a.iz + w1 * b.iz + w2 * c.iz;
-                float& dz = drow[x];
-                // Coplanar surfaces (road decals on the road, shadows) are resolved like the
-                // original's painter's order: the later polygon wins near-ties.
-                const float tz = fl.depth_bias != 0 ? iz / std::max(1e-3f, 1.0f - fl.depth_bias * iz) : iz;
-                if (tz * 1.0005f < dz) continue;
-                uint8_t& dst = row[x];
-                if (mode == Mode::Darken) {
-                    dst = track_->darken[dst];
-                    continue;
-                }
-                uint8_t col = fl.flat;
-                if (mode != Mode::Flat && fl.use_texels) {
-                    const float u = (w0 * a.uz + w1 * b.uz + w2 * c.uz) / iz;
-                    const float v = (w0 * a.vz + w1 * b.vz + w2 * c.vz) / iz;
-                    int iu = int(std::floor(u)), iv = int(std::floor(v));
-                    if (fl.texels) {
-                        const Material& m = *fl.mat;
-                        if (fl.wmask >= 0) iu &= fl.wmask;
-                        else if ((iu %= m.width) < 0) iu += m.width;
-                        if (fl.hmask >= 0) iv &= fl.hmask;
-                        else if ((iv %= m.height) < 0) iv += m.height;
-                        col = fl.texels[size_t(iv) * 256 + size_t(iu)];
-                    } else {
-                        col = lib->texel(*fl.mat, iu, iv, fl.frame);
-                    }
-                    if (mode == Mode::Transparent && col == 0) continue;
-                    if (mode == Mode::Translucent) {
-                        dst = track_->shade_table[size_t(col & 63) * 256 + dst];
-                        continue;
-                    }
-                }
-                if (fl.writes_depth) dz = tz;
-                dst = col;
+            // The barycentric weights and the interpolated 1/z, u/z, v/z are linear along the
+            // row: start them at x0 and step them one pixel at a time.
+            const float px0 = float(x0) + 0.5f;
+            Span sp;
+            sp.w0 = ((b.x - px0) * (c.y - py) - (b.y - py) * (c.x - px0)) * inv;
+            sp.w1 = ((c.x - px0) * (a.y - py) - (c.y - py) * (a.x - px0)) * inv;
+            sp.w2 = 1.0f - sp.w0 - sp.w1;
+            sp.iz = sp.w0 * a.iz + sp.w1 * b.iz + sp.w2 * c.iz;
+            sp.uz = sp.w0 * a.uz + sp.w1 * b.uz + sp.w2 * c.uz;
+            sp.vz = sp.w0 * a.vz + sp.w1 * b.vz + sp.w2 * c.vz;
+            sp.k0 = k0; sp.k1 = k1; sp.k2 = k2;
+            sp.diz = k0 * a.iz + k1 * b.iz + k2 * c.iz;
+            sp.duz = k0 * a.uz + k1 * b.uz + k2 * c.uz;
+            sp.dvz = k0 * a.vz + k1 * b.vz + k2 * c.vz;
+            sp.e0 = e0; sp.e1 = e1; sp.e2 = e2;
+            sp.row = row; sp.drow = drow;
+            sp.x0 = x0; sp.x1 = x1;
+            // the inner loop specialised for the fill's mode (no per-pixel decisions)
+            const bool textured = mode != Mode::Flat && fl.use_texels;
+            const bool bias = fl.depth_bias != 0;
+            if (mode == Mode::Darken) span<Kind::Darken>(sp, fl, lib, bias);
+            else if (!textured) span<Kind::Flat>(sp, fl, lib, bias);
+            else if (!fl.texels) span<Kind::Library>(sp, fl, lib, bias);
+            else if (fl.wmask >= 0 && fl.hmask >= 0) {
+                if (mode == Mode::Translucent) span<Kind::TranslucentPow2>(sp, fl, lib, bias);
+                else if (mode == Mode::Transparent) span<Kind::TransparentPow2>(sp, fl, lib, bias);
+                else span<Kind::TexturedPow2>(sp, fl, lib, bias);
+            } else {
+                span<Kind::Texels>(sp, fl, lib, bias);
             }
         }
     }

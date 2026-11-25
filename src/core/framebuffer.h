@@ -43,8 +43,9 @@ public:
     Palette& palette() { return palette_; }
     const Palette& palette() const { return palette_; }
 
-    // Writes width*height RGBA8888 pixels (byte order R,G,B,A) into dst.
-    void to_rgba(uint8_t* dst, int dst_pitch) const;
+    // Writes width*height RGBA8888 pixels (byte order R,G,B,A) into dst; with a pool, bands
+    // of rows on all its threads.
+    void to_rgba(uint8_t* dst, int dst_pitch, class WorkerPool* pool = nullptr) const;
 
 private:
     int width_, height_;

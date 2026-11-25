@@ -35,6 +35,7 @@ public:
     void add_ticks(uint32_t ticks) { ticks_ += ticks; }
     // True once enough ticks have accumulated for the next frame.
     bool frame_ready() const { return ticks_ >= kMinTicksPerFrame; }
+    void drop_ticks(uint32_t n) { ticks_ -= n < ticks_ ? n : ticks_; }
     // Consumes the accumulated ticks (at most `take`) and updates the frame time, like the
     // game does. The original busy-waits for 2 ticks, so on a fast enough machine every frame
     // is 2 ticks; a frame that has to wait for the display passes `take` = 2 and keeps the
