@@ -518,3 +518,63 @@ TEST_CASE("track: MAP2's cliff faces are in the original's early drawing class")
     CHECK(cliffs > 40);
     CHECK(roads_in_class == 0);
 }
+
+TEST_CASE("render: a car's faces cover each other in drawing order, the rest of the scene by depth") {
+    CHECK(scr::draw_order_index(1, 1, 5) == 0);
+    CHECK(scr::draw_order_index(5, 1, 1) == 1);
+    CHECK(scr::draw_order_index(5, 1, -1) == 2);
+    CHECK(scr::draw_order_index(1, 1, -5) == 3);
+    CHECK(scr::draw_order_index(-1, 1, -5) == 4);
+    CHECK(scr::draw_order_index(-5, 1, -1) == 5);
+    CHECK(scr::draw_order_index(-5, 1, 1) == 6);
+    CHECK(scr::draw_order_index(-1, 1, 5) == 7);
+    CHECK(scr::draw_order_index(1, -1, 5) == 8);
+    CHECK(scr::draw_order_index(-1, -1, 5) == 15);
+
+    scr::Track t;
+    t.materials = make_library();
+    t.objects.push_back(make_model(0, 255, 300));
+    t.objects.push_back(make_model(0, 255, 900));
+    for (size_t i = 0; i < 256; ++i) t.palette[i] = {uint8_t(i), uint8_t(i), uint8_t(i)};
+    auto picture = [&](bool car, bool with_far, bool far_first, scr::Renderer::FillPath path, int threads) {
+        scr::Model near_model = t.objects[0];
+        near_model.car = car;
+        scr::Renderer r;
+        if (!r.set_fill_path(path)) return std::vector<uint8_t>();
+        r.set_threads(threads);
+        r.set_mipmaps(false);
+        scr::Camera cam;
+        cam.z = 600;
+        scr::Framebuffer fb(320, 200);
+        r.begin(t, cam, fb, 3, true);
+        scr::Pose a, b;
+        a.z = -1500;
+        a.ax = 200;
+        a.ay = 300;
+        b.z = -4000;
+        if (with_far && far_first) r.draw_model(t.objects[1], b);
+        r.draw_model(near_model, a);
+        if (with_far && !far_first) r.draw_model(t.objects[1], b);
+        r.finish();
+        return std::vector<uint8_t>(fb.pixels(), fb.pixels() + 320 * 200);
+    };
+    using FP = scr::Renderer::FillPath;
+    const auto alone = picture(true, false, false, FP::Sse2, 1);
+    // the car's pixels stay the car's whether the object behind it is drawn before or after
+    for (bool far_first : {true, false}) {
+        const auto both = picture(true, true, far_first, FP::Sse2, 1);
+        int car_pixels = 0, kept = 0;
+        for (size_t i = 0; i < alone.size(); ++i)
+            if (alone[i] != 3) {
+                ++car_pixels;
+                kept += both[i] == alone[i];
+            }
+        CHECK(car_pixels > 500);
+        CHECK(kept == car_pixels);
+    }
+    // and the same picture from every build of the filler on any number of threads
+    const auto ref = picture(true, true, false, FP::Sse2, 1);
+    CHECK(picture(true, true, false, FP::Sse2, 5) == ref);
+    const auto avx = picture(true, true, false, FP::Avx2, 3);
+    if (!avx.empty()) CHECK(avx == ref);
+}

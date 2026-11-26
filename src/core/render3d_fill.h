@@ -62,6 +62,7 @@ struct Fill {
     // further away: they fill cracks, but any surface that really is there shows instead.
     bool seal_behind;
     const MipTexture* mip;  // the smaller versions to draw from where the texture is squeezed, or null
+    uint8_t painter;        // a car's polygon: writes its depths negated (see Renderer::Geo::painter)
     float depth_bias;       // in units of d = 128 - z
     float edge_slack;       // pixels the polygon reaches past its edges
 };

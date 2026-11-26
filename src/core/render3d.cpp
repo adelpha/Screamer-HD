@@ -302,6 +302,7 @@ void Renderer::Geo::clear() {
     tri_rows.clear();
     stats = {};
     edge_slack = 0;
+    painter = false;
 }
 
 void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, const std::vector<bool>* part_mask) {
@@ -344,8 +345,8 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
     }
     const MaterialLibrary* lib = track_->materials ? &*track_->materials : nullptr;
     std::array<ClipVert, 6> poly;
-    for (size_t pi = 0; pi < model.parts.size(); ++pi) {
-        if (part_mask && (pi >= part_mask->size() || !(*part_mask)[pi])) continue;
+    // Where a part is: its rotation and its origin from the camera, in world axes.
+    auto part_frame = [&](size_t pi, Mat3& prot, float& ox, float& oy, float& oz) {
         const Part& full = model.parts[pi];
         // Part placement inside the object, then the object's.
         const PartPose* pp = pose.parts && pi < pose.parts->size() ? &(*pose.parts)[pi] : nullptr;
@@ -355,8 +356,7 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
         if (pp && pp->y) offset[1] = pp->oy;
         const bool placed = angles != std::array<int32_t, 3>{};
         // (the yaw negated as for whole objects, so a part turns the way the game turns it)
-        Mat3 prot = placed ? multiply(rot, rotation(float(angles[0]), -float(angles[1]), float(angles[2]))) : rot;
-        float ox, oy, oz;
+        prot = placed ? multiply(rot, rotation(float(angles[0]), -float(angles[1]), float(angles[2]))) : rot;
         apply(rot, float(offset[0]), float(offset[1]), float(offset[2]), ox, oy, oz);
         if (!full.frames.empty()) {
             // A part of an animated object (object_load_bbox): this frame's matrix (stored by
@@ -372,6 +372,38 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
         ox += pose.x - cam_->x;
         oy += pose.y - cam_->y;
         oz += pose.z - cam_->z;
+    };
+    // A car: its parts in the original's order (cell_load_objects sorts them by
+    // object_compute_depth's key): far to near by the distance of the part's centre, the
+    // tyres (three-letter names ending in i) as if 4000 units further and the hub discs
+    // (ending in x) 1000, so the wheels come first and the bodywork goes over them.
+    const bool painter = model.car && !pose.billboard;
+    g.painter = painter;
+    std::vector<size_t>& part_order = g.part_order;
+    part_order.clear();
+    for (size_t pi = 0; pi < model.parts.size(); ++pi) part_order.push_back(pi);
+    if (painter) {
+        std::vector<float>& keys = g.part_keys;
+        keys.assign(model.parts.size(), 0.0f);
+        for (size_t pi = 0; pi < model.parts.size(); ++pi) {
+            const Part& p = model.parts[pi];
+            Mat3 prot;
+            float ox, oy, oz, cx, cy, cz;
+            part_frame(pi, prot, ox, oy, oz);
+            apply(prot, float(p.bound_x), float(p.bound_y), float(p.bound_z), cx, cy, cz);
+            cx += ox; cy += oy; cz += oz;
+            float key = -std::sqrt(cx * cx + cy * cy + cz * cz);
+            if (p.name.size() == 3 && p.name[0] != 'A' && p.name[0] != 'a') key += p.name[2] == 'i' ? -4000.0f : p.name[2] == 'x' ? -1000.0f : 0.0f;
+            keys[pi] = key;
+        }
+        std::stable_sort(part_order.begin(), part_order.end(), [&](size_t a, size_t b) { return keys[a] < keys[b]; });
+    }
+    for (const size_t pi : part_order) {
+        if (part_mask && (pi >= part_mask->size() || !(*part_mask)[pi])) continue;
+        const Part& full = model.parts[pi];
+        Mat3 prot;
+        float ox, oy, oz;
+        part_frame(pi, prot, ox, oy, oz);
         if (full.radius >= 0) {
             float rx, ry, rz, cx, cy, cz;
             apply(prot, full.center[0], full.center[1], full.center[2], rx, ry, rz);
@@ -407,7 +439,7 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
         // A car's wheels: the original sorts an object's parts by distance and draws the
         // nearer wheels after the body, over the dark wheel-arch faces just outside them, and
         // the hub disc (..x, on the outside) after the tyre (..i).
-        const float bias = pose.depth_bias + (part.wheel ? kWheelBias + (part.name.back() == 'x' ? 16.0f : 0.0f) : 0.0f);
+        const float bias = pose.depth_bias + (part.wheel && !painter ? kWheelBias + (part.name.back() == 'x' ? 16.0f : 0.0f) : 0.0f);
         const size_t nv = part.vertices.size();
         g.wx.resize(nv); g.wy.resize(nv); g.wz.resize(nv);
         for (size_t i = 0; i < nv; ++i) {
@@ -440,7 +472,19 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
                 g.env_uv[i] = {int(std::lrint(rx * 127.0)) + 127 - env_off_x, int(std::lrint(rz * 127.0)) + 127 - env_off_z};
             }
         }
-        for (const Face& f : part.faces) {
+        // A car's faces in the order of the part's list for where the eye is, in the part's
+        // own space (the transpose of its rotation turns the way to the camera back into it).
+        const std::vector<uint16_t>* order = nullptr;
+        if (painter) {
+            const float ex = -(prot.m[0][0] * ox + prot.m[1][0] * oy + prot.m[2][0] * oz);
+            const float ey = -(prot.m[0][1] * ox + prot.m[1][1] * oy + prot.m[2][1] * oz);
+            const float ez = -(prot.m[0][2] * ox + prot.m[1][2] * oy + prot.m[2][2] * oz);
+            const auto& list = part.draw_order[size_t(draw_order_index(ex, ey, ez))];
+            if (!list.empty()) order = &list;
+        }
+        const size_t face_count = order ? order->size() : part.faces.size();
+        for (size_t fi = 0; fi < face_count; ++fi) {
+            const Face& f = part.faces[order ? (*order)[fi] : fi];
             // Back-face test like object_build_polygons: dot(vertex - eye, normal) >= 0 draws.
             float nx, ny, nz;
             apply(prot, float(f.normal[0]), float(f.normal[1]), float(f.normal[2]), nx, ny, nz);
@@ -529,7 +573,34 @@ RenderStats Renderer::finish() {
             for (size_t i = 0, n = o.tri_rows.size(); i < n; ++i)
                 if (rows[i][1] >= y0 && rows[i][0] < y1) list.push_back({tris + i, fills + tris[i].fill});
         };
-        for (size_t k = 0; k < job_count_; ++k) collect(job_geo_[k]);
+        const int w = fb_->width();
+        for (size_t k = 0; k < job_count_; ++k) {
+            const Geo& o = job_geo_[k];
+            if (!o.painter) {
+                collect(o);
+                continue;
+            }
+            // a car: what came before it, then the car on its own, then its depths (written
+            // negated, so that its later polygons cover its earlier ones) put right
+            fill_rows_(ctx, y0, y1, list.data(), list.size());
+            list.clear();
+            collect(o);
+            fill_rows_(ctx, y0, y1, list.data(), list.size());
+            int bx0 = w, bx1 = -1, by0 = y1, by1 = y0 - 1;
+            for (const detail::TriRef& r : list) {
+                bx0 = std::min(bx0, r.tri->x0);
+                bx1 = std::max(bx1, r.tri->x1);
+                by0 = std::min(by0, r.tri->y0);
+                by1 = std::max(by1, r.tri->y1);
+            }
+            bx0 = std::max(bx0, 0);
+            bx1 = std::min(bx1, w - 1);
+            for (int y = std::max(by0, y0); y <= std::min(by1, y1 - 1); ++y) {
+                float* const drow = depth_.data() + size_t(y) * size_t(w);
+                for (int x = bx0; x <= bx1; ++x) drow[x] = std::fabs(drow[x]);
+            }
+            list.clear();
+        }
         fill_rows_(ctx, y0, y1, list.data(), list.size());
         if (clear_at_finish_) sky_rows(y0, y1);
         list.clear();
@@ -757,6 +828,7 @@ void Renderer::draw_polygon(Geo& g, const ClipVert* in, size_t count, const Mate
     fill.flat = mode == Mode::Flat && mat && (mat->type >> 1) == 4 ? face_color : (mat ? mat->color : 15);
     fill.writes_depth = mode != Mode::Translucent && mode != Mode::Darken;
     fill.depth_bias = depth_bias;
+    fill.painter = g.painter ? 1 : 0;
     fill.edge_slack = fill.writes_depth ? g.edge_slack : 0.0f;
     fill.seal_behind = open_edges != 0xff;
     // A painted line of the road, far enough to be thinner than a pixel, would be drawn in
