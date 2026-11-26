@@ -139,6 +139,9 @@ public:
     // The track's placements drawn with the corners of neighbouring road pieces moved together
     // (Track::welds); off: where the file puts them, with the lines stepping at the joints.
     void set_weld_joints(bool on) { weld_joints_ = on; }
+    // The sky panorama turns with the camera's roll like the rest of the scene (ours); off: it
+    // stays level whatever the roll, as it was drawn before.
+    void set_sky_tilt(bool on) { sky_tilt_ = on; }
     void set_mipmaps(bool on, float sharpness = 1.4f) { mipmaps_ = on; mip_sharpness_ = sharpness; }
     // Threads that fill pixels (<= 0: one per hardware thread, the default).
     void set_threads(int threads);
@@ -226,7 +229,7 @@ private:
     void clear_rows(int y0, int y1);
     // The panorama column under each framebuffer column (empty: no panorama).
     static void background_columns(const PcxImage& bck, const Camera& cam, const Framebuffer& fb, std::vector<int>& column);
-    static void draw_background_rows(const PcxImage& bck, const Camera& cam, Framebuffer& fb, int y0, int y1, const int* column);
+    static void draw_background_rows(const PcxImage& bck, const Camera& cam, Framebuffer& fb, int y0, int y1, const int* column, bool tilt);
 
 
     const Track* track_ = nullptr;
@@ -255,6 +258,7 @@ private:
     bool clamp_edges_ = true;
     bool seal_all_edges_ = false;
     bool weld_joints_ = true;
+    bool sky_tilt_ = true;
     float mip_sharpness_ = 1.4f;
     bool skip_ = false;
     bool fade_ = false;            // the view-distance fade is on this frame
