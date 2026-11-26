@@ -502,7 +502,27 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
             // (render_patch_cull_jge: the animated objects' parts keep the other side.)
             if (v0 >= nv) continue;
             const float facing = g.wx[v0] * cnx + g.wy[v0] * cny + g.wz[v0] * cnz;
-            if (part.frames.empty() ? facing < 0 : facing >= 0) continue;
+            // A folded face: each triangle of its fan by its own side (the stored normals
+            // point against the corners' turning sense, so a triangle shows where its first
+            // corner lies on the negative side of its own cross product).
+            uint32_t halves = 0;  // bit t: fan triangle t faces the eye (0: not a folded face)
+            bool split = false;
+            if (f.folded && folded_faces_) {
+                uint32_t all = 0;
+                for (int k = 1; k + 1 < f.count && k < 5; ++k) {
+                    const size_t vb = f.vtx[size_t(k)], vc = f.vtx[size_t(k + 1)];
+                    if (vb >= nv || vc >= nv) continue;
+                    const float ux = g.wx[vb] - g.wx[v0], uy = g.wy[vb] - g.wy[v0], uz = g.wz[vb] - g.wz[v0];
+                    const float wx = g.wx[vc] - g.wx[v0], wy = g.wy[vc] - g.wy[v0], wz = g.wz[vc] - g.wz[v0];
+                    const float side = g.wx[v0] * (uy * wz - uz * wy) + g.wy[v0] * (uz * wx - ux * wz) + g.wz[v0] * (ux * wy - uy * wx);
+                    all |= 1u << (k - 1);
+                    if (side <= 0) halves |= 1u << (k - 1);
+                }
+                if (halves == 0) continue;
+                split = halves != all;
+            } else if (part.frames.empty() ? facing < 0 : facing >= 0) {
+                continue;
+            }
             const Material* mat = lib ? lib->find(f.material) : nullptr;
             size_t n = 0;
             float depth = 0;
@@ -523,6 +543,20 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
             if (n < 3) continue;
             ++g.stats.faces;
             const Mode mode = material_mode(mat);
+            if (split && n == size_t(f.count)) {
+                // only the halves that face the eye, as triangles
+                for (size_t k = 1; k + 1 < n; ++k) {
+                    if (!((halves >> (k - 1)) & 1)) continue;
+                    const std::array<ClipVert, 3> tri{poly[0], poly[k], poly[k + 1]};
+                    if (mode == Mode::Translucent || mode == Mode::Darken) {
+                        g.deferred.push_back({uint32_t(g.deferred_verts.size()), 3u, mat, f.color, pose.animation, pose.reflection, depth, bias});
+                        g.deferred_verts.insert(g.deferred_verts.end(), tri.begin(), tri.end());
+                    } else {
+                        draw_polygon(g, tri.data(), 3, mat, f.color, pose.animation, pose.reflection, bias, seal_all_edges_ ? uint8_t(0xff) : uint8_t(0));
+                    }
+                }
+                continue;
+            }
             if (mode == Mode::Translucent || mode == Mode::Darken) {
                 g.deferred.push_back({uint32_t(g.deferred_verts.size()), uint32_t(n), mat, f.color, pose.animation,
                                      pose.reflection, depth, bias});

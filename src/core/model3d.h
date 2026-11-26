@@ -53,6 +53,10 @@ struct Face {
     // Bit i: the face is in the part's draw order i (Part::draw_order). The original draws
     // only the faces of the list for where the eye is; a few faces are left out of some.
     uint16_t lists = 0xffff;
+    // The face is not flat: a corner lies well off the plane of its first three (a few faces
+    // of the tracks' cliffs are folded along a diagonal). The original tests the whole face
+    // for facing the eye by its one normal; the renderer tests each half of such a face.
+    bool folded = false;
 };
 
 struct Part {

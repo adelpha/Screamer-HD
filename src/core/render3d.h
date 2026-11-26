@@ -147,6 +147,10 @@ public:
     // Only the faces in a part's draw order for the viewing direction are drawn, as in the
     // original (Face::lists); off: every face that faces the eye.
     void set_face_lists(bool on) { face_lists_ = on; }
+    // Faces that are not flat (Face::folded) are tested for facing the eye half by half, so
+    // the half that does is drawn (ours); off: the whole face by its one normal, as the
+    // original, which leaves a hole where such a face is skipped.
+    void set_folded_faces(bool on) { folded_faces_ = on; }
     void set_mipmaps(bool on, float sharpness = 1.4f) { mipmaps_ = on; mip_sharpness_ = sharpness; }
     // Threads that fill pixels (<= 0: one per hardware thread, the default).
     void set_threads(int threads);
@@ -276,6 +280,7 @@ private:
     bool weld_joints_ = true;
     bool sky_tilt_ = true;
     bool face_lists_ = true;
+    bool folded_faces_ = true;
     float mip_sharpness_ = 1.4f;
     bool skip_ = false;
     bool fade_ = false;            // the view-distance fade is on this frame

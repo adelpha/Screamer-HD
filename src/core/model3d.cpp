@@ -267,6 +267,21 @@ void compute_bounds(Model& model) {
                     if (uses[key(f.vtx[size_t(i)], f.vtx[size_t((i + 1) % f.count)])] < 2) f.open_edges |= uint8_t(1 << i);
             }
         }        static const char* const kWheels[] = {"flx", "fli", "blx", "rli", "frx", "fri", "brx", "rri"};
+        for (Face& f : part.faces) {
+            if (f.count < 4 || f.vtx[0] >= part.vertices.size() || f.vtx[1] >= part.vertices.size() || f.vtx[2] >= part.vertices.size()) continue;
+            const Vec3i16& a = part.vertices[f.vtx[0]];
+            const Vec3i16& b = part.vertices[f.vtx[1]];
+            const Vec3i16& c = part.vertices[f.vtx[2]];
+            const double ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z, vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z;
+            const double nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+            const double len = std::sqrt(nx * nx + ny * ny + nz * nz);
+            if (len <= 0) continue;
+            for (int i = 3; i < f.count; ++i) {
+                if (f.vtx[size_t(i)] >= part.vertices.size()) continue;
+                const Vec3i16& d = part.vertices[f.vtx[size_t(i)]];
+                if (std::fabs(((d.x - a.x) * nx + (d.y - a.y) * ny + (d.z - a.z) * nz) / len) > 32.0) f.folded = true;
+            }
+        }
         part.wheel = std::find(std::begin(kWheels), std::end(kWheels), part.name) != std::end(kWheels);
         if (part.wheel) model.car = true;
         if (part.vertices.empty()) {
