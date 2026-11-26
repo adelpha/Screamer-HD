@@ -29,9 +29,12 @@ std::string clock_text(float t) {
     return buf;
 }
 
-// The game's sin/cos table: 2048 steps, 1.14 fixed point.
-int sin14(int a) { return int(std::lrint(std::sin(double(a & 0x7ff) * 3.14159265358979 / 1024.0) * 16384.0)); }
-int cos14(int a) { return int(std::lrint(std::cos(double(a & 0x7ff) * 3.14159265358979 / 1024.0) * 16384.0)); }
+// The game's sin/cos table (g_sincos_table): 2048 steps, 1.15 fixed point (0x7fff is 1.0),
+// read as signed words with no shift in draw_map_objects. (Truncating x * 32768 gives all but
+// a few dozen of its entries exactly, those one off.)
+int table15(double v) { return std::clamp(int(v * 32768.0), -32768, 32767); }
+int sin15(int a) { return table15(std::sin(double(a & 0x7ff) * 3.14159265358979 / 1024.0)); }
+int cos15(int a) { return table15(std::cos(double(a & 0x7ff) * 3.14159265358979 / 1024.0)); }
 int shr14(int64_t v) {  // draw_map_objects: arithmetic >> 14, then one more down when negative
     int r = int(v >> 14);
     return r < 0 ? r - 1 : r;
@@ -350,7 +353,9 @@ void Hud::draw(Framebuffer& fb, const HudState& st, const std::array<uint8_t, 25
         s.darken(4, 0x7c, 0x48, 0x48, darken075);
         s.set_clip(4, 0x7c, 0x4c, 0xc4);
         const int yaw = int(st.player_yaw * 1024.0f / kPi);
-        const int sn = sin14(yaw), cs = cos14(yaw);
+        // the track lines at zoom / 32768 per unit (>> 2, then 1.15 sin/cos, then zoom >> 14),
+        // the same scale as the CPU cars' dots below
+        const int sn = sin15(yaw), cs = cos15(yaw);
         auto map = [&](int x, int z, int& ox, int& oy) {
             const int dx = (x - st.player_x) >> 2, dz = (z - st.player_z) >> 2;
             const int a = shr14(int64_t(dx) * cs), b = shr14(int64_t(dz) * sn);
