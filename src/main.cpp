@@ -83,6 +83,7 @@ struct Options {
     std::string renderer;           // SDL renderer name, empty = default
     std::string aspect = "4:3";     // 4:3 | stretch | square | wide
     bool fb_set = false;            // --render-size was given
+    bool smooth_turn = true;        // --smooth-turn: the camera's angles as they are, not in 2048ths of a turn
     std::string scene;              // title | track | testpattern; empty = title when game data is found
     std::string track = "MAP2";     // --scene track: which track
     bool reversed = false;          // tracks 7-12: the track driven the other way (DATA/MAPnI.DAT)
@@ -141,6 +142,8 @@ void print_usage() {
         "                       (default on; F10 switches in a race). --mip-sharpness X: 1 sharper .. 2 softer (1.4)\n"
         "  --weld-joints off    road pieces where the track file puts them (their lines step at every joint)\n"
         "  --sky-tilt off       the sky stays level when the camera rolls, as before\n"
+        "  --smooth-turn off    camera, car and sky angles in whole 2048ths of a turn, as the original\n"
+        "                       (large pictures show the steps in slow turns)\n"
         "  --seal-edges all     road pieces reach past every face edge, as before (the painted lines break up)\n"
         "  --texture-edges wrap texel coordinates wrap at the edges of every polygon, as before\n"
         "  --fill sse2|avx2     the build of the pixel filler (default: avx2 when the CPU has it; same picture)\n"
@@ -303,6 +306,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--texture-edges") o.clamp_edges = std::string(next("--texture-edges")) != "wrap";
         else if (a == "--seal-edges") o.seal_all = std::string(next("--seal-edges")) == "all";
         else if (a == "--sky-tilt") o.sky_tilt = std::string(next("--sky-tilt")) != "off";
+        else if (a == "--smooth-turn") o.smooth_turn = std::string(next("--smooth-turn")) != "off";
         else if (a == "--weld-joints") o.weld_joints = std::string(next("--weld-joints")) != "off";
         else if (a == "--mip-sharpness") o.mip_sharpness = float(std::atof(next("--mip-sharpness")));
         else if (a == "--threads") o.threads = std::atoi(next("--threads"));
@@ -958,6 +962,15 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     size_t(s) < sound_bank.fx.size() ? sound_bank.fx[size_t(s)].name.c_str() : "?");
         };
     bool running = true;
+    // The camera's angles for the renderer, in 2048ths of a turn. The original keeps whole
+    // ones, which a large picture shows as steps when the car turns slowly (a step is nearly
+    // two pixels of a 1080-line picture, and the sky moved one column to two of them); ours
+    // keeps the fraction, and the sky follows it. --smooth-turn off: as the original.
+    cam.fine_sky = opt.smooth_turn;
+    auto angle_units = [&](float radians) {
+        const float u = radians * (1024.0f / 3.1415927410125732f);
+        return opt.smooth_turn ? std::fmod(std::fmod(u, 2048.0f) + 2048.0f, 2048.0f) : float(int(u) & 0x7ff);
+    };
     scr::SimClock clock;  // the original's frame clock: 100 Hz ticks, at least 2 per frame
     // F8: photo mode - the race stands still and goes quiet, the HUD goes away and a free
     // camera flies about (WASD, Q/E or Space/C up and down, mouse or arrow keys to look,
@@ -1269,13 +1282,12 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         shared.attract_done = true;
                         running = false;
                     }
-                    constexpr float kToUnits = 1024.0f / 3.1415927410125732f;
                     cam.center_y = 130.0f;
                     cam.x = float(tv_camera.x);
                     cam.y = float(tv_camera.y);
                     cam.z = float(tv_camera.z);
-                    cam.pitch = float(int(tv_camera.pitch * kToUnits) & 0x7ff);
-                    cam.yaw = float(int(tv_camera.yaw * kToUnits) & 0x7ff);
+                    cam.pitch = angle_units(tv_camera.pitch);
+                    cam.yaw = angle_units(tv_camera.yaw);
                     cam.roll = 0;
                 } else if (player) {
                     scr::CarInput in;
@@ -1417,13 +1429,12 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                                           clock.pow_table_row());
                     // engine_set_viewport(320, h, h * 0.65): the projection centre follows the view size.
                     cam.center_y = float(int(float(player->camera.viewport) * 0.65f));
-                    constexpr float kToUnits = 1024.0f / 3.1415927410125732f;
                     cam.x = float(player->camera.x);
                     cam.y = float(player->camera.y);
                     cam.z = float(player->camera.z);
-                    cam.pitch = float(int(player->camera.pitch * kToUnits) & 0x7ff);
-                    cam.yaw = float(int(player->camera.yaw * kToUnits) & 0x7ff);
-                    cam.roll = float(int(player->camera.roll * kToUnits) & 0x7ff);
+                    cam.pitch = angle_units(player->camera.pitch);
+                    cam.yaw = angle_units(player->camera.yaw);
+                    cam.roll = angle_units(player->camera.roll);
                     if (replaying && tv_camera.has_trackside()) {
                         // camera_mode_trackside: the nearest replay camera, aimed at the car
                         const scr::Car& pc = player->race.player;
@@ -1432,8 +1443,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         cam.x = float(tv_camera.x);
                         cam.y = float(tv_camera.y);
                         cam.z = float(tv_camera.z);
-                        cam.pitch = float(int(tv_camera.pitch * kToUnits) & 0x7ff);
-                        cam.yaw = float(int(tv_camera.yaw * kToUnits) & 0x7ff);
+                        cam.pitch = angle_units(tv_camera.pitch);
+                        cam.yaw = angle_units(tv_camera.yaw);
                         cam.roll = 0;
                         player->camera.car_visible = true;
                     }
@@ -1527,9 +1538,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     // top of the car's own position and angles
                     pose.y = float(c.pos_y + c.body_ofs_y);
                     pose.z = float(c.pos_z);
-                    pose.ax = float(int((c.pitch + c.body_pitch_ofs) * kToUnits) & 0x7ff);
-                    pose.ay = float(int((c.yaw + c.drift_angle) * kToUnits) & 0x7ff);
-                    pose.az = float(int((c.roll + c.body_roll_ofs) * kToUnits) & 0x7ff);
+                    pose.ax = angle_units((c.pitch + c.body_pitch_ofs));
+                    pose.ay = angle_units((c.yaw + c.drift_angle));
+                    pose.az = angle_units((c.roll + c.body_roll_ofs));
                     pose.animation = int32_t(c.render_animation());
                     pose.reflection = c.surface_render_flag;
                     // car_apply_surface sets the (global) scroll rate from the player's surface.
@@ -1597,9 +1608,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         gp.x = mix(float(g0.x), float(g1.x));
                         gp.y = mix(float(g0.y), float(g1.y));
                         gp.z = mix(float(g0.z), float(g1.z));
-                        gp.ax = float(int(mix_angle(g0.pitch, g1.pitch) * kToUnits) & 0x7ff);
-                        gp.ay = float(int(mix_angle(g0.yaw, g1.yaw) * kToUnits) & 0x7ff);
-                        gp.az = float(int(mix_angle(g0.roll, g1.roll) * kToUnits) & 0x7ff);
+                        gp.ax = angle_units(mix_angle(g0.pitch, g1.pitch));
+                        gp.ay = angle_units(mix_angle(g0.yaw, g1.yaw));
+                        gp.az = angle_units(mix_angle(g0.roll, g1.roll));
                         gp.animation = g0.animation;
                         gp.reflection = g0.reflection;
                         gp.dynamic = true;
@@ -1612,9 +1623,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         op.x = float(o.pos_x);
                         op.y = float(o.pos_y);
                         op.z = float(o.pos_z);
-                        op.ax = float(int(o.pitch * kToUnits) & 0x7ff);
-                        op.ay = float(int(o.draw_yaw * kToUnits) & 0x7ff);
-                        op.az = float(int(o.roll * kToUnits) & 0x7ff);
+                        op.ax = angle_units(o.pitch);
+                        op.ay = angle_units(o.draw_yaw);
+                        op.az = angle_units(o.roll);
                         op.animation = int32_t(uint32_t(o.setup.animation) | (o.catching_up ? 0u : 0x4000u) |
                                                (o.speed <= 4000.0f ? 0x2000u : 0u));
                         op.reflection = int32_t(o.render_flags);

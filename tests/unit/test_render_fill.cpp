@@ -426,3 +426,39 @@ TEST_CASE("render: a wide picture is the 4:3 one with more to its sides") {
         CHECK(b[100 * 428] != b[100 * 428 + 427]);
     }
 }
+
+TEST_CASE("render: the sky follows the yaw by less than a panorama column when asked to") {
+    scr::Track t;
+    scr::PcxImage bck;
+    bck.width = 512;
+    bck.height = 256;
+    bck.pixels.resize(512 * 256);
+    for (int y = 0; y < 256; ++y)
+        for (int x = 0; x < 512; ++x) bck.pixels[size_t(y) * 512 + size_t(x)] = uint8_t(1 + x % 250);
+    bck.vga_pal.resize(768, 0);
+    t.background = bck;
+    // 1280 pixels for the original's 320 columns: a panorama column is four pixels
+    auto row = [&](float yaw, bool fine, float roll = 0) {
+        scr::Renderer r;
+        r.set_threads(1);
+        scr::Camera cam;
+        cam.yaw = yaw;
+        cam.roll = roll;
+        cam.fine_sky = fine;
+        scr::Framebuffer fb(1280, 800);
+        r.begin(t, cam, fb, 0, true);
+        r.finish();
+        return std::vector<uint8_t>(&fb.at(0, 100), &fb.at(0, 100) + 1280);
+    };
+    // whole columns: half a step of the yaw moves nothing, two steps move four pixels at once
+    CHECK(row(100.0f, false) == row(100.4f, false));
+    // exactly: half a step is a quarter of a column, one pixel
+    const auto a = row(100.0f, true), b = row(100.5f, true);
+    CHECK(a != b);
+    int same = 0;
+    for (int x = 0; x + 1 < 1280; ++x) same += a[size_t(x)] == b[size_t(x + 1)];
+    CHECK(same == 1279);
+    // and the same when the sky is tilted
+    CHECK(row(100.0f, true, 40) != row(100.5f, true, 40));
+    CHECK(row(100.0f, false, 40) == row(100.4f, false, 40));
+}

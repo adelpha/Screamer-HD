@@ -28,6 +28,7 @@ namespace scr {
 struct Camera {
     float x = 0, y = 0, z = 0;
     float yaw = 0, pitch = 0, roll = 0;  // game angle units (0..2048)
+    bool fine_sky = false;                // the panorama follows the yaw exactly (ours), not by whole columns
     float focal = 128.0f;                 // at 200 lines; scaled with the output height
     float center_y = 130.0f;              // projection centre row at 200 lines (g_render_camera:
                                           // x 160, y 130 for the 320x200 race view)

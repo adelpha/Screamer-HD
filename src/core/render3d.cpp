@@ -540,6 +540,15 @@ void Renderer::draw_background(const PcxImage& bck, const Camera& cam, Framebuff
     draw_background_rows(bck, cam, fb, 0, fb.height());
 }
 
+namespace {
+// The panorama column at the left of the original's view: a column for every two of the yaw's
+// 2048 steps, twice round in a full turn (512 columns each time).
+float sky_offset(const Camera& cam) {
+    const float yaw = std::fmod(std::fmod(cam.yaw, 2048.0f) + 2048.0f, 2048.0f);
+    return std::fmod((2047.0f - yaw) * 0.5f + 512.0f, 512.0f);
+}
+} // namespace
+
 void Renderer::background_columns(const PcxImage& bck, const Camera& cam, const Framebuffer& fb, std::vector<int>& column) {
     column.clear();
     if (bck.width <= 0 || bck.height <= 0) return;
@@ -547,6 +556,19 @@ void Renderer::background_columns(const PcxImage& bck, const Camera& cam, const 
     const int yaw = int(std::lround(cam.yaw)) & 0x7ff;
     const int x_offset = ((0x7ff - yaw) >> 1) & 0x1ff;
     column.resize(size_t(fb.width()));
+    if (cam.fine_sky) {
+        // (ours) the panorama follows the yaw exactly, not a whole column at a time: on a
+        // large picture a column is several pixels, and a slow turn showed every step
+        const float offset = sky_offset(cam);
+        const float cx = float(fb.width()) * 0.5f;
+        const float across = fb.wide ? 1.0f / fb.unit_x() : 320.0f / float(fb.width());
+        const float first = fb.wide ? offset + 160.0f - cx * across : offset;
+        for (int x = 0; x < fb.width(); ++x) {
+            const int c = int(std::floor(first + float(x) * across)) % bck.width;
+            column[size_t(x)] = c < 0 ? c + bck.width : c;
+        }
+        return;
+    }
     if (fb.wide) {
         // square pixels: the 320 columns the original shows in the middle, more of the
         // panorama either side of them
@@ -582,7 +604,7 @@ void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Fram
     if (tilt && s2 != 0.0f) {
         const float cx = float(w) * 0.5f, cy = cam.center_y * scale;
         const int yaw = int(std::lround(cam.yaw)) & 0x7ff;
-        const int x_offset = ((0x7ff - yaw) >> 1) & 0x1ff;
+        const float x_offset = cam.fine_sky ? sky_offset(cam) : float(((0x7ff - yaw) >> 1) & 0x1ff);
         // panorama columns per pixel across, and per pixel down (the turn takes place in the
         // original's columns and rows; with square pixels those are not the same size)
         const float across = fb.wide ? 1.0f / fb.unit_x() : 320.0f / (float(w) / scale) / scale;
@@ -598,8 +620,8 @@ void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Fram
             uint8_t* dst = &fb.at(0, y);
             const float* const drow = depth ? depth + size_t(y) * size_t(w) : nullptr;
             const float dy = float(y) - cy;
-            const float u0 = fb.wide ? float(x_offset) + mid + (cx - c2 * cx) * across - s2 * dy * down
-                                     : float(x_offset) + (cx - c2 * cx - s2 * dy) * across;
+            const float u0 = fb.wide ? x_offset + mid + (cx - c2 * cx) * across - s2 * dy * down
+                                     : x_offset + (cx - c2 * cx - s2 * dy) * across;
             const float v0 = fb.wide ? (cy + c2 * dy - top) / scale - s2 * cx * across : (cy - s2 * cx + c2 * dy - top) / scale;
             int x = 0;
             if (pow2) {
