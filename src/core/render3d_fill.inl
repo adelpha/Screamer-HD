@@ -342,9 +342,17 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
     const VF half = vset1(0.5f);
     const VF whole_below = vset1(8388608.0f), whole_above = vset1(-8388608.0f);
 
+    // (the mip kinds) the numbers of the level in use
+    [[maybe_unused]] int cur_lu = -1, cur_lv = -1, cur_umask = 0, cur_vmask = 0;
+    [[maybe_unused]] VF cur_su = vset1(1.0f), cur_sv = vset1(1.0f);
+    [[maybe_unused]] VI cur_usize = viset1(1), cur_vsize = viset1(1), cur_ulast = viset1(0), cur_vlast = viset1(0);
+    [[maybe_unused]] VI cur_ubias = viset1(0), cur_vbias = viset1(0), cur_umagic = viset1(0), cur_vmagic = viset1(0);
+    [[maybe_unused]] const uint8_t* cur_texels = nullptr;
+
     for (int y = ya; y <= yb; y += kLanes) {
         alignas(32) int32_t rx0[kLanes], rx1[kLanes];
         alignas(32) float rw0[kLanes], rw1[kLanes], rw2[kLanes], riz[kLanes], ruz[kLanes], rvz[kLanes];
+        alignas(32) int32_t rlu[kLanes], rlv[kLanes];  // (the mip kinds) the row's level along u and v where all of it has one, else -1
         int rows;  // (as bits) the rows of this batch with pixels to fill
         {
             const VF py = vadd(vadd(vset1(float(y)), lane), half);
@@ -393,9 +401,43 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
             vstore(rw0, w0);
             vstore(rw1, w1);
             vstore(rw2, w2);
-            vstore(riz, vadd(vadd(vmul(w0, aiz), vmul(w1, biz)), vmul(w2, ciz)));
-            vstore(ruz, vadd(vadd(vmul(w0, auz), vmul(w1, buz)), vmul(w2, cuz)));
-            vstore(rvz, vadd(vadd(vmul(w0, avz), vmul(w1, bvz)), vmul(w2, cvz)));
+            const VF row_iz = vadd(vadd(vmul(w0, aiz), vmul(w1, biz)), vmul(w2, ciz));
+            const VF row_uz = vadd(vadd(vmul(w0, auz), vmul(w1, buz)), vmul(w2, cuz));
+            const VF row_vz = vadd(vadd(vmul(w0, avz), vmul(w1, bvz)), vmul(w2, cvz));
+            vstore(riz, row_iz);
+            vstore(ruz, row_uz);
+            vstore(rvz, row_vz);
+            if constexpr (K == Kind::OpaqueMip || K == Kind::TransparentMip) {
+                // The level a pixel takes comes from how fast u (and v) changes there:
+                // |du/dx| = |duz - u diz| / iz, and likewise to the next row. Along a row u and
+                // 1/iz each only rise or only fall, so both ends of the row bound it from below
+                // and above; where both bounds (with a hundredth to spare for rounding) give
+                // the same level, every pixel of the row has it.
+                const VF nothing = vset1(0.0f);
+                const VF n1 = vcvt(visub(x1, x0));
+                const VF iz_b = vadd(row_iz, vmul(vdiz, n1));
+                const VF rz_a = vdiv(one, row_iz), rz_b = vdiv(one, iz_b);
+                const VF rz_hi = vmax(rz_a, rz_b), rz_lo = vmin(rz_a, rz_b);
+                const VF sound = vand(vcmpgt(row_iz, nothing), vcmpgt(iz_b, nothing));
+                const auto level = [&](VF z, VF dzx, VF dzy, VI top) {
+                    const VF a = vmul(z, rz_a), b = vmul(vadd(z, vmul(dzx, n1)), rz_b);  // u (or v) at both ends
+                    const VF xa = vsub(dzx, vmul(a, vdiz)), xb = vsub(dzx, vmul(b, vdiz));
+                    const VF ya = vsub(dzy, vmul(a, vdizy)), yb = vsub(dzy, vmul(b, vdizy));
+                    const VF x_hi = vmax(vabs(xa), vabs(xb)), y_hi = vmax(vabs(ya), vabs(yb));
+                    // (zero where it changes sign between the ends)
+                    const VF x_lo = vand(vcmpgt(vmul(xa, xb), nothing), vmin(vabs(xa), vabs(xb)));
+                    const VF y_lo = vand(vcmpgt(vmul(ya, yb), nothing), vmin(vabs(ya), vabs(yb)));
+                    const VF g_hi = vmul(vmul(vmax(x_hi, y_hi), rz_hi), vset1(1.01f));
+                    const VF g_lo = vmul(vmul(vmax(x_lo, y_lo), rz_lo), vset1(0.99f));
+                    const VI zero = viset1(0), exp0 = viset1(127);
+                    const VI l_hi = vimin(vimax(visub(vishr23(vcast(vmul(g_hi, sharp))), exp0), zero), top);
+                    const VI l_lo = vimin(vimax(visub(vishr23(vcast(vmul(g_lo, sharp))), exp0), zero), top);
+                    const VI known = viand(vieq(l_hi, l_lo), vcast(vand(sound, vcmplt(g_hi, vset1(1e30f)))));
+                    return vior(viand(known, l_hi), viandnot(known, viset1(-1)));
+                };
+                vistore(rlu, level(row_uz, vduz, vduzy, top_u));
+                vistore(rlv, level(row_vz, vdvz, vdvzy, top_v));
+            }
         }
         for (int r = 0; r < kLanes; ++r) {
             if (!(rows & (1 << r))) continue;
@@ -406,6 +448,8 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
             const VF sw0 = vset1(rw0[r]), sw1 = vset1(rw1[r]), sw2 = vset1(rw2[r]);
             const VF siz = vset1(riz[r]);
             [[maybe_unused]] const VF suz = vset1(ruz[r]), svz = vset1(rvz[r]);
+            [[maybe_unused]] const int row_lu = rlu[r], row_lv = rlv[r];
+            [[maybe_unused]] const bool row_known = row_lu >= 0 && row_lv >= 0;
             const float* const bayer = kBayer[yr & 3];
             VF n = lane;  // lane j is pixel x + j: start + step * (x - x0 + j)
             for (int x = x0; x <= x1; x += kLanes, n = vadd(n, group)) {
@@ -483,41 +527,67 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
                     if constexpr (K == Kind::OpaqueMip || K == Kind::TransparentMip) {
                         // How many texels a pixel covers along u and along v (the larger of
                         // its step to the next pixel and to the next row), and from that the
-                        // level for each: the whole power of two in it.
-                        const VF gu = vmax(vabs(vmul(vsub(vduz, vmul(fu, vdiz)), rz)), vabs(vmul(vsub(vduzy, vmul(fu, vdizy)), rz)));
-                        const VF gv = vmax(vabs(vmul(vsub(vdvz, vmul(fv, vdiz)), rz)), vabs(vmul(vsub(vdvzy, vmul(fv, vdizy)), rz)));
-                        const VI zero = viset1(0), exp0 = viset1(127);
-                        const VI lu = vimin(vimax(visub(vishr23(vcast(vmul(gu, sharp))), exp0), zero), top_u);
-                        const VI lv = vimin(vimax(visub(vishr23(vcast(vmul(gv, sharp))), exp0), zero), top_v);
+                        // level for each: the whole power of two in it. Where the row's ends
+                        // have shown that all of it is at one level, that is not worked out.
+                        const VI zero = viset1(0);
                         alignas(32) int32_t lus[kLanes], lvs[kLanes];
-                        vistore(lus, lu);
-                        vistore(lvs, lv);
-                        const int first = lowest_bit(pass);
-                        const MipAxis& au = mip->u[lus[first]];
-                        const MipAxis& av = mip->v[lvs[first]];
-                        // usually the whole group is at one level, and is done as one
-                        bool together = (pass & vbits(vcastf(viand(vieq(lu, viset1(lus[first])), vieq(lv, viset1(lvs[first])))))) == pass;
+                        int group_lu = row_lu, group_lv = row_lv;
+                        bool together = true;
+                        if (!row_known) {
+                            const VF gu = vmax(vabs(vmul(vsub(vduz, vmul(fu, vdiz)), rz)), vabs(vmul(vsub(vduzy, vmul(fu, vdizy)), rz)));
+                            const VF gv = vmax(vabs(vmul(vsub(vdvz, vmul(fv, vdiz)), rz)), vabs(vmul(vsub(vdvzy, vmul(fv, vdizy)), rz)));
+                            const VI exp0 = viset1(127);
+                            const VI lu = vimin(vimax(visub(vishr23(vcast(vmul(gu, sharp))), exp0), zero), top_u);
+                            const VI lv = vimin(vimax(visub(vishr23(vcast(vmul(gv, sharp))), exp0), zero), top_v);
+                            vistore(lus, lu);
+                            vistore(lvs, lv);
+                            const int first = lowest_bit(pass);
+                            group_lu = lus[first];
+                            group_lv = lvs[first];
+                            // usually the whole group is at one level, and is done as one
+                            together = (pass & vbits(vcastf(viand(vieq(lu, viset1(group_lu)), vieq(lv, viset1(group_lv)))))) == pass;
+                        }
                         if (together) {
-                            const VF su = vmul(fu, vset1(au.scale)), sv = vmul(fv, vset1(av.scale));
+                            if (group_lu != cur_lu || group_lv != cur_lv) {
+                                // (the level's numbers, kept in registers while it lasts)
+                                cur_lu = group_lu;
+                                cur_lv = group_lv;
+                                const MipAxis& au = mip->u[cur_lu];
+                                const MipAxis& av = mip->v[cur_lv];
+                                cur_su = vset1(au.scale);
+                                cur_sv = vset1(av.scale);
+                                cur_umask = au.mask;
+                                cur_vmask = av.mask;
+                                cur_usize = viset1(au.size);
+                                cur_vsize = viset1(av.size);
+                                cur_ulast = viset1(au.size - 1);
+                                cur_vlast = viset1(av.size - 1);
+                                cur_ubias = viset1(au.bias);
+                                cur_vbias = viset1(av.bias);
+                                cur_umagic = viset1(au.magic);
+                                cur_vmagic = viset1(av.magic);
+                                cur_texels = mip->texels[cur_lv][cur_lu];
+                            }
+                            const VF su = vmul(fu, cur_su), sv = vmul(fv, cur_sv);
                             VI ju = vcvtt(su), jv = vcvtt(sv);
                             ju = viadd(ju, vcast(vcmplt(su, vcvt(ju))));
                             jv = viadd(jv, vcast(vcmplt(sv, vcvt(jv))));
                             VI big = zero;
                             if (clamp_uv) {
-                                ju = vimin(vimax(ju, zero), viset1(au.size - 1));
-                                jv = vimin(vimax(jv, zero), viset1(av.size - 1));
+                                ju = vimin(vimax(ju, zero), cur_ulast);
+                                jv = vimin(vimax(jv, zero), cur_vlast);
                             } else {
-                                if (au.mask < 0) big = viadd(ju, range);
-                                if (av.mask < 0) big = vior(big, viadd(jv, range));
+                                if (cur_umask < 0) big = viadd(ju, range);
+                                if (cur_vmask < 0) big = vior(big, viadd(jv, range));
                             }
                             together = (pass & small_lanes(big)) == pass;
                             if (together) {
                                 if (!clamp_uv) {
-                                    ju = au.mask >= 0 ? viand(ju, viset1(au.mask)) : wrap_mod(ju, viset1(au.size), viset1(au.bias), viset1(au.magic));
-                                    jv = av.mask >= 0 ? viand(jv, viset1(av.mask)) : wrap_mod(jv, viset1(av.size), viset1(av.bias), viset1(av.magic));
+                                    ju = cur_umask >= 0 ? viand(ju, cur_ulast) : wrap_mod(ju, cur_usize, cur_ubias, cur_umagic);
+                                    jv = cur_vmask >= 0 ? viand(jv, cur_vlast) : wrap_mod(jv, cur_vsize, cur_vbias, cur_vmagic);
                                 }
-                                put_texels<K == Kind::TransparentMip>(mip->texels[lvs[first]][lus[first]], viadd(vimadd(jv, viset1(au.size)), ju),
-                                                                      pass, whole, dz, tz, writes_depth, row + x, drow + x);
+                                put_texels<K == Kind::TransparentMip>(cur_texels, viadd(vimadd(jv, cur_usize), ju), pass, whole, dz, tz,
+                                                                      writes_depth, row + x, drow + x);
                             }
                         }
                         if (!together) {
@@ -528,12 +598,13 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
                             vstore(fvs, fv);
                             for (int j = 0; j < kLanes; ++j) {
                                 if (!(pass & (1 << j))) continue;
-                                const MipAxis& bu = mip->u[lus[j]];
-                                const MipAxis& bv = mip->v[lvs[j]];
+                                const int pixel_lu = row_known ? row_lu : lus[j], pixel_lv = row_known ? row_lv : lvs[j];
+                                const MipAxis& bu = mip->u[pixel_lu];
+                                const MipAxis& bv = mip->v[pixel_lv];
                                 const int ru = floor_int(fus[j] * bu.scale), rv = floor_int(fvs[j] * bv.scale);
                                 const int tu = clamp_uv ? imin2(imax2(ru, 0), bu.size - 1) : wrap_scalar(ru, bu.size, bu.mask);
                                 const int tv = clamp_uv ? imin2(imax2(rv, 0), bv.size - 1) : wrap_scalar(rv, bv.size, bv.mask);
-                                const uint8_t col = mip->texels[lvs[j]][lus[j]][size_t(tv) * size_t(bu.size) + size_t(tu)];
+                                const uint8_t col = mip->texels[pixel_lv][pixel_lu][size_t(tv) * size_t(bu.size) + size_t(tu)];
                                 if constexpr (K == Kind::TransparentMip) {
                                     if (col == 0) continue;
                                 }

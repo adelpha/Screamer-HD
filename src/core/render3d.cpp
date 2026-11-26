@@ -109,11 +109,27 @@ void tri_edge_slack(const Tri& t, float slack, float area, float out[3]) {
     out[2] = t.sealed & 4 ? s * std::hypot(t.b.x - t.a.x, t.b.y - t.a.y) : 0.0f;
 }
 } // namespace detail
+void Renderer::sky_rows(int y0, int y1) {
+    // (after the solid polygons: the sky only where none of them is)
+    Framebuffer& fb = *fb_;
+    const int w = fb.width();
+    if (!bg_columns_.empty()) {
+        draw_background_rows(*track_->background, *cam_, fb, y0, y1, bg_columns_.data(), sky_tilt_, depth_.data());
+        return;
+    }
+    for (int y = y0; y < y1; ++y) {
+        const float* const drow = depth_.data() + size_t(y) * size_t(w);
+        uint8_t* const dst = &fb.at(0, y);
+        for (int x = 0; x < w; ++x)
+            if (drow[x] == 0.0f) dst[x] = sky_;
+    }
+}
+
 void Renderer::clear_rows(int y0, int y1) {
     Framebuffer& fb = *fb_;
     const int w = fb.width();
     std::fill(depth_.begin() + ptrdiff_t(y0) * w, depth_.begin() + ptrdiff_t(y1) * w, 0.0f);
-    if (!bg_columns_.empty()) draw_background_rows(*track_->background, *cam_, fb, y0, y1, bg_columns_.data(), sky_tilt_);
+    if (!bg_columns_.empty()) draw_background_rows(*track_->background, *cam_, fb, y0, y1, bg_columns_.data(), sky_tilt_, nullptr);
     else std::fill(&fb.at(0, y0), &fb.at(0, y0) + size_t(y1 - y0) * size_t(w), sky_);
 }
 
@@ -491,10 +507,11 @@ RenderStats Renderer::finish() {
     ctx.mip_sharpness = mip_sharpness_;
     pool_->run(bands, [&](int b) {
         const int y0 = h * b / bands, y1 = h * (b + 1) / bands;
-        // (cleared here, the band's rows are still in the cache when its polygons are filled)
-        if (clear_at_finish_) clear_rows(y0, y1);
+        // (cleared here, the band's rows are still in the cache when its polygons are filled:
+        // only the depths; the sky comes after the solid polygons, where none of them is)
+        if (clear_at_finish_) std::fill(depth_.begin() + ptrdiff_t(y0) * fb_->width(), depth_.begin() + ptrdiff_t(y1) * fb_->width(), 0.0f);
         // the triangles that reach the band, in drawing order: every job's, then the
-        // translucent polygons
+        // translucent polygons (which mix with what is under them, the sky too)
         static thread_local std::vector<detail::TriRef> list;
         list.clear();
         auto collect = [&](const Geo& o) {
@@ -505,6 +522,9 @@ RenderStats Renderer::finish() {
                 if (rows[i][1] >= y0 && rows[i][0] < y1) list.push_back({tris + i, fills + tris[i].fill});
         };
         for (size_t k = 0; k < job_count_; ++k) collect(job_geo_[k]);
+        fill_rows_(ctx, y0, y1, list.data(), list.size());
+        if (clear_at_finish_) sky_rows(y0, y1);
+        list.clear();
         collect(g);
         fill_rows_(ctx, y0, y1, list.data(), list.size());
     });
@@ -533,10 +553,11 @@ void Renderer::background_columns(const PcxImage& bck, const Camera& cam, const 
 void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Framebuffer& fb, int y0, int y1) {
     std::vector<int> column;
     background_columns(bck, cam, fb, column);
-    if (!column.empty()) draw_background_rows(bck, cam, fb, y0, y1, column.data(), false);
+    if (!column.empty()) draw_background_rows(bck, cam, fb, y0, y1, column.data(), false, nullptr);
 }
 
-void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Framebuffer& fb, int y0, int y1, const int* column, bool tilt) {
+void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Framebuffer& fb, int y0, int y1, const int* column, bool tilt,
+                                    const float* depth) {
     const float scale = float(fb.height()) / 200.0f;
     // Horizon: projection centre + focal * sin(pitch) (matched against frozen frames of the original).
     const float horizon = (cam.center_y + cam.focal * std::sin(cam.pitch * kAngle)) * scale;
@@ -559,6 +580,7 @@ void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Fram
         const bool pow2 = (bw & (bw - 1)) == 0;
         for (int y = y0; y < y1; ++y) {
             uint8_t* dst = &fb.at(0, y);
+            const float* const drow = depth ? depth + size_t(y) * size_t(w) : nullptr;
             const float dy = float(y) - cy;
             const float u0 = float(x_offset) + (cx - c2 * cx - s2 * dy) * across;
             const float v0 = (cy - s2 * cx + c2 * dy - top) / scale;
@@ -572,6 +594,9 @@ void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Fram
                 const __m128i wrap = _mm_set1_epi32(bw - 1), up = _mm_set1_epi32(65536), rows = _mm_set1_epi32(bh);
                 const int shift = int(std::lround(std::log2(double(bw))));
                 for (; x + 4 <= w; x += 4) {
+                    // (with a depth buffer: only the pixels nothing was drawn on)
+                    const int open = drow ? _mm_movemask_ps(_mm_cmpeq_ps(_mm_loadu_ps(drow + x), _mm_setzero_ps())) : 15;
+                    if (!open) continue;
                     const __m128 n = _mm_add_ps(_mm_set1_ps(float(x)), lane);
                     const __m128i iu = _mm_and_si128(_mm_cvttps_epi32(_mm_add_ps(ub, _mm_mul_ps(vdu, n))), wrap);
                     const __m128i iv = _mm_sub_epi32(_mm_cvttps_epi32(_mm_add_ps(vb, _mm_mul_ps(vdv, n))), up);
@@ -581,10 +606,12 @@ void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Fram
                     alignas(16) int32_t ats[4], in[4];
                     _mm_store_si128(reinterpret_cast<__m128i*>(ats), at);
                     _mm_store_si128(reinterpret_cast<__m128i*>(in), inside);
-                    for (int j = 0; j < 4; ++j) dst[x + j] = in[j] ? pixels[size_t(ats[j])] : fill;
+                    for (int j = 0; j < 4; ++j)
+                        if (open & (1 << j)) dst[x + j] = in[j] ? pixels[size_t(ats[j])] : fill;
                 }
             }
             for (; x < w; ++x) {
+                if (drow && drow[x] != 0.0f) continue;
                 const int sy = int(std::floor(v0 + dv * float(x)));
                 if (sy < 0 || sy >= bh) {
                     dst[x] = fill;
@@ -602,6 +629,22 @@ void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Fram
     for (int y = y0; y < y1; ++y) {
         const int sy = int(std::floor((float(y) - top) / scale));
         uint8_t* dst = &fb.at(0, y);
+        if (depth) {
+            // only the pixels nothing was drawn on (their depth is still nought)
+            const float* const drow = depth + size_t(y) * size_t(w);
+            const uint8_t* const src = sy < 0 || sy >= bck.height ? nullptr : bck.pixels.data() + size_t(sy) * size_t(bck.width);
+            int x = 0;
+            for (; x + 8 <= w; x += 8) {
+                const int open = _mm_movemask_ps(_mm_cmpeq_ps(_mm_loadu_ps(drow + x), _mm_setzero_ps())) |
+                                 _mm_movemask_ps(_mm_cmpeq_ps(_mm_loadu_ps(drow + x + 4), _mm_setzero_ps())) << 4;
+                if (!open) continue;
+                for (int j = 0; j < 8; ++j)
+                    if (open & (1 << j)) dst[x + j] = src ? src[column[x + j]] : fill;
+            }
+            for (; x < w; ++x)
+                if (drow[x] == 0.0f) dst[x] = src ? src[column[x]] : fill;
+            continue;
+        }
         if (sy < 0 || sy >= bck.height) {
             std::fill(dst, dst + w, fill);
             continue;
