@@ -17,7 +17,7 @@
 // Page tables (0x102de4): per item { text index, action, value, max }; the text shown is
 // MENU.TXT[index + value]; action 1234 (0x4d2) cycles the value (options).
 //   0 main: NORMAL GAME, CHAMPIONSHIP, SPECIAL MODES, NETWORK GAME, OPTIONS
-//   1 options: detail, difficulty, laps, speech, music, (ours: SOUND), VIEW RECORDS
+//   1 options: detail, difficulty, laps, (ours: SOUND instead of speech and music), VIEW RECORDS
 //   2 network, 3 championship (new/resume), 4 special modes, 5 network (new/resume),
 //   6 records (the six tracks), 7 (ours) SOUND: the four volumes (Enter / left / right) and
 //   CD MUSIC / MIDI MUSIC
@@ -277,7 +277,6 @@ private:
     std::array<uint8_t, 256> darken_{};  // build_darken_tables for the dialog's backdrop
     struct Block {
         int row = 0, ypos = 0, start = 0, centred = 1, turned = 0;
-        int y_adjust = 0;  // ours: added to y (pages of more than six lines)
         int x0 = 0, y0 = 0, z0 = 0, sx = 0, sy = 0;
         float spin = 0.09f, phase = 0;
     } block_;

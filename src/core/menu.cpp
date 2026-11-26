@@ -45,9 +45,9 @@ constexpr size_t kMusicSourceLine = 4;  // the SOUND page's CD MUSIC / MIDI MUSI
 std::vector<std::vector<Menu::Entry>> default_pages() {
     return {
         {{0, 0, 0, 0}, {1, 1, 0, 0}, {2, 2, 0, 0}, {3, 3, 0, 0}, {4, 4, 0, 0}},
-        // (SOUND is ours: the volume page)
-        {{5, 1234, 2, 2}, {8, 1234, 1, 2}, {13, 1234, 0, 3}, {17, 1234, 1, 1}, {19, 1234, 1, 1},
-         {kOwnText, kActionSound, 0, 0}, {21, 21, 0, 0}},
+        // (ours: the original's SPEECH ON/OFF and MUSIC ON/OFF lines (texts 17, 19) gave way to
+        // SOUND, the volume page, where a volume of 0 does the same)
+        {{5, 1234, 2, 2}, {8, 1234, 1, 2}, {13, 1234, 0, 3}, {kOwnText, kActionSound, 0, 0}, {21, 21, 0, 0}},
         {{3, 3, 0, 0}, {23, 23, 0, 0}},
         {{24, 24, 0, 0}, {25, 25, 0, 0}},
         {{28, 28, 0, 0}, {29, 29, 0, 0}, {30, 30, 0, 0}},
@@ -324,8 +324,6 @@ void Menu::load_choice(const ChoiceFile& c) {
     pages[1][1].max = std::clamp(c.get(0x45c), 2, 3);
     pages[1][1].value = std::clamp(c.get(0x010), 0, pages[1][1].max);
     pages[1][2].value = std::clamp(c.get(0x014), 0, 3);
-    pages[1][3].value = c.get(0x438) ? 1 : 0;
-    pages[1][4].value = c.get(0x43c) ? 1 : 0;
     for (size_t i = 0; i < c.volume.size(); ++i) pages[kSoundPage][i].value = std::clamp(c.volume[i], 0, kVolumeMax);
     pages[kSoundPage][kMusicSourceLine].value = c.music_midi ? 1 : 0;
     cars_unlocked = std::clamp(c.get(0x42c), 0, 2);
@@ -351,8 +349,6 @@ ChoiceFile Menu::save_choice() const {
     c.set(0x00c, pages[1][0].value);
     c.set(0x010, pages[1][1].value);
     c.set(0x014, pages[1][2].value);
-    c.set(0x438, pages[1][3].value);
-    c.set(0x43c, pages[1][4].value);
     const auto v = volumes();
     std::copy(v.begin(), v.end(), c.volume.begin());
     c.music_midi = music_midi() ? 1 : 0;
@@ -658,7 +654,7 @@ void Menu::draw_text(const std::string& s) {
         const int len = int(s.size());
         x = 0x1200 - int(unsigned((len - 1) * -0x280 + 0x2400) >> 1);
     }
-    const int y = block_.ypos * -0x180 + 0x820 + block_.y_adjust;
+    const int y = block_.ypos * -0x180 + 0x820;
     size_t slot = 0;
     for (unsigned char c : s) {
         if (c < 0x20 || c > 0x7f) return;
@@ -790,12 +786,6 @@ void Menu::build_page_items(float dt) {
         for (Item& it : items) it.ch = -1;
         block_.row = 0;
         block_.ypos = 8 - int(entries.size());
-        block_.y_adjust = 0;
-        // ours: more than the original's six lines (OPTIONS with SOUND) share the six lines'
-        // height, closer together, so the top one stays clear of the logo
-        const int n = int(entries.size());
-        const int squeeze = n > 6 ? 0x300 - 0x300 * 5 / (n - 1) : 0;
-        if (n > 6) block_.ypos = 2;
         block_.centred = 1;
         block_.phase = 0;
         block_.x0 = kVariants[variant_][0];
@@ -809,9 +799,7 @@ void Menu::build_page_items(float dt) {
             draw_text(entry_text(entries[i]));
             ++block_.row;
             block_.ypos += 2;
-            block_.y_adjust += squeeze;
         }
-        block_.y_adjust = 0;
         if (++variant_ > 7) variant_ = 0;
     }
     // menu_hide_page_items: the selected line faces front
@@ -1049,8 +1037,8 @@ void Menu::start_race() {
     // race_load_track: 'L' files only for LOW (DAT_0011d2b4 < 1)
     r.detail = std::clamp(option(0), 0, 2);
     r.high_detail = r.detail >= 1;
-    r.speech = option(3) == 1;
-    r.music = option(4) == 1;
+    r.speech = volumes()[0] > 0;  // ours: the announcer at 0 is the original's SPEECH OFF
+    r.music = true;
     r.name = name;
     race = r;
 }
@@ -1119,8 +1107,8 @@ void Menu::activate() {
             r.map = records_track_ + 1;
             r.detail = std::clamp(option(0), 0, 2);
             r.high_detail = r.detail >= 1;
-            r.speech = option(3) == 1;
-            r.music = option(4) == 1;
+            r.speech = volumes()[0] > 0;
+            r.music = true;
             r.name = name;
             r.replay = path;
             race = r;
