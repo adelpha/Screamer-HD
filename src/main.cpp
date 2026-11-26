@@ -1555,7 +1555,12 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     // than the obstacle: by its half height times distance over the camera's
                     // height above it. That much bias, for the test only, so that cars in front
                     // of the obstacle still cover it.
-                    {
+                    if (opt.ground_obstacles) {
+                        // (standing on the road there is nothing to draw over: the plain depth
+                        // test, with a little in hand for the base where the road slopes, so
+                        // obstacles hide one another and a crest of the road hides them)
+                        op.depth_bias = 24.0f;
+                    } else {
                         const scr::Model& om = obstacles.models[size_t(o.model)];
                         const float dx = float(ob.x) - view_cam.x, dz = float(ob.z) - view_cam.z;
                         const float dist = std::sqrt(dx * dx + dz * dz);
