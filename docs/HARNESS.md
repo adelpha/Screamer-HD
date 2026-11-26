@@ -35,6 +35,7 @@ no manual steps.
 | `--track NAME` | Track for `--scene track` (default `MAP2`, loaded from `GFX/<NAME>L.DAT`). |
 | `--camera X,Y,Z,YAW,PITCH[,ROLL]` | Camera for `--scene track` in game units (angles 0..2047). Default: the first placement. `48459,196,7124,472,2005,0` is the intro race at the start gate. |
 | `--render-size WxH` | Framebuffer size for the 3D scene (default 320x200), e.g. `1280x800`. |
+| `--ui low\|high\|auto` | HUD and menu graphics: the original's 320x200 set, STARTH.EXE's 640x400 set (`GAMEH.*`, `*_H.PKC`, `COCKnn?H`, `MENUH.*`, `*H.PCX`), or auto (default): 640x400 when the render size has 400 lines or more. The 640x400 set is drawn the way STARTH.EXE does it: every position doubled. |
 | `--threads N` | Threads that draw the 3D view (default: one per CPU thread). The picture is the same for any number. |
 | `--fill sse2\|avx2` | Which build of the pixel filler runs (`src/core/render3d_fill.inl`, built for both; default: AVX2 when the CPU has it). Both give the same picture. |
 | `--mipmaps on\|off` | Draw squeezed (distant) textures from smaller versions averaged from them (`src/core/mipmaps.h`; halved along u and v separately, matched to the palette). Steadier and softer in the distance. On by default; F10 switches in a race. `--mip-sharpness X`: a level is used once a pixel covers 1/X of its texels (default 1.4; 1 sharper, 2 softer). |

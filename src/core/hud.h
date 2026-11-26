@@ -14,7 +14,8 @@
 //              ...), IMPRES_L: rev counter and speed/gear boxes, COCKnn[A|B]L: dashboards.
 //
 // Everything is laid out for 320x200; HudSurface maps those coordinates onto a framebuffer of
-// any size (nearest pixel).
+// any size (nearest pixel). STARTH.EXE's set (GAMEH.*, *_H.PKC, COCKnn?H, CDFRONTH) is the
+// same drawn for 640x400; it is used when the framebuffer has 400 lines or more.
 
 #include "core/framebuffer.h"
 
@@ -50,12 +51,15 @@ public:
     std::vector<uint8_t> data;
 };
 
-// Draws in the original's 320x200 coordinates onto a framebuffer of any size.
+// Draws in the original's 320x200 coordinates (scale 1, STARTL.EXE's) or 640x400 (scale 2,
+// STARTH.EXE's, for the *H assets) onto a framebuffer of any size.
 class HudSurface {
 public:
-    explicit HudSurface(Framebuffer& fb);
-    void set_clip(int x0, int y0, int x1, int y1);  // 320x200 units, end exclusive
-    void reset_clip() { set_clip(0, 0, 320, 200); }
+    explicit HudSurface(Framebuffer& fb, int scale = 1);
+    int width() const { return w_; }   // 320 * scale
+    int height() const { return h_; }  // 200 * scale
+    void set_clip(int x0, int y0, int x1, int y1);  // surface units, end exclusive
+    void reset_clip() { set_clip(0, 0, w_, h_); }
     void pixel(int x, int y, uint8_t c);
     void line(int x0, int y0, int x1, int y1, uint8_t c);  // draw_clipped_line
     void rle(const std::vector<uint8_t>& pkc);               // rle_copy
@@ -67,9 +71,10 @@ public:
 
 private:
     Framebuffer& fb_;
+    int w_, h_;
     float sx_, sy_;
-    std::array<int, 321> xs_{};  // int(x * sx_): the framebuffer column where pixel x starts
-    std::array<int, 201> ys_{};
+    std::vector<int> xs_;  // int(x * sx_): the framebuffer column where pixel x starts
+    std::vector<int> ys_;
     int clip_[4]{0, 0, 320, 200};
 };
 
@@ -119,8 +124,12 @@ struct CdPanel {
 
 class Hud {
 public:
-    bool load(const std::string& game_dat);  // GFX/GAME.DAT
-    // The dashboard of a car: COCK<id>L.PKC from GAME.DAT and the layout section from CARS.DTR.
+    // GFX/GAME.DAT. hires: STARTH.EXE's 640x400 set (GAMEH.*, *_H.PKC); everything is then
+    // drawn on a 640x400 HudSurface (scale 2).
+    bool load(const std::string& game_dat, bool hires = false);
+    int scale = 1;
+    // The dashboard of a car: COCK<id><L|H>.PKC from GAME.DAT and the layout section
+    // <section><L|H> (e.g. COCK00L) from CARS.DTR. Call after load.
     bool load_cockpit(const std::string& game_dat, const std::string& id, const std::string& cars_dtr,
                       const std::string& section);
     // GAME.TXT from DATA/LOCAL.DAT (text_load): "POSITION", "1ST".."10TH", "GREAT!", ...
@@ -134,7 +143,7 @@ public:
               int pow_row, int view = 2, int radar = 1, bool advance = true);
 
     void draw_cd_panel(Framebuffer& fb, const CdPanel& p);
-    std::vector<uint8_t> cdfront;  // CDFRONTL.PKC
+    std::vector<uint8_t> cdfront;  // CDFRONTL.PKC (CDFRONTH)
 
     HudFonts fonts;
     HudSprites sprites;

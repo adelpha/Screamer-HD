@@ -44,6 +44,55 @@ TEST_CASE("hud: fonts, sprites and overlays from GAME.DAT") {
     CHECK(same > 320 * 200 - 400);  // lines are drawn per pixel at both sizes
 }
 
+TEST_CASE("hud: STARTH.EXE's 640x400 set lines up with the 320x200 one") {
+    auto dir = scr::find_game_dir();
+    if (!dir) SKIP("original game data not present");
+    auto path = scr::resolve_game_file(*dir, "GFX/GAME.DAT");
+    REQUIRE(path.has_value());
+    scr::Hud lo, hi;
+    REQUIRE(lo.load(*path));
+    REQUIRE(hi.load(*path, true));
+    CHECK(lo.scale == 1);
+    CHECK(hi.scale == 2);
+    REQUIRE(hi.fonts.fonts.size() == lo.fonts.fonts.size());
+    REQUIRE(hi.sprites.sprites.size() == lo.sprites.sprites.size());
+    CHECK(hi.fonts.fonts[1].height == 2 * lo.fonts.fonts[1].height);
+    CHECK(hi.sprites.sprites[0].w == 2 * lo.sprites.sprites[0].w);  // start lights
+    // the dashboard: COCK00AH and the COCK00H layout (gears at twice the places, pivots as in L)
+    const std::string dtr =
+        "COCK00H\n\td24\td16\n\td116\td147\td0\n\td201\td147\td0\n"
+        "\td167\td368\td0\n\td213\td368\td0\n\td259\td368\td0\n\td305\td368\td0\n"
+        "\td351\td368\td0\n\td397\td368\td0\n\td443\td368\td0\nEND_LIST\n";
+    REQUIRE(hi.load_cockpit(*path, "00A", dtr, "COCK00"));
+    CHECK(hi.layout.gear[0][1] == 368);
+    // Drawn on 640x400: the labels, digits and lights land where the 320x200 ones do, doubled.
+    std::array<uint8_t, 256> identity{};
+    for (int i = 0; i < 256; ++i) identity[size_t(i)] = uint8_t(i);
+    scr::HudState st;
+    st.time_left = 15;
+    st.position = 10;
+    st.countdown_stage = 0;
+    scr::Framebuffer small(320, 200), big(640, 400);
+    lo.draw(small, st, identity, 0.02f, 49);
+    hi.draw(big, st, identity, 0.02f, 49);
+    int both = 0, drawn = 0;
+    for (int y = 0; y < 200; ++y)
+        for (int x = 0; x < 320; ++x) {
+            const bool a = small.at(x, y) != 0;
+            // (the 640x400 glyphs are redrawn, not doubled: anything drawn close by counts)
+            bool b = false;
+            for (int dy = -2; dy <= 3 && !b; ++dy)
+                for (int dx = -2; dx <= 3 && !b; ++dx) {
+                    const int bx = 2 * x + dx, by = 2 * y + dy;
+                    b = bx >= 0 && by >= 0 && bx < 640 && by < 400 && big.at(bx, by) != 0;
+                }
+            drawn += a;
+            both += a && b;
+        }
+    CHECK(drawn > 3000);
+    CHECK(both > drawn * 9 / 10);
+}
+
 TEST_CASE("hud: GAME.TXT strings for the end of the race") {
     auto dir = scr::find_game_dir();
     if (!dir) SKIP("original game data not present");

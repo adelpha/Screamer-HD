@@ -416,9 +416,10 @@ void Menu::draw_loading(Framebuffer& fb, int map) {
         for (int x = 0; x < fb.width(); ++x) fb.at(x, y) = row[x * bg->width / fb.width()];
     }
     fb.palette() = bg->palette();
-    HudSurface s(fb);
+    HudSurface hs(fb, a_.scale());
+    MenuUi s(hs, a_.scale());
     const std::string t = size_t(47) < a_.texts.size() ? a_.texts[47] : "LOADING";
-    s.text(a_.fonts, (320 - s.measure(a_.fonts, t, 3)) >> 1, 0x50, t, 3, 0);
+    s.centre(a_.fonts, t, 0x50, 3, 0);
 }
 
 void Menu::setup_records_page() {
@@ -433,11 +434,11 @@ void Menu::setup_records_page() {
     records_row_ = 0;
 }
 
-void Menu::draw_records(HudSurface& s) {
+void Menu::draw_records(MenuUi& s) {
     // menu_draw_dialog: the best total times and best laps of the track
     const auto text = [&](int i) { return size_t(i) < a_.texts.size() ? a_.texts[size_t(i)] : std::string(); };
     const auto centre = [&](const std::string& t, int y, int font, int m) {
-        s.text(a_.fonts, (320 - s.measure(a_.fonts, t, font)) >> 1, y, t, font, m);
+        s.centre(a_.fonts, t, y, font, m);
     };
     s.darken(0x30, 0x24, 0xe2, 0xa0, darken_);
     centre(text(31 + records_track_), 2, 3, 0);
@@ -472,7 +473,8 @@ void Menu::hide_objects() {
 void Menu::show_title() {
     // frontend_show_title
     backdrop_ = a_.backdrop("MENU1");
-    const auto width = [&](int i) { return size_t(i) < a_.sprites.sprites.size() ? a_.sprites.sprites[size_t(i)].w : 0; };
+    // (in 320x200 units; STARTH.EXE halves its sprites' widths)
+    const auto width = [&](int i) { return size_t(i) < a_.sprites.sprites.size() ? a_.sprites.sprites[size_t(i)].w / a_.scale() : 0; };
     logo1_x_ = float(((320 - width(15)) >> 1) - 400);
     logo2_x_ = float(((320 - width(14)) >> 1) - 800);
     page_stack.clear();
@@ -890,7 +892,7 @@ void Menu::setup_champ_page() {
     idle_ = 0;
 }
 
-void Menu::draw_champ(HudSurface& s) {
+void Menu::draw_champ(MenuUi& s) {
     // champ_draw_standings
     const ChampStep& st = kChamp[std::clamp(champ_step, 0, kChampSteps - 1)];
     const auto block = [&](int i) -> const std::vector<std::string>& {
@@ -899,7 +901,7 @@ void Menu::draw_champ(HudSurface& s) {
     };
     const auto line = [&](int i) { return block(i).empty() ? std::string() : block(i)[0]; };
     const auto centre = [&](const std::string& t, int y, int font, int m) {
-        s.text(a_.fonts, (320 - s.measure(a_.fonts, t, font)) >> 1, y, t, font, m);
+        s.centre(a_.fonts, t, y, font, m);
     };
     champ_total_ = 0;
     if (st.kind == 3) {
@@ -942,10 +944,10 @@ void Menu::draw_champ(HudSurface& s) {
         s.text(a_.fonts, 0x114 - s.measure(a_.fonts, buf, 0), y, buf, 0, 0xf);
         y += 0x18;
         std::snprintf(buf, sizeof buf, "%s:%d", line(kChampQualify).c_str(), st.value);
-        s.text(a_.fonts, (320 - s.measure(a_.fonts, buf, 0)) >> 1, y, buf, 0, 0xf);
+        s.centre(a_.fonts, buf, y, 0, 0xf);
     } else {
         // a text page, one line per font height
-        const int h = size_t(st.font) < a_.fonts.fonts.size() ? a_.fonts.fonts[size_t(st.font)].height : 8;
+        const int h = size_t(st.font) < a_.fonts.fonts.size() ? a_.fonts.fonts[size_t(st.font)].height / s.scale() : 8;
         int y = 0x20;
         for (const std::string& l : block(st.text)) {
             centre(l, y, st.font, 2);
@@ -1419,7 +1421,7 @@ void Menu::update(const MenuKeys& keys, float dt) {
     }
     if (draw_mode_ == 0) {
         // menu_draw_title_scroll: the logos slide in
-        const auto width = [&](int i) { return size_t(i) < a_.sprites.sprites.size() ? a_.sprites.sprites[size_t(i)].w : 0; };
+        const auto width = [&](int i) { return size_t(i) < a_.sprites.sprites.size() ? a_.sprites.sprites[size_t(i)].w / a_.scale() : 0; };
         const float l1 = float((320 - width(15)) >> 1), l2 = float((320 - width(14)) >> 1);
         if (logo1_x_ < l1) logo1_x_ = dt * 350.0f + logo1_x_;
         if (l1 < logo1_x_) logo1_x_ = l1;
@@ -1429,19 +1431,19 @@ void Menu::update(const MenuKeys& keys, float dt) {
     fade(dt);
 }
 
-void Menu::draw_title_scroll(HudSurface& s) {
+void Menu::draw_title_scroll(MenuUi& s) {
     s.sprite(a_.sprites, 15, int(logo1_x_ + 4.0f), 0);
     s.sprite(a_.sprites, 14, int(logo2_x_), 0x10);
 }
 
-void Menu::draw_car_select(HudSurface& s) {
+void Menu::draw_car_select(MenuUi& s) {
     // menu_draw_car_select
     const auto text = [&](int i) { return size_t(i) < a_.texts.size() ? a_.texts[size_t(i)] : std::string(); };
     const auto centre = [&](const std::string& t, int y, int font, int m) {
-        s.text(a_.fonts, (320 - s.measure(a_.fonts, t, font)) >> 1, y, t, font, m);
+        s.centre(a_.fonts, t, y, font, m);
     };
-    const int h0 = a_.fonts.fonts.empty() ? 8 : a_.fonts.fonts[0].height;
-    const int h1 = a_.fonts.fonts.size() > 1 ? a_.fonts.fonts[1].height : 8;
+    const int h0 = a_.fonts.fonts.empty() ? 8 : a_.fonts.fonts[0].height / s.scale();
+    const int h1 = a_.fonts.fonts.size() > 1 ? a_.fonts.fonts[1].height / s.scale() : 8;
     centre(text(kCarSelection), 2, 3, 2);
     if (size_t(car) >= a_.car_info.size()) return;
     const MenuCar& c = a_.car_info[size_t(car)];
@@ -1465,13 +1467,13 @@ void Menu::draw_car_select(HudSurface& s) {
     if (0xb + cars_unlocked != car) s.sprite(a_.sprites, (from_[0] <= to_[0] || cam_t_ <= 0.5f) ? 1 : 3, 0xee, 100);
 }
 
-void Menu::draw_track_select(HudSurface& s) {
+void Menu::draw_track_select(MenuUi& s) {
     // menu_draw_track_select
     const auto text = [&](int i) { return size_t(i) < a_.texts.size() ? a_.texts[size_t(i)] : std::string(); };
     const auto centre = [&](const std::string& t, int y, int font, int m) {
-        s.text(a_.fonts, (320 - s.measure(a_.fonts, t, font)) >> 1, y, t, font, m);
+        s.centre(a_.fonts, t, y, font, m);
     };
-    const int h2 = a_.fonts.fonts.size() > 2 ? a_.fonts.fonts[2].height : 8;
+    const int h2 = a_.fonts.fonts.size() > 2 ? a_.fonts.fonts[2].height / s.scale() : 8;
     centre(text(kTrackSelection), 2, 3, 2);
     if (size_t(track) < a_.track_names.size()) centre(a_.track_names[size_t(track)], h2 * -2 + 200, 2, 2);
     if (tracks_seen_ < tracks_unlocked && (frame_ & 0x3f) < 0x20) centre(text(kNewTrack), 0x20, 1, 2);
@@ -1479,10 +1481,10 @@ void Menu::draw_track_select(HudSurface& s) {
     if (tracks_unlocked + 2 != track) s.sprite(a_.sprites, (from_[0] <= to_[0] || cam_t_ <= 0.5f) ? 1 : 3, 0xee, 100);
 }
 
-void Menu::draw_name_entry(HudSurface& s) {
+void Menu::draw_name_entry(MenuUi& s) {
     // menu_draw_name_entry
     const auto text = [&](int i) { return size_t(i) < a_.texts.size() ? a_.texts[size_t(i)] : std::string(); };
-    s.text(a_.fonts, (320 - s.measure(a_.fonts, text(kEnterName), 3)) >> 1, 2, text(kEnterName), 3, 2);
+    s.centre(a_.fonts, text(kEnterName), 2, 3, 2);
     const std::string shown = "\x01" + name;
     const int x = (320 - s.measure(a_.fonts, shown, 2)) >> 1;
     s.text(a_.fonts, x, 0x4c, shown, 2, 2);
@@ -1536,7 +1538,8 @@ void Menu::draw(Framebuffer& fb, Renderer& renderer) {
     for (size_t i = 0; i < map_models.size(); ++i)
         if (i % 6 < a_.maps.size()) shown(map_models[i], a_.maps[i % 6], 0x6000);
     renderer.finish();
-    HudSurface s(fb);
+    HudSurface hs(fb, a_.scale());
+    MenuUi s(hs, a_.scale());
     switch (draw_mode_) {
     case 0: draw_title_scroll(s); break;
     case 2: draw_car_select(s); break;
