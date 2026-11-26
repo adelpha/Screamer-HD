@@ -145,6 +145,9 @@ std::optional<Model> parse_model(const uint8_t* d, size_t size) {
                     }
             }
         }
+        for (Face& f : part.faces) f.lists = 0;
+        for (size_t list = 0; list < 16; ++list)
+            for (const uint16_t i : part.draw_order[list]) part.faces[i].lists |= uint16_t(1u << list);
         for (const int fo : list0)
             for (const auto& [o, i] : offset_to_face)
                 if (o == fo) {

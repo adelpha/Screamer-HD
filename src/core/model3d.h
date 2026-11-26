@@ -50,6 +50,9 @@ struct Face {
     uint8_t open_edges = 0x3f;
     // A long narrow face (compute_bounds): on road pieces, a painted line.
     bool strip = false;
+    // Bit i: the face is in the part's draw order i (Part::draw_order). The original draws
+    // only the faces of the list for where the eye is; a few faces are left out of some.
+    uint16_t lists = 0xffff;
 };
 
 struct Part {
