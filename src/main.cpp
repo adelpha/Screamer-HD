@@ -73,6 +73,7 @@ struct Options {
     bool sky_tilt = true;           // --sky-tilt on|off
     bool face_lists = true;         // --face-lists on|off
     bool folded_faces = true;       // --folded-faces on|off
+    bool ground_obstacles = true;   // --ground-obstacles on|off
     int threads = 0;                // renderer threads (0: one per hardware thread)
     std::string fill;               // --fill: the pixel filler's build (sse2 | avx2; empty: the widest the CPU has)
     bool fullscreen = false;
@@ -145,6 +146,8 @@ void print_usage() {
         "  --weld-joints off    road pieces where the track file puts them (their lines step at every joint)\n"
         "  --level N            the CPU cars' level, 0-4 (default 1; 3: the championship's BULLET league)\n"
         "  --sky-tilt off       the sky stays level when the camera rolls, as before\n"
+        "  --ground-obstacles off  cones, barriers and signs where the original draws them, half below the\n"
+        "                       road (their base then slides over the road as the camera nears)\n"
         "  --smooth-turn off    camera, car and sky angles in whole 2048ths of a turn, as the original\n"
         "                       (large pictures show the steps in slow turns)\n"
         "  --seal-edges all     road pieces reach past every face edge, as before (the painted lines break up)\n"
@@ -311,6 +314,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--sky-tilt") o.sky_tilt = std::string(next("--sky-tilt")) != "off";
         else if (a == "--face-lists") o.face_lists = std::string(next("--face-lists")) != "off";
         else if (a == "--folded-faces") o.folded_faces = std::string(next("--folded-faces")) != "off";
+        else if (a == "--ground-obstacles") o.ground_obstacles = std::string(next("--ground-obstacles")) != "off";
         else if (a == "--smooth-turn") o.smooth_turn = std::string(next("--smooth-turn")) != "off";
         else if (a == "--weld-joints") o.weld_joints = std::string(next("--weld-joints")) != "off";
         else if (a == "--mip-sharpness") o.mip_sharpness = float(std::atof(next("--mip-sharpness")));
@@ -1534,6 +1538,17 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     scr::Pose op;
                     op.x = float(ob.x);
                     op.y = float(ob.y);
+                    // (ours) The models are centred on their middle and the original puts that
+                    // at the ground, so the base is below the road and seems to slide along it
+                    // as the camera comes nearer. Drawn raised by what the model has below its
+                    // middle, the base is on the road. The picture only: the game's obstacle
+                    // stays where it is.
+                    if (opt.ground_obstacles) {
+                        float lowest = 0;
+                        for (const scr::Part& part : obstacles.models[size_t(o.model)].parts)
+                            for (const scr::Vec3i16& v : part.vertices) lowest = std::min(lowest, float(v.y) + float(part.offset[1]));
+                        op.y -= lowest;
+                    }
                     // half of each obstacle is below the ground (it stands at the ground height);
                     // the original draws it over the ground all the same (painter's order). Seen
                     // at a shallow angle the ground in front of its lower half is much nearer
