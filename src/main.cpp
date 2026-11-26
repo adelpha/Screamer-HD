@@ -141,6 +141,7 @@ void print_usage() {
         "  --mipmaps on|off     draw squeezed (distant) textures from averaged smaller versions: steadier, softer\n"
         "                       (default on; F10 switches in a race). --mip-sharpness X: 1 sharper .. 2 softer (1.4)\n"
         "  --weld-joints off    road pieces where the track file puts them (their lines step at every joint)\n"
+        "  --level N            the CPU cars' level, 0-4 (default 1; 3: the championship's BULLET league)\n"
         "  --sky-tilt off       the sky stays level when the camera rolls, as before\n"
         "  --smooth-turn off    camera, car and sky angles in whole 2048ths of a turn, as the original\n"
         "                       (large pictures show the steps in slow turns)\n"
@@ -347,6 +348,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--record-audio") o.record_audio = next("--record-audio");
         else if (a == "--menu-keys") o.menu_keys = next("--menu-keys");
         else if (a == "--game-mode") o.game_mode = int(std::strtol(next("--game-mode"), nullptr, 0));
+        else if (a == "--level") o.level = std::clamp(std::atoi(next("--level")), 0, 4);
         else if (a == "--audio-log") o.audio_log = true;
         else if (a == "--audio-filter") o.audio_smooth = std::string(next("--audio-filter")) != "nearest";
         else if (a == "--detail") o.detail = std::string(next("--detail")) == "low" ? "L" : "H";
@@ -711,9 +713,15 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 if (next == idx) next = (next + 1) % n;
                 const uint8_t* r = cars_data->data() + next * 0x40;
                 next = (next + 1) % n;
-                auto m = scr::load_object(*path, std::string(reinterpret_cast<const char*>(r)) + ".3DX");
+                // (opponent_car_load: above the third level, the BULLET league of the
+                // championship and the normal game's hardest, every CPU car is car 12, the
+                // BULLET, in the colours of the car whose turn it was)
+                const uint8_t* body = opt.level > 2 && n > 0xc ? cars_data->data() + 0xc * 0x40 : r;
+                auto m = scr::load_object(*path, std::string(reinterpret_cast<const char*>(body)) + ".3DX");
                 if (!m) break;
-                cpu_setups.push_back(scr::car_setup(r, *m));
+                scr::CarSetup cs = scr::car_setup(body, *m);
+                cs.animation = scr::car_setup(r, *m).animation;
+                cpu_setups.push_back(cs);
                 player->cpu_models.push_back(std::move(*m));
             }
             player->race.start(*track, setup, cpu_setups);
