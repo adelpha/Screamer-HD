@@ -303,6 +303,7 @@ void Renderer::Geo::clear() {
     stats = {};
     edge_slack = 0;
     painter = false;
+    bias_test_only = false;
 }
 
 void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, const std::vector<bool>* part_mask) {
@@ -379,6 +380,7 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
     // (ending in x) 1000, so the wheels come first and the bodywork goes over them.
     const bool painter = model.car && !pose.billboard;
     g.painter = painter;
+    g.bias_test_only = pose.bias_test_only;
     std::vector<size_t>& part_order = g.part_order;
     part_order.clear();
     for (size_t pi = 0; pi < model.parts.size(); ++pi) part_order.push_back(pi);
@@ -871,6 +873,7 @@ void Renderer::draw_polygon(Geo& g, const ClipVert* in, size_t count, const Mate
     fill.writes_depth = mode != Mode::Translucent && mode != Mode::Darken;
     fill.depth_bias = depth_bias;
     fill.painter = g.painter ? 1 : 0;
+    fill.bias_test_only = g.bias_test_only ? 1 : 0;
     fill.edge_slack = fill.writes_depth ? g.edge_slack : 0.0f;
     fill.seal_behind = open_edges != 0xff;
     // A painted line of the road, far enough to be thinner than a pixel, would be drawn in

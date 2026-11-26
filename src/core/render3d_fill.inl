@@ -306,6 +306,7 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
     const VF fade_iz = vset1(c.fade_iz), fade_start = vset1(c.fade_start), fade_range = vset1(c.fade_range);
     const bool writes_depth = fl.writes_depth;
     const bool painter = fl.painter != 0;
+    const bool true_depth = fl.bias_test_only != 0 && bias;
     const bool behind = fl.seal_behind && (e[0] != 0 || e[1] != 0 || e[2] != 0);
     const VF further = vset1(0.995f), none = vset1(0.0f);
     [[maybe_unused]] const VF vduz = vset1(duz), vdvz = vset1(dvz);
@@ -495,6 +496,7 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
                 // (a negative depth, an earlier polygon of the same car, is behind anything)
                 const int pass = in & vbits(vcmpnlt(vmul(tz, tie), dz));
                 if (!pass) continue;
+                if (true_depth) tz = iz;
                 if (painter) tz = vsub(none, tz);
 
                 if constexpr (K == Kind::Darken) {
