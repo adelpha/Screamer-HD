@@ -1535,8 +1535,20 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     op.x = float(ob.x);
                     op.y = float(ob.y);
                     // half of each obstacle is below the ground (it stands at the ground height);
-                    // the original draws it over the ground all the same (painter's order)
-                    op.depth_bias = kObstacleBias;
+                    // the original draws it over the ground all the same (painter's order). Seen
+                    // at a shallow angle the ground in front of its lower half is much nearer
+                    // than the obstacle: by its half height times distance over the camera's
+                    // height above it. That much bias, for the test only, so that cars in front
+                    // of the obstacle still cover it.
+                    {
+                        const scr::Model& om = obstacles.models[size_t(o.model)];
+                        const float dx = float(ob.x) - view_cam.x, dz = float(ob.z) - view_cam.z;
+                        const float dist = std::sqrt(dx * dx + dz * dz);
+                        const float height = std::max(40.0f, std::fabs(view_cam.y - float(ob.y)));
+                        const float half = om.radius > 0 ? om.radius : 128.0f;
+                        op.depth_bias = std::min(std::max(kObstacleBias, half * dist / height * 1.25f + 64.0f), dist * 0.9f);
+                        op.bias_test_only = true;
+                    }
                     op.z = float(ob.z);
                     op.ax = float(int(ob.ax * kObsUnits) & 0x7ff);
                     op.ay = float(int(ob.ay * kObsUnits) & 0x7ff);

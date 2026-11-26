@@ -76,6 +76,10 @@ struct Pose {
     // whole objects and never depth-tests, so a car's shadow (a flat quad tilted with the car)
     // always lies on the road; a bias keeps it from sinking into slopes here.
     float depth_bias = 0;
+    // depth_bias only decides whether the model's pixels are drawn; what is drawn later is
+    // tested against the model's real depth (obstacles: over the ground they stand in at any
+    // angle, yet behind a car that is in front of them).
+    bool bias_test_only = false;
     // Turned to face the camera whatever its angles (the tyre smoke: ours; the original's
     // puffs keep the angles they were made with and look thin from the side).
     bool billboard = false;
@@ -227,6 +231,7 @@ private:
         // polygon's depths negated, which marks the car's own pixels (anything is in front of
         // a negative depth); finish() puts them right when the car is done.
         bool painter = false;
+        bool bias_test_only = false;  // Pose::bias_test_only of the model being drawn
         std::vector<size_t> part_order;
         std::vector<float> part_keys;
         RenderStats stats{};
