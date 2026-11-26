@@ -58,6 +58,9 @@ struct Fill {
     // texel coordinates just outside, at its edges, stay on the edge texel and do not
     // come round from the far side of the texture.
     bool clamp_uv;
+    // The pixels past the polygon's own edges (edge_slack) are tested and written as a little
+    // further away: they fill cracks, but any surface that really is there shows instead.
+    bool seal_behind;
     const MipTexture* mip;  // the smaller versions to draw from where the texture is squeezed, or null
     float depth_bias;       // in units of d = 128 - z
     float edge_slack;       // pixels the polygon reaches past its edges

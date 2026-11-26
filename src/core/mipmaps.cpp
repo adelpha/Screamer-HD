@@ -88,6 +88,10 @@ MipSet build_mipmaps(const MaterialLibrary& lib, const Palette& palette) {
         const int kind = m.type >> 1;
         if (kind == 4 || kind == 6 || kind == 7) continue;  // flat, darken, translucent
         if (m.width < 1 || m.height < 1 || m.width > 256 || m.height > 256) continue;
+        // Not the textures only a few texels across: those are the road's painted lines (six
+        // texels wide, white with uneven edges). Averaged along their length the edge columns
+        // turn grey, and the line is a third narrower from where the smaller version takes over.
+        if (m.width < 8 || m.height < 8) continue;
         const bool holes = m.type >= 3 && m.type <= 7;
         const size_t frames = std::max<size_t>(1, m.frame_pixels.size());
         bool inside = true;
@@ -112,7 +116,10 @@ MipSet build_mipmaps(const MaterialLibrary& lib, const Palette& palette) {
                     a[l].magic = 65536 / s;
                     a[l].scale = float(s) / float(size);
                     levels = l + 1;
-                    if (s == 1) break;
+                    // (nothing smaller than eight texels along either side: a fifth of the
+                    // textures are 8 to 15 texels across - rails, posts, kerb stripes, more
+                    // lines - and halved they lose their edges as the six-texel lines did)
+                    if (level_size(size, l + 1) < 8) break;
                 }
                 return levels;
             };

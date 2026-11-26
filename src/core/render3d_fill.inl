@@ -45,6 +45,7 @@ SCR_INLINE VI vixor(VI a, VI b) { return _mm256_xor_si256(a, b); }
 SCR_INLINE VI vilane_numbers() { return _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7); }
 SCR_INLINE VF vand(VF a, VF b) { return _mm256_and_ps(a, b); }
 SCR_INLINE VF vor(VF a, VF b) { return _mm256_or_ps(a, b); }
+SCR_INLINE VF vandnot(VF a, VF b) { return _mm256_andnot_ps(a, b); }  // ~a & b
 SCR_INLINE VF vnot(VF a) { return _mm256_xor_ps(a, _mm256_castsi256_ps(_mm256_set1_epi32(-1))); }
 SCR_INLINE VF vcmpge(VF a, VF b) { return _mm256_cmp_ps(a, b, _CMP_GE_OS); }
 SCR_INLINE VF vcmplt(VF a, VF b) { return _mm256_cmp_ps(a, b, _CMP_LT_OS); }
@@ -93,6 +94,7 @@ SCR_INLINE VI vixor(VI a, VI b) { return _mm_xor_si128(a, b); }
 SCR_INLINE VI vilane_numbers() { return _mm_setr_epi32(0, 1, 2, 3); }
 SCR_INLINE VF vand(VF a, VF b) { return _mm_and_ps(a, b); }
 SCR_INLINE VF vor(VF a, VF b) { return _mm_or_ps(a, b); }
+SCR_INLINE VF vandnot(VF a, VF b) { return _mm_andnot_ps(a, b); }
 SCR_INLINE VF vnot(VF a) { return _mm_xor_ps(a, _mm_castsi128_ps(_mm_set1_epi32(-1))); }
 SCR_INLINE VF vcmpge(VF a, VF b) { return _mm_cmpge_ps(a, b); }
 SCR_INLINE VF vcmplt(VF a, VF b) { return _mm_cmplt_ps(a, b); }
@@ -303,6 +305,8 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
     const bool fade = c.fade;
     const VF fade_iz = vset1(c.fade_iz), fade_start = vset1(c.fade_start), fade_range = vset1(c.fade_range);
     const bool writes_depth = fl.writes_depth;
+    const bool behind = fl.seal_behind && (e[0] != 0 || e[1] != 0 || e[2] != 0);
+    const VF further = vset1(0.995f), none = vset1(0.0f);
     [[maybe_unused]] const VF vduz = vset1(duz), vdvz = vset1(dvz);
     [[maybe_unused]] const int wmask = fl.wmask, hmask = fl.hmask;
     [[maybe_unused]] const VI vwmask = viset1(fl.wmask), vhmask = viset1(fl.hmask);
@@ -426,7 +430,12 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
                 }
                 // Coplanar surfaces (road decals on the road, shadows) are resolved like the
                 // original's painter's order: the later polygon wins near-ties.
-                const VF tz = bias ? vdiv(iz, vmax(small, vsub(one, vmul(vbias, iz)))) : iz;
+                VF tz = bias ? vdiv(iz, vmax(small, vsub(one, vmul(vbias, iz)))) : iz;
+                if (behind) {
+                    // (past the polygon's own edges: half a percent further away)
+                    const VF inner = vand(vand(vcmpge(w0, none), vcmpge(w1, none)), vcmpge(w2, none));
+                    tz = vor(vand(inner, tz), vandnot(inner, vmul(tz, further)));
+                }
                 // (the last group of a row at the right edge of the picture must not touch the
                 // next row, which may be another thread's)
                 const bool whole = x + kLanes <= width;

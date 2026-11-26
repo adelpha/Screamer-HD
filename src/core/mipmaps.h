@@ -3,13 +3,14 @@
 // whatever the distance, which breaks thin details such as the road's painted lines into
 // dashes where the road is seen at a shallow angle).
 //
-// Every texture is halved along u and along v separately, as far as one texel: level
+// Every texture is halved along u and along v separately, down to eight texels: level
 // (lu, lv) averages 2^lu x 2^lv texels of the full texture. A road in the distance is
 // squeezed lengthwise much more than across, and takes a level that is shortened but as
 // wide as ever, so the lines stay sharp. The averages are taken in linear light and matched
 // to the nearest colour of the track's palette. Texel 0 of the materials with holes
 // (types 3-7) stays a hole where at least half of what a texel covers is one.
-// Materials whose texels are not colours (translucent, types 14/15) have no smaller versions.
+// Materials whose texels are not colours (translucent, types 14/15) have no smaller versions,
+// nor have textures less than eight texels wide or high (the painted lines).
 
 #include "core/framebuffer.h"
 #include "core/render3d_fill.h"

@@ -313,3 +313,21 @@ TEST_CASE("menu: replay numbers for new total records") {
     CHECK(c.get(t + 0x28 + 12) == 1);
     CHECK(m.race_result(2, 30.0f, 85.0f, 3, true, true) == 1);  // numbers are per track
 }
+
+TEST_CASE("menu: the demo is asked for once per 30 idle seconds") {
+    if (!scr::find_game_dir()) SKIP("original game data not present");
+    auto a = load_menu();
+    REQUIRE(a.has_value());
+    scr::Menu m(*a);
+    m.show_title();
+    run(m, 100);
+    CHECK(!m.want_demo);
+    run(m, 1500);  // 30 seconds and a bit, no key
+    CHECK(m.want_demo);
+    // the demo ran and the same menu is shown again: it must wait another 30 seconds
+    m.want_demo = false;
+    run(m, 500);
+    CHECK(!m.want_demo);
+    run(m, 1100);
+    CHECK(m.want_demo);
+}
