@@ -98,6 +98,7 @@ struct Options {
     int race_options = 0;           // g_race_options: the cheats (obstacle column, clock, mirror, upside down)
     std::string camera;             // --scene track: x,y,z,yaw,pitch[,roll]
     int fb_width = 320, fb_height = 200;  // internal render size (--render-size)
+    std::string ui = "auto";            // --ui: the HUD and menu graphics, low (320x200), high (640x400) or auto
     bool flat = false;              // --scene track: no textures
     std::vector<std::string> cars;  // --scene track: NAME[,X,Y,Z,YAW] per car
     std::string detail = "H";
@@ -158,6 +159,8 @@ void print_usage() {
         "  --detail high|low    track detail: GFX/MAPnH.DAT (default, as the game's high detail) or MAPnL.DAT\n"
         "  --camera X,Y,Z,YAW,PITCH[,ROLL]  camera for --scene track (game units, angles 0..2047)\n"
         "  --render-size WxH    internal resolution for 3D scenes (default 320x200)\n"
+        "  --ui low|high|auto   HUD and menu graphics: the original's 320x200 set, STARTH.EXE's 640x400 set,\n"
+        "                       or auto (default): 640x400 when the render size has 400 lines or more\n"
         "  --flat               --scene track without textures\n"
         "  --car NAME[,X,Y,Z,YAW[,ANIM]]  add a car (e.g. AUTO00) to --scene track; repeatable; ANIM\n"
         "                       is its animation bits in hex (8000 = second paint scheme); without a\n"
@@ -339,6 +342,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--audio-log") o.audio_log = true;
         else if (a == "--audio-filter") o.audio_smooth = std::string(next("--audio-filter")) != "nearest";
         else if (a == "--detail") o.detail = std::string(next("--detail")) == "low" ? "L" : "H";
+        else if (a == "--ui") o.ui = next("--ui");
         else if (a == "--render-size") {
             if (std::sscanf(next("--render-size"), "%dx%d", &o.fb_width, &o.fb_height) != 2 || o.fb_width <= 0 || o.fb_height <= 0) {
                 std::fprintf(stderr, "--render-size expects WxH\n");
@@ -415,6 +419,8 @@ struct Shared {
 int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const std::optional<std::string>& game_dir,
               std::optional<scr::PcxImage>& title, Shared& shared) {
     (void)window;
+    // STARTH.EXE's 640x400 HUD and menu graphics once the picture has the lines for them
+    const bool ui_hires = opt.ui == "high" || (opt.ui != "low" && opt.fb_height >= 400);
     // A track viewed from a fixed camera (the first step of the 3D renderer).
     std::optional<scr::Track> track;
     scr::Camera cam;
@@ -744,13 +750,13 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         if (player->cpu_cars) {
             auto game = scr::resolve_game_file(*game_dir, "GFX/GAME.DAT");
             hud.emplace();
-            if (!game || !hud->load(*game)) hud.reset();
+            if (!game || !hud->load(*game, ui_hires)) hud.reset();
             if (auto local = scr::resolve_game_file(*game_dir, "DATA/LOCAL.DAT"); hud && local) hud->load_texts(*local);
-            // The car's dashboard: COCK<nn><A|B>L.PKC and its layout COCK<nn>L in CARS.DTR.
+            // The car's dashboard: COCK<nn><A|B><L|H>.PKC and its layout COCK<nn><L|H> in CARS.DTR.
             if (hud && name.size() >= 6) {
                 const std::string nn = name.substr(4, 2);
                 hud->load_cockpit(*game, nn + (setup.animation ? "B" : "A"),
-                                  std::string(text->begin(), text->end()), "COCK" + nn + "L");
+                                  std::string(text->begin(), text->end()), "COCK" + nn);
             }
         }
     }
@@ -780,7 +786,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             auto gd = scr::resolve_game_file(*game_dir, "GFX/GRAF.DAT");
             auto ld = scr::resolve_game_file(*game_dir, "DATA/LOCAL.DAT");
             shared.menu_assets.emplace();
-            if (!md || !gd || !ld || !shared.menu_assets->load(*md, *gd, *ld)) {
+            if (!md || !gd || !ld || !shared.menu_assets->load(*md, *gd, *ld, ui_hires)) {
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "cannot load the menu from GFX/MENU.DAT and GFX/GRAF.DAT");
                 return 1;
             }
@@ -1135,9 +1141,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 }
                 std::copy(now, now + 4, prompt_keys);
                 if (hud && hud->texts.size() > 21) {
-                    scr::HudSurface hsurf(fb);
+                    scr::HudSurface hsurf(fb, hud->scale);
                     auto centre = [&](const std::string& t, int y, int m) {
-                        hsurf.text(hud->fonts, (320 - hsurf.measure(hud->fonts, t, 0)) >> 1, y, t, 0, m);
+                        hsurf.text(hud->fonts, (hsurf.width() - hsurf.measure(hud->fonts, t, 0)) >> 1, y * hud->scale, t, 0, m);
                     };
                     const bool blink = (frame & 8) != 0;
                     centre(hud->texts[19], 0x34, 2);
@@ -1755,8 +1761,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     char note[48];
                     if (note_mipmaps) std::snprintf(note, sizeof note, "MIPMAPS %s", opt.mipmaps ? "ON" : "OFF");
                     else std::snprintf(note, sizeof note, "VIEW DISTANCE %gX", double(opt.view_distance));
-                    scr::HudSurface hsurf(fb);
-                    hsurf.text(hud->fonts, (320 - hsurf.measure(hud->fonts, note, 1)) / 2, 0x50, note, 1, 0);
+                    scr::HudSurface hsurf(fb, hud->scale);
+                    hsurf.text(hud->fonts, (hsurf.width() - hsurf.measure(hud->fonts, note, 1)) / 2, 0x50 * hud->scale, note, 1, 0);
                 }
             } else if (menu) {
                 scr::MenuKeys mk;

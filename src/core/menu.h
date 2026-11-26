@@ -61,6 +61,7 @@ struct MenuAssets {
     std::vector<std::vector<std::string>> champ_text;  // CHAMP.TXT blocks (separated by '#')
     std::string graf_path;
     char res = 'L';
+    int scale() const { return res == 'H' ? 2 : 1; }  // HudSurface scale of these graphics
 
 private:
     std::map<std::string, PcxImage> backdrops_;
@@ -92,6 +93,29 @@ struct ChoiceFile {
     void setf(size_t o, float v);
     std::string str(size_t o) const;  // char[4]
     void setstr(size_t o, const std::string& v);
+};
+
+// The menus' 2D drawing in the original's 320x200 units. With the 640x400 graphics (STARTH.EXE)
+// the positions are doubled when drawn and widths and heights measured in its fonts halved,
+// as STARTH does it; the glyphs and sprites keep their own pixels.
+class MenuUi {
+public:
+    MenuUi(HudSurface& s, int scale) : s_(s), k_(scale) {}
+    int scale() const { return k_; }
+    void text(const HudFonts& f, int x, int y, const std::string& t, int font, int mode) {
+        s_.text(f, x * k_, y * k_, t, font, mode);
+    }
+    int measure(const HudFonts& f, const std::string& t, int font) const { return s_.measure(f, t, font) / k_; }
+    // centred on the screen (font_draw_centered: the full width of the surface)
+    void centre(const HudFonts& f, const std::string& t, int y, int font, int mode) {
+        s_.text(f, (s_.width() - s_.measure(f, t, font)) >> 1, y * k_, t, font, mode);
+    }
+    void sprite(const HudSprites& sp, int index, int x, int y) { s_.sprite(sp, index, x * k_, y * k_); }
+    void darken(int x, int y, int w, int h, const std::array<uint8_t, 256>& t) { s_.darken(x * k_, y * k_, w * k_, h * k_, t); }
+
+private:
+    HudSurface& s_;
+    int k_;
 };
 
 // Keys the menu reacts to, as held this frame (frontend_handle_keys acts on changes).
@@ -239,13 +263,13 @@ private:
     void update_camera(float dt);
     void fade(float dt);
     void start_race();
-    void draw_title_scroll(HudSurface& s);
-    void draw_car_select(HudSurface& s);
-    void draw_track_select(HudSurface& s);
-    void draw_name_entry(HudSurface& s);
-    void draw_records(HudSurface& s);
+    void draw_title_scroll(MenuUi& s);
+    void draw_car_select(MenuUi& s);
+    void draw_track_select(MenuUi& s);
+    void draw_name_entry(MenuUi& s);
+    void draw_records(MenuUi& s);
     void setup_champ_page();
-    void draw_champ(HudSurface& s);
+    void draw_champ(MenuUi& s);
     void champ_advance();
     void setup_records_page();
     int option(int item) const;

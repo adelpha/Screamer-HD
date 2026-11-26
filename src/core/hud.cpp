@@ -71,17 +71,20 @@ std::optional<HudSprites> HudSprites::parse(const std::vector<uint8_t>& d) {
     return s;
 }
 
-HudSurface::HudSurface(Framebuffer& fb) : fb_(fb), sx_(float(fb.width()) / 320.0f), sy_(float(fb.height()) / 200.0f) {
-    // where each of the 320x200 pixels starts in the framebuffer
-    for (int x = 0; x <= 320; ++x) xs_[size_t(x)] = int(float(x) * sx_);
-    for (int y = 0; y <= 200; ++y) ys_[size_t(y)] = int(float(y) * sy_);
+HudSurface::HudSurface(Framebuffer& fb, int scale)
+    : fb_(fb), w_(320 * std::max(1, scale)), h_(200 * std::max(1, scale)), sx_(float(fb.width()) / float(w_)),
+      sy_(float(fb.height()) / float(h_)), xs_(size_t(w_) + 1), ys_(size_t(h_) + 1) {
+    // where each of the w_ x h_ pixels starts in the framebuffer
+    for (int x = 0; x <= w_; ++x) xs_[size_t(x)] = int(float(x) * sx_);
+    for (int y = 0; y <= h_; ++y) ys_[size_t(y)] = int(float(y) * sy_);
+    reset_clip();
 }
 
 void HudSurface::set_clip(int x0, int y0, int x1, int y1) {
     clip_[0] = std::max(0, x0);
     clip_[1] = std::max(0, y0);
-    clip_[2] = std::min(320, x1);
-    clip_[3] = std::min(200, y1);
+    clip_[2] = std::min(w_, x1);
+    clip_[3] = std::min(h_, y1);
 }
 
 void HudSurface::pixel(int x, int y, uint8_t c) {
@@ -116,7 +119,7 @@ void HudSurface::rle(const std::vector<uint8_t>& p) {
             pos -= n;
             continue;
         }
-        for (int32_t k = 0; k < n && i < p.size(); ++k, ++i, ++pos) pixel(pos % 320, pos / 320, p[i]);
+        for (int32_t k = 0; k < n && i < p.size(); ++k, ++i, ++pos) pixel(pos % w_, pos / w_, p[i]);
     }
 }
 
@@ -200,14 +203,16 @@ void HudSurface::darken(int x, int y, int w, int h, const std::array<uint8_t, 25
     }
 }
 
-bool Hud::load(const std::string& game_dat) {
+bool Hud::load(const std::string& game_dat, bool hires) {
     auto a = Archive::open(game_dat);
     if (!a) return false;
-    auto fnt = a->read("GAMEL.FNT");
-    auto spr = a->read("GAMEL.SPR");
-    auto let = a->read("IMPLET_L.PKC");
-    auto res = a->read("IMPRES_L.PKC");
+    const char r = hires ? 'H' : 'L';
+    auto fnt = a->read(std::string("GAME") + r + ".FNT");
+    auto spr = a->read(std::string("GAME") + r + ".SPR");
+    auto let = a->read(std::string("IMPLET_") + r + ".PKC");
+    auto res = a->read(std::string("IMPRES_") + r + ".PKC");
     if (!fnt || !spr || !let || !res) return false;
+    scale = hires ? 2 : 1;
     auto f = HudFonts::parse(*fnt);
     auto s = HudSprites::parse(*spr);
     if (!f || !s) return false;
@@ -215,13 +220,14 @@ bool Hud::load(const std::string& game_dat) {
     sprites = std::move(*s);
     labels = std::move(*let);
     gauges = std::move(*res);
-    if (auto cd = a->read("CDFRONTL.PKC")) cdfront = std::move(*cd);
+    if (auto cd = a->read(std::string("CDFRONT") + r + ".PKC")) cdfront = std::move(*cd);
     return true;
 }
 
 void Hud::draw_cd_panel(Framebuffer& fb, const CdPanel& p) {
-    // pause_menu
-    HudSurface s(fb);
+    // pause_menu (STARTH.EXE: every position doubled)
+    const int k = scale;
+    HudSurface s(fb, k);
     s.rle(cdfront);
     // the CD's tracks (font 5, mode 9); the playing one flashes; a second row after ten
     int x = 0, y = 0;
@@ -231,27 +237,26 @@ void Hud::draw_cd_panel(Framebuffer& fb, const CdPanel& p) {
             x = 0;
         }
         const int n = p.first_track + i;
-        if (n != p.track || !p.blink) s.text(fonts, x + 0x40, y + 0x4e, "" + std::to_string(n), 5, 9);
+        if (n != p.track || !p.blink) s.text(fonts, (x + 0x40) * k, (y + 0x4e) * k, "" + std::to_string(n), 5, 9);
         x += 0xd;
     }
     // the selected button (x, sprite, sprite when pressed: table 0x101f1c)
     static constexpr int kButtons[7][3] = {{59, 7, 11},    {83, 8, 12},    {113, 9, 13}, {137, 10, 14},
                                            {167, 57, 59},  {167, 58, 60},  {217, 61, 62}};
     const int b = std::clamp(p.button, 0, 6);
-    s.sprite(sprites, p.pressed ? kButtons[b][2] : kButtons[b][1], kButtons[b][0], 0x61);
+    s.sprite(sprites, p.pressed ? kButtons[b][2] : kButtons[b][1], kButtons[b][0] * k, 0x61 * k);
     if (3 < b) {
         // hud_draw_message_box: the volume as a bar of lines, 3 pixels per 1024
         static const char* kLabels[3] = {"CD", "FX", "MU"};
         static constexpr uint8_t kColours[4] = {0x16, 0xd6, 0xd0, 0xd0};  // 0x101fa0
         const int m = std::clamp(p.mode, 0, 2);
-        s.text(fonts, 0x40, 0x45, kLabels[m], 5, 3);
+        s.text(fonts, 0x40 * k, 0x45 * k, kLabels[m], 5, 3);
         for (int i = 0; i < p.volume[m] / 0x400; ++i) {
-            const int lx = i * 3 + 0x55;
-            s.line(lx, 0x45, lx, 0x4a, kColours[std::min(i / 10, 3)]);
+            const int lx = (i * 3 + 0x55) * k;
+            s.line(lx, 0x45 * k, lx, 0x4a * k, kColours[std::min(i / 10, 3)]);
         }
     }
 }
-
 bool Hud::load_texts(const std::string& local_dat) {
     auto a = Archive::open(local_dat);
     auto t = a ? a->read("GAME.TXT") : std::nullopt;
@@ -275,9 +280,10 @@ bool Hud::load_cockpit(const std::string& game_dat, const std::string& id, const
                        const std::string& section) {
     auto a = Archive::open(game_dat);
     if (!a) return false;
-    auto pkc = a->read("COCK" + id + "L.PKC");
+    const char r = scale > 1 ? 'H' : 'L';
+    auto pkc = a->read("COCK" + id + r + ".PKC");
     if (!pkc) return false;
-    auto values = DtrFile(cars_dtr).section(section);
+    auto values = DtrFile(cars_dtr).section(section + r);
     if (!values || values->size() < 29) return false;
     auto v = [&](size_t i) { return (*values)[i].i; };
     layout.needle_len = v(0);
@@ -291,7 +297,11 @@ bool Hud::load_cockpit(const std::string& game_dat, const std::string& id, const
 
 void Hud::draw_needle(HudSurface& s, int cx, int cy, int len, float angle, uint8_t color) {
     // hud_draw_needle: a line from the pivot and from two points one pixel either side of it
-    // to the tip; angle 0 points 2 radians anticlockwise of up.
+    // to the tip; angle 0 points 2 radians anticlockwise of up. (STARTH.EXE doubles the pivot
+    // and the length, the two points stay one pixel out.)
+    cx *= scale;
+    cy *= scale;
+    len *= scale;
     float a = angle - 2.0f;
     const int tx = int(std::sin(double(a)) * len + cx), ty = int(double(cy) - std::cos(double(a)) * len);
     a += 1.5707963705062866f;
@@ -306,7 +316,9 @@ void Hud::draw_needle(HudSurface& s, int cx, int cy, int len, float angle, uint8
 void Hud::draw(Framebuffer& fb, const HudState& st, const std::array<uint8_t, 256>& darken075, float frame_time,
                int pow_row, int view, int radar, bool advance) {
     (void)frame_time;
-    HudSurface s(fb);
+    // STARTH.EXE: the same, every position doubled for its 640x400 graphics
+    const int k = scale;
+    HudSurface s(fb, k);
     // hud_draw_cockpit: the labels, then the gauges of the chosen view.
     s.rle(labels);
     if (view == 1 && !cockpit.empty()) {
@@ -325,9 +337,9 @@ void Hud::draw(Framebuffer& fb, const HudState& st, const std::array<uint8_t, 25
         s.rle(gauges);
         char buf[16];
         std::snprintf(buf, sizeof buf, "\x01%03d", int(st.speed * 0.017f));  // km/h
-        s.text(fonts, 0x10f, 0xbb, buf, 2, 7);
+        s.text(fonts, 0x10f * k, 0xbb * k, buf, 2, 7);
         std::snprintf(buf, sizeof buf, "\x01%d", st.gear);
-        s.text(fonts, 0x130, 0xbb, buf, 2, 1);
+        s.text(fonts, 0x130 * k, 0xbb * k, buf, 2, 1);
         float target = st.rpm / st.maxrpm * kPi;
         if (kPi < target) target = kPi;
         if (advance) rpm_needle_ = (rpm_needle_ - target) * pow_table(pow_row, 0x5a) + target;
@@ -336,22 +348,22 @@ void Hud::draw(Framebuffer& fb, const HudState& st, const std::array<uint8_t, 25
     // hud_draw: time left (centred), lap n/N, position, three times.
     char buf[64];
     std::snprintf(buf, sizeof buf, "%d", int(st.time_left));
-    s.text(fonts, (320 - s.measure(fonts, buf, 6)) / 2, 8, buf, 6, 2);
+    s.text(fonts, (s.width() - s.measure(fonts, buf, 6)) / 2, 8 * k, buf, 6, 2);
     std::snprintf(buf, sizeof buf, "%d%c", st.lap < st.laps ? st.lap + 1 : st.lap, ':');
     const int lap_w = s.measure(fonts, buf, 1);
-    s.text(fonts, 8, 0xb, buf, 1, 5);
+    s.text(fonts, 8 * k, 0xb * k, buf, 1, 5);
     std::snprintf(buf, sizeof buf, "%d", st.laps);
-    s.text(fonts, lap_w + 5, 0x14, buf, 4, 5);
+    s.text(fonts, lap_w + 5 * k, 0x14 * k, buf, 4, 5);
     std::snprintf(buf, sizeof buf, "%d", st.position);
-    s.text(fonts, 0x114, 0xb, buf, 1, 5);
-    s.text(fonts, 8, 0x38, clock_text(st.total_time), 3, 2);
-    s.text(fonts, 8, 0x48, clock_text(st.lap_time), 3, 2);
-    s.text(fonts, 8, 0x58, st.best_lap, 3, 2);
+    s.text(fonts, 0x114 * k, 0xb * k, buf, 1, 5);
+    s.text(fonts, 8 * k, 0x38 * k, clock_text(st.total_time), 3, 2);
+    s.text(fonts, 8 * k, 0x48 * k, clock_text(st.lap_time), 3, 2);
+    s.text(fonts, 8 * k, 0x58 * k, st.best_lap, 3, 2);
     // hud_draw_for_view: the radar.
     if (radar > 0) {
-        const int zoom = radar == 1 ? 0x18 : radar == 2 ? 0x30 : 0x48;
-        s.darken(4, 0x7c, 0x48, 0x48, darken075);
-        s.set_clip(4, 0x7c, 0x4c, 0xc4);
+        const int zoom = (radar == 1 ? 0x18 : radar == 2 ? 0x30 : 0x48) * k;
+        s.darken(4 * k, 0x7c * k, 0x48 * k, 0x48 * k, darken075);
+        s.set_clip(4 * k, 0x7c * k, 0x4c * k, 0xc4 * k);
         const int yaw = int(st.player_yaw * 1024.0f / kPi);
         // the track lines at zoom / 32768 per unit (>> 2, then 1.15 sin/cos, then zoom >> 14),
         // the same scale as the CPU cars' dots below
@@ -360,8 +372,8 @@ void Hud::draw(Framebuffer& fb, const HudState& st, const std::array<uint8_t, 25
             const int dx = (x - st.player_x) >> 2, dz = (z - st.player_z) >> 2;
             const int a = shr14(int64_t(dx) * cs), b = shr14(int64_t(dz) * sn);
             const int c = shr14(int64_t(dz) * cs - int64_t(dx) * sn);
-            ox = 0x28 - shr14(int64_t(zoom) * (a + b));
-            oy = shr14(int64_t(zoom) * c) + 0xa0;
+            ox = 0x28 * k - shr14(int64_t(zoom) * (a + b));
+            oy = shr14(int64_t(zoom) * c) + 0xa0 * k;
         };
         for (const auto& l : st.radar_lines) {
             int x0, y0, x1, y1;
@@ -369,18 +381,19 @@ void Hud::draw(Framebuffer& fb, const HudState& st, const std::array<uint8_t, 25
             map(l[2], l[3], x1, y1);
             s.line(x0, y0, x1, y1, 0xff);
         }
-        const float k = float(zoom) * 3.0518e-05f;
+        // (STARTH.EXE: its doubled zoom times 1.5259e-5, then the whole position times 2)
+        const float dk = float(zoom / k) * 3.0518e-05f;
         const double c = std::cos(double(st.player_yaw)), sv = std::sin(double(st.player_yaw));
         for (const auto& p : st.cpu_cars) {
             const int dx = p[0] - st.player_x, dz = p[1] - st.player_z;
             const int rx = int(double(dz) * sv + double(dx) * c), rz = int(double(dz) * c - double(dx) * sv);
-            s.sprite(sprites, 5, int(39.0f - float(rx) * k), int(float(rz) * k + 159.0f));
+            s.sprite(sprites, 5, int((39.0f - float(rx) * dk) * float(k)), int((float(rz) * dk + 159.0f) * float(k)));
         }
-        s.sprite(sprites, 4, 0x26, 0x9e);
+        s.sprite(sprites, 4, 0x26 * k, 0x9e * k);
         s.reset_clip();
     }
     // race_end_screen (race_end_draw_mode1, or "TIME OVER" when out of time)
-    auto centred = [&](const std::string& t, int y) { s.text(fonts, (320 - s.measure(fonts, t, 0)) / 2, y, t, 0, 2); };
+    auto centred = [&](const std::string& t, int y) { s.text(fonts, (s.width() - s.measure(fonts, t, 0)) / 2, y * k, t, 0, 2); };
     if (st.end == 1 && (st.mode == 4 || st.mode == 0x20 || st.mode == 0x40) && texts.size() > 15) {
         // race_end_draw_attack / _carnage / _checkpoints
         centred(texts[st.won ? 14 : 13], 0x5a);
@@ -394,7 +407,7 @@ void Hud::draw(Framebuffer& fb, const HudState& st, const std::array<uint8_t, 25
         centred(texts[22], 0x5a);
     }
     // race_countdown_update: the start lights.
-    if (st.countdown_stage >= 0) s.sprite(sprites, st.countdown_stage, 0x78, 0x36);
+    if (st.countdown_stage >= 0) s.sprite(sprites, st.countdown_stage, 0x78 * k, 0x36 * k);
 }
 
 } // namespace scr
