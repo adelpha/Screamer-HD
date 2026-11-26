@@ -229,7 +229,10 @@ private:
     void clear_rows(int y0, int y1);
     // The panorama column under each framebuffer column (empty: no panorama).
     static void background_columns(const PcxImage& bck, const Camera& cam, const Framebuffer& fb, std::vector<int>& column);
-    static void draw_background_rows(const PcxImage& bck, const Camera& cam, Framebuffer& fb, int y0, int y1, const int* column, bool tilt);
+    // depth: null, or the depth buffer (fb's size): only pixels whose depth is still nought are drawn.
+    static void draw_background_rows(const PcxImage& bck, const Camera& cam, Framebuffer& fb, int y0, int y1, const int* column, bool tilt,
+                                     const float* depth);
+    void sky_rows(int y0, int y1);
 
 
     const Track* track_ = nullptr;
