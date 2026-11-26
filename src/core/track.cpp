@@ -311,6 +311,7 @@ void weld_road_joints(Track& t, double reach) {
         double x, y, z;
         int placement;
         std::vector<std::pair<uint16_t, uint16_t>> vertices;  // (part, vertex): every vertex at this spot
+        bool line = false;  // a corner of a painted line (Face::strip)
     };
     std::vector<Corner> corners;
     std::vector<std::array<double, 9>> turned(t.placements.size());
@@ -340,6 +341,7 @@ void weld_road_joints(Track& t, double reach) {
                         if (fresh)
                             corners.push_back({r[0] * spot[0] + r[1] * spot[1] + r[2] * spot[2] + p.x, r[3] * spot[0] + r[4] * spot[1] + r[5] * spot[2] + p.y,
                                                r[6] * spot[0] + r[7] * spot[1] + r[8] * spot[2] + p.z, int(pi), {}});
+                        if (f.strip) corners[it->second].line = true;
                         auto& list = corners[it->second].vertices;
                         const std::pair<uint16_t, uint16_t> ref{uint16_t(part_index), vi};
                         if (std::find(list.begin(), list.end(), ref) == list.end()) list.push_back(ref);
@@ -395,6 +397,7 @@ void weld_road_joints(Track& t, double reach) {
         return i;
     };
     constexpr double kNear = 24.0;  // how close to the expected spot the other corner must be
+    constexpr double kNearLine = 64.0;
     std::vector<char> taken(corners.size(), 0);
     for (auto& [pieces, list] : offsets) {
         std::array<double, 3> d{};
@@ -415,7 +418,10 @@ void weld_road_joints(Track& t, double reach) {
                 const Corner& b = corners[size_t(j)];
                 const double ex = a.x + d[0] - b.x, ey = a.y + d[1] - b.y, ez = a.z + d[2] - b.z;
                 const double dist = ex * ex + ey * ey + ez * ez;
-                if (dist < kNear * kNear) matches.push_back({dist, i, j});
+                // (where a wide line meets a narrow one, their inner corners are further from
+                // each other than the pieces are: lines' corners may be that much off)
+                const double near = a.line && b.line ? kNearLine : kNear;
+                if (dist < near * near) matches.push_back({dist, i, j});
             }
         }
         std::sort(matches.begin(), matches.end(), [](const Match& x, const Match& y) { return x.dist < y.dist; });
