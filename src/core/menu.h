@@ -19,7 +19,8 @@
 //   0 main: NORMAL GAME, CHAMPIONSHIP, SPECIAL MODES, NETWORK GAME, OPTIONS
 //   1 options: detail, difficulty, laps, speech, music, (ours: SOUND), VIEW RECORDS
 //   2 network, 3 championship (new/resume), 4 special modes, 5 network (new/resume),
-//   6 records (the six tracks), 7 (ours) SOUND: the four volumes, Enter / left / right
+//   6 records (the six tracks), 7 (ours) SOUND: the four volumes (Enter / left / right) and
+//   CD MUSIC / MIDI MUSIC
 
 #include "core/hud.h"
 #include "core/model3d.h"
@@ -74,12 +75,14 @@ private:
 //   +0x444..0x44c music/sfx/cd volume, +0x450 radar, +0x454 tracks unlocked, +0x458 tracks
 //   seen, +0x45c difficulty max.
 // Ours follow the 0x460 bytes (the original reads only those): "SCRX", int32 count, then that
-// many int32 settings - so far the four volumes of the SOUND page (announcer, engine,
-// effects, music; 0..kVolumeMax). A file without them (the original's) gets the defaults.
+// many int32 settings of the SOUND page: the four volumes (announcer, engine, effects,
+// music; 0..kVolumeMax), then the music source (0 CD, 1 MIDI). A file without them (the
+// original's), or with fewer, gets the defaults for the rest.
 constexpr int kVolumeMax = 10;
 struct ChoiceFile {
     std::array<uint8_t, 0x460> raw{};
     std::array<int32_t, 4> volume{kVolumeMax, kVolumeMax, kVolumeMax, kVolumeMax};
+    int32_t music_midi = 0;  // 1: the MIDI tunes on the FM synth even with the CD image there
     ChoiceFile();  // the defaults read_choice_dat uses without a file
     bool load(const std::string& path);
     bool save(const std::string& path) const;
@@ -160,6 +163,9 @@ public:
     // music volumes, 0..kVolumeMax (saved after CHOICE.DAT's own bytes).
     std::array<int, 4> volumes() const;
     void set_volumes(const std::array<int, 4>& v);
+    // and its CD MUSIC / MIDI MUSIC line: true plays the MIDI tunes even with the CD image there
+    bool music_midi() const;
+    void set_music_midi(bool midi);
     int page = 0;                    // DAT_0011fb5c
     std::array<int, 20> selected{};  // DAT_0011fb04: selected line per page
     std::vector<int> page_stack;     // DAT_0012034c
