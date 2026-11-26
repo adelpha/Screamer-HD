@@ -117,9 +117,10 @@ std::array<uint8_t, 256> build_darken_table(const uint8_t* rgb6, float factor);
 
 // The track files place the road as pieces with whole-number positions and angles (2048 to
 // the turn), and the ends of neighbouring pieces miss each other by some twenty units: the
-// painted lines step sideways at every joint. This gathers the corners on the outlines of the
-// road pieces (MMP slot 0, and the scenery objects with painted lines) that lie within reach units of a corner of another piece, and notes
-// for each the shift to the middle of its group (Track::welds).
+// painted lines step sideways at every joint. This works out how far each two neighbouring
+// road pieces (MMP slot 0, and the scenery objects with painted lines) miss each other, pairs
+// the corners on their outlines accordingly (ends up to two and a half times reach apart), and
+// notes for each corner the shift to the middle of those it belongs with (Track::welds).
 void weld_road_joints(Track& track, double reach = 48.0);
 
 // Loads MAPn.UNR/.MMP/.MLB/.COL from the given graphics archive (e.g. GFX/MAP2L.DAT).
