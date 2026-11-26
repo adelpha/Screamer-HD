@@ -141,6 +141,7 @@ void print_usage() {
         "  --mipmaps on|off     draw squeezed (distant) textures from averaged smaller versions: steadier, softer\n"
         "                       (default on; F10 switches in a race). --mip-sharpness X: 1 sharper .. 2 softer (1.4)\n"
         "  --weld-joints off    road pieces where the track file puts them (their lines step at every joint)\n"
+        "  --level N            the CPU cars' level, 0-4 (default 1; 3: the championship's BULLET league)\n"
         "  --sky-tilt off       the sky stays level when the camera rolls, as before\n"
         "  --smooth-turn off    camera, car and sky angles in whole 2048ths of a turn, as the original\n"
         "                       (large pictures show the steps in slow turns)\n"
@@ -347,6 +348,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--record-audio") o.record_audio = next("--record-audio");
         else if (a == "--menu-keys") o.menu_keys = next("--menu-keys");
         else if (a == "--game-mode") o.game_mode = int(std::strtol(next("--game-mode"), nullptr, 0));
+        else if (a == "--level") o.level = std::clamp(std::atoi(next("--level")), 0, 4);
         else if (a == "--audio-log") o.audio_log = true;
         else if (a == "--audio-filter") o.audio_smooth = std::string(next("--audio-filter")) != "nearest";
         else if (a == "--detail") o.detail = std::string(next("--detail")) == "low" ? "L" : "H";
@@ -711,9 +713,15 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 if (next == idx) next = (next + 1) % n;
                 const uint8_t* r = cars_data->data() + next * 0x40;
                 next = (next + 1) % n;
-                auto m = scr::load_object(*path, std::string(reinterpret_cast<const char*>(r)) + ".3DX");
+                // (opponent_car_load: above the third level, the BULLET league of the
+                // championship and the normal game's hardest, every CPU car is car 12, the
+                // BULLET, in the colours of the car whose turn it was)
+                const uint8_t* body = opt.level > 2 && n > 0xc ? cars_data->data() + 0xc * 0x40 : r;
+                auto m = scr::load_object(*path, std::string(reinterpret_cast<const char*>(body)) + ".3DX");
                 if (!m) break;
-                cpu_setups.push_back(scr::car_setup(r, *m));
+                scr::CarSetup cs = scr::car_setup(body, *m);
+                cs.animation = scr::car_setup(r, *m).animation;
+                cpu_setups.push_back(cs);
                 player->cpu_models.push_back(std::move(*m));
             }
             player->race.start(*track, setup, cpu_setups);
@@ -979,6 +987,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     // camera flies about (WASD, Q/E or Space/C up and down, mouse or arrow keys to look,
     // Shift faster, Ctrl slower). F8 or Esc puts everything back.
     bool freecam = false;
+    bool rear_view = false;  // B (or the pad's right shoulder) held in a race: looking back (ours)
     float fc_x = 0, fc_y = 0, fc_z = 0, fc_yaw = 0, fc_pitch = 0;  // angles in 2048 units
     float fc_saved_sfx = 0, fc_saved_music = 0;
     int32_t fc_anim = 0;
@@ -1476,6 +1485,24 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 mark(scr::prof::Tween);
                 const auto perf_t0 = std::chrono::steady_clock::now();
                 scr::Camera view_cam = draw_cam;
+                // Looking back (ours; the picture only, the race does not know): while B or the
+                // pad's right shoulder is held the camera faces the other way. In the chase
+                // views it also goes to the other side of the car, so the car is seen from the
+                // front with what follows it behind.
+                rear_view = false;
+                if (player && !freecam && !opt.attract && !(replaying && tv_camera.has_trackside())) {
+                    const bool* keys = SDL_GetKeyboardState(nullptr);
+                    rear_view = keys[SDL_SCANCODE_B] || opt.hold.find("rear") != std::string::npos ||
+                                (pad && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER));
+                }
+                if (rear_view) {
+                    if (player->camera.car_visible) {
+                        view_cam.x = 2.0f * float(draw_player.pos_x) - view_cam.x;
+                        view_cam.z = 2.0f * float(draw_player.pos_z) - view_cam.z;
+                    }
+                    view_cam.yaw = std::fmod(view_cam.yaw + 1024.0f, 2048.0f);
+                    view_cam.roll = std::fmod(2048.0f - view_cam.roll, 2048.0f);
+                }
                 if (opt.view_distance > 0.0f) {
                     // the view distance (ours): the original's far clip (HI detail) times the
                     // setting; the last quarter fades out in an ordered dither
@@ -1785,7 +1812,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     for (const scr::TrackSection& ts : track->sections)
                         if (std::abs(ts.x - c.pos_x) < 8 * 8192 + 4096 && std::abs(ts.z - c.pos_z) < 8 * 8192 + 4096)
                             hs.radar_lines.push_back({ts.left_x, ts.left_z, ts.right_x, ts.right_z});
-                    hud->draw(fb, hs, track->darken075, clock.frame_time(), clock.pow_table_row(), player->camera.hud_view,
+                    hud->draw(fb, hs, track->darken075, clock.frame_time(), clock.pow_table_row(), rear_view && player->camera.hud_view == 1 ? 2 : player->camera.hud_view,
                               radar, step);
                 }
                 if (view_note_timer > 0.0f && hud) {
@@ -1941,6 +1968,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             SDL_Log("car: pos %d,%d,%d yaw %.3f speed %.0f gear %d rpm %.0f wall %d", c.pos_x, c.pos_y, c.pos_z, double(c.yaw),
                     double(c.speed), c.gear, double(c.engine_rpm), int(c.wall_contact));
         }
+        // (the view, to look at the same one again with --scene track --camera, or in the original)
+        if (last_frame && track)
+            SDL_Log("camera: %d,%d,%d,%d,%d,%d", int(cam.x), int(cam.y), int(cam.z), int(cam.yaw), int(cam.pitch), int(cam.roll));
         if (last_frame) {
             if (!opt.screenshot.empty()) {
                 scr::SurfacePtr s(SDL_RenderReadPixels(renderer, nullptr));

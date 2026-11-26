@@ -1,5 +1,6 @@
 #include "testing.h"
 
+#include "core/gamedata.h"
 #include "core/mipmaps.h"
 #include "core/render3d.h"
 #include "core/render3d_fill.h"
@@ -461,4 +462,119 @@ TEST_CASE("render: the sky follows the yaw by less than a panorama column when a
     // and the same when the sky is tilted
     CHECK(row(100.0f, true, 40) != row(100.5f, true, 40));
     CHECK(row(100.0f, false, 40) == row(100.4f, false, 40));
+}
+
+TEST_CASE("render: objects the original draws early are covered by what lies behind them") {
+    // one object in front of a larger one
+    auto picture = [&](int draw_class, int behind_z) {
+        scr::Track t;
+        t.materials = make_library();
+        t.objects.push_back(make_model(0, 255, 300));
+        t.objects.push_back(make_model(0, 255, 900));
+        t.objects[0].draw_class = draw_class;
+        scr::Placement a, b;
+        a.object = 0;
+        a.z = -1500;
+        a.slot = 1;
+        b.object = 1;
+        b.z = behind_z;
+        b.slot = 1;
+        t.placements = {a, b};
+        for (size_t i = 0; i < 256; ++i) t.palette[i] = {uint8_t(i), uint8_t(i), uint8_t(i)};
+        scr::Renderer r;
+        r.set_threads(1);
+        r.set_mipmaps(false);
+        scr::Camera cam;
+        cam.z = 600;
+        scr::Framebuffer fb(320, 200);
+        r.draw_track(t, cam, fb, 3);
+        return std::vector<uint8_t>(fb.pixels(), fb.pixels() + 320 * 200);
+    };
+    // class 3 (cliff faces, ground sheets): as if 24000 units further away
+    const auto plain = picture(-1, -4000), early = picture(3, -4000);
+    CHECK(plain != early);
+    // ... so the object behind shows whole, as if the first were not there
+    const auto far_plain = picture(-1, -40000), far_early = picture(3, -40000);
+    CHECK(far_plain == far_early);  // (more than 24000 behind: still hidden by it)
+    CHECK(picture(0, -4000) == plain);
+}
+
+TEST_CASE("track: MAP2's cliff faces are in the original's early drawing class") {
+    auto dir = scr::find_game_dir();
+    if (!dir) SKIP("original game data not present");
+    auto path = scr::resolve_game_file(*dir, "GFX/MAP2H.DAT");
+    if (!path) SKIP("MAP2H.DAT not present");
+    auto t = scr::load_track(*path, "MAP2");
+    REQUIRE(t.has_value());
+    int cliffs = 0, roads_in_class = 0;
+    for (const scr::Placement& p : t->placements) {
+        const scr::Model& m = t->objects[size_t(p.object)];
+        if (!m.parts.empty() && m.parts[0].name.rfind("akk", 0) == 0) {
+            ++cliffs;
+            CHECK(m.draw_class == 3);
+        }
+        if (p.slot == 0 && m.draw_class > 0) ++roads_in_class;
+    }
+    CHECK(cliffs > 40);
+    CHECK(roads_in_class == 0);
+}
+
+TEST_CASE("render: a car's faces cover each other in drawing order, the rest of the scene by depth") {
+    CHECK(scr::draw_order_index(1, 1, 5) == 0);
+    CHECK(scr::draw_order_index(5, 1, 1) == 1);
+    CHECK(scr::draw_order_index(5, 1, -1) == 2);
+    CHECK(scr::draw_order_index(1, 1, -5) == 3);
+    CHECK(scr::draw_order_index(-1, 1, -5) == 4);
+    CHECK(scr::draw_order_index(-5, 1, -1) == 5);
+    CHECK(scr::draw_order_index(-5, 1, 1) == 6);
+    CHECK(scr::draw_order_index(-1, 1, 5) == 7);
+    CHECK(scr::draw_order_index(1, -1, 5) == 8);
+    CHECK(scr::draw_order_index(-1, -1, 5) == 15);
+
+    scr::Track t;
+    t.materials = make_library();
+    t.objects.push_back(make_model(0, 255, 300));
+    t.objects.push_back(make_model(0, 255, 900));
+    for (size_t i = 0; i < 256; ++i) t.palette[i] = {uint8_t(i), uint8_t(i), uint8_t(i)};
+    auto picture = [&](bool car, bool with_far, bool far_first, scr::Renderer::FillPath path, int threads) {
+        scr::Model near_model = t.objects[0];
+        near_model.car = car;
+        scr::Renderer r;
+        if (!r.set_fill_path(path)) return std::vector<uint8_t>();
+        r.set_threads(threads);
+        r.set_mipmaps(false);
+        scr::Camera cam;
+        cam.z = 600;
+        scr::Framebuffer fb(320, 200);
+        r.begin(t, cam, fb, 3, true);
+        scr::Pose a, b;
+        a.z = -1500;
+        a.ax = 200;
+        a.ay = 300;
+        b.z = -4000;
+        if (with_far && far_first) r.draw_model(t.objects[1], b);
+        r.draw_model(near_model, a);
+        if (with_far && !far_first) r.draw_model(t.objects[1], b);
+        r.finish();
+        return std::vector<uint8_t>(fb.pixels(), fb.pixels() + 320 * 200);
+    };
+    using FP = scr::Renderer::FillPath;
+    const auto alone = picture(true, false, false, FP::Sse2, 1);
+    // the car's pixels stay the car's whether the object behind it is drawn before or after
+    for (bool far_first : {true, false}) {
+        const auto both = picture(true, true, far_first, FP::Sse2, 1);
+        int car_pixels = 0, kept = 0;
+        for (size_t i = 0; i < alone.size(); ++i)
+            if (alone[i] != 3) {
+                ++car_pixels;
+                kept += both[i] == alone[i];
+            }
+        CHECK(car_pixels > 500);
+        CHECK(kept == car_pixels);
+    }
+    // and the same picture from every build of the filler on any number of threads
+    const auto ref = picture(true, true, false, FP::Sse2, 1);
+    CHECK(picture(true, true, false, FP::Sse2, 5) == ref);
+    const auto avx = picture(true, true, false, FP::Avx2, 3);
+    if (!avx.empty()) CHECK(avx == ref);
 }

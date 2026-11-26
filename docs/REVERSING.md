@@ -180,6 +180,27 @@ code when they form tables (a lone fixup there is usually an instruction operand
   * object depth (`object_compute_depth`): distance of the bounding centre, with a bias for
     names not starting with 'A'/'a'; it also picks one of three entries of the object by
     distance (probably detail levels, not used here);
+  * drawing order (`vis_sort_cells`): placed objects are drawn far to near by the distance of
+    their position (key = -distance / 4), with no depth buffer. The object header's int at
+    +0x32C moves an object back in that order: 1, 2, 3, 4 add 1500, 800, 6000, 200 to the key
+    (6000, 3200, 24000, 800 units). Every track's `akk*` objects are class 3: ground sheets,
+    water, and the cliff faces under MAP2's mountain road, whose top edge stands some 400
+    units above the road and is only hidden because the road, the verges and the hills
+    beyond are painted over it. `Model::draw_class`; the renderer gives those objects that
+    much depth bias. Found by putting the original's camera where a port screenshot was taken
+    (`capture-vga.ps1 -Freeze -Camera x,y,z,yaw,pitch,roll`);
+  * drawing order inside an object: `cell_load_objects` sorts the parts by the key of
+    `object_compute_depth` (instances with part poses, i.e. the cars: minus the distance of
+    the part's centre, three-letter names not starting with A as if further away, 4000 units
+    for a third letter `i`, the tyres, and 1000 for `x`, the hub discs) or of
+    `object_compute_depth_dynamic` (everything else, despite the name: minus half the
+    distance, `Z` names 0x2000 nearer). So a car's wheels are drawn first and its bodywork
+    over them. A part's faces come from one of the 16 lists at +0x28, picked by where the eye
+    is in the part's own space (`clip_outcode`: +8 below the part, then eight sectors round
+    its y axis; `draw_order_index`). The port draws cars that way (`Model::car`,
+    `Renderer::Geo::painter`): later faces of the car cover earlier ones whatever their
+    depth, the rest of the scene is still depth-tested. Before, wheels showed through wheel
+    covers and the dark inner faces of the arches through the bodywork;
   * no distance fog anywhere in the renderer.
 * Float code: Ghidra drops most x87 math in this binary (values kept on the FPU stack across
   `__CHP`, `sin`, `cos`). `tools/ghidra/x87_lift.py FUNC_ADDR` follows the FPU stack through

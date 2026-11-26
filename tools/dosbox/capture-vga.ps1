@@ -10,6 +10,13 @@
 .EXAMPLE
   .\tools\dosbox\capture-vga.ps1 -Name title -Delay 9 -Autotype '-w 4 esc'
   -> artifacts\dosbox\title\vga.bmp
+.EXAMPLE
+  .\tools\dosbox\capture-vga.ps1 -Name spot -Delay 13 -Freeze -Camera '148538,-6348,-171563,1280,2015,6'
+  The intro demo's track seen from any camera: the same six numbers as screamer's --camera
+  (x, y, z, yaw, pitch, roll; F12 screenshots save them, and headless runs log the last
+  frame's). Compare with `screamer --scene track --track MAPn --camera ... --smooth-turn off`.
+  The demo's track is CHOICE.DAT's int at 0x434 (0 = MAP1); it moves on by one every run, so
+  set it in a copy of the game (without the disc image) and point SCREAMER_DATA at the copy.
 #>
 param(
     [string]$Name = 'vga',
@@ -17,6 +24,7 @@ param(
     [string]$Autotype = '',
     [string]$Program = 'STARTL.EXE',
     [switch]$KeepMemory,  # keep the 15 MB memory dump (mem_*.bin) for runtime_probe.py
+    [string]$Camera = '', # STARTL races and the intro demo: draw from this camera ('x,y,z,yaw,pitch,roll')
     [switch]$Freeze       # STARTL races (and the intro demo) only: stop the game right after it
                           # renders the 3D scene and capture its back buffer (no HUD) instead of
                           # VGA, so screen and memory (camera, object instances) match exactly
@@ -35,6 +43,20 @@ $t0 = Get-Date
 while (((Get-Date) - $t0).TotalSeconds -lt $Delay) { Start-Sleep -Milliseconds 250 }
 for ($i = 0; $i -lt 40; $i++) {
     try { Invoke-RestMethod "$api/cpu/state" | Out-Null; break } catch { Start-Sleep -Milliseconds 250 }
+}
+if ($Camera) {
+    # camera_write_render_camera (0x1A134) puts the view's angles and position in g_camera
+    # (0x11099C: pitch, yaw, roll, x, y, z) every frame; a RET at its start leaves ours there.
+    $v = $Camera.Split(',') | ForEach-Object { [int]$_.Trim() }
+    if ($v.Count -ne 6) { throw '-Camera expects x,y,z,yaw,pitch,roll' }
+    Invoke-WebRequest "$api/memory/$(0x1A134 + 0x1C2000)" -Method Put -ContentType 'application/octet-stream' `
+        -Body ([byte[]](0xC3)) -UseBasicParsing | Out-Null
+    $bytes = New-Object byte[] 24
+    $k = 0
+    foreach ($n in $v[4], $v[3], $v[5], $v[0], $v[1], $v[2]) { [BitConverter]::GetBytes([int]$n).CopyTo($bytes, $k); $k += 4 }
+    Invoke-WebRequest "$api/memory/$(0x11099C + 0x1AE000)" -Method Put -ContentType 'application/octet-stream' `
+        -Body $bytes -UseBasicParsing | Out-Null
+    Start-Sleep -Milliseconds 1500  # a few frames drawn from it
 }
 if ($Freeze) {
     # race_frame calls render_race_scene at 0x1FFE7 and attract_mode_update_cars (the intro

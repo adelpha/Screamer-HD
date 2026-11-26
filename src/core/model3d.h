@@ -80,7 +80,25 @@ struct Part {
     // One of a car's wheel parts (the names in the table at 0x101d58: flx fli blx rli frx fri
     // brx rri).
     bool wheel = false;
+    // +0x28: the faces in the order the original draws them (it has no depth buffer), one
+    // list for each of 16 directions the part can be seen from (draw_order_index); a face
+    // missing from a list is not drawn from there. Indices into faces.
+    std::array<std::vector<uint16_t>, 16> draw_order;
+    int16_t bound_y = 0;  // +0x06 (with bound_x, bound_z: the centre the original measures distance to)
 };
+
+// Which of a part's draw orders is used with the eye at (x, y, z) in the part's own space
+// (clip_outcode: below or above, then eight sectors round the y axis).
+inline int draw_order_index(float x, float y, float z) {
+    int i = y < 0 ? 8 : 0;
+    if (x >= 0) {
+        if (z >= 0) return i + (z > x ? 0 : 1);
+        return i + 2 + (-z > x ? 1 : 0);
+    }
+    x = -x;
+    if (z < 0) return i + 4 + (-z > x ? 0 : 1);
+    return i + 6 + (z > x ? 1 : 0);
+}
 
 // A part's simpler version for distant objects (Model::lods).
 struct LodPart {
@@ -108,6 +126,17 @@ struct Model {
     // Some face is a strip (Face::strip): a piece of road with painted lines, wherever the
     // track file lists it (stretches of road are also among the scenery, MMP slot 1).
     bool has_strips = false;
+    // A car (it has wheel parts). Drawn as the original draws an object, with no depth test
+    // between its own faces: its parts far to near, tyres and hub discs first, each part's
+    // faces in the order of its draw_order list for the view. The bodywork then covers the
+    // wheels and the dark faces behind them wherever the original's does.
+    bool car = false;
+    // +0x32c: where the object goes in the original's drawing order (vis_sort_cells). It
+    // draws objects far to near with no depth buffer; an object of class 1, 2, 3 or 4 is
+    // drawn as if it were 6000, 3200, 24000 or 800 units further away, so everything up to
+    // that much behind it is painted over it (cliff faces under the road are class 3: the
+    // road, its verges and the hills beyond cover the top of them, which stands above the road).
+    int32_t draw_class = 0;
 };
 
 // A vertex of a placed object drawn a little away from where the file has it (Track::welds):

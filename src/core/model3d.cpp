@@ -91,6 +91,7 @@ std::optional<Model> parse_model(const uint8_t* d, size_t size) {
         rd(d, size, p + 0x14, list0_count);
         rd(d, size, p, part.bound_r);
         rd(d, size, p + 4, part.bound_x);
+        rd(d, size, p + 6, part.bound_y);
         rd(d, size, p + 8, part.bound_z);
         std::vector<int> list0;
         if (list0_count > 0 && list0_count < 20000)
@@ -131,6 +132,19 @@ std::optional<Model> parse_model(const uint8_t* d, size_t size) {
                 part.faces.push_back(face);
             }
         }
+        for (size_t list = 0; list < 16; ++list) {
+            int32_t order = 0;
+            if (!rd(d, size, p + 0x28 + 4 * list, order)) break;
+            for (size_t q = p + size_t(order);; q += 2) {
+                int16_t fo = 0;
+                if (!rd(d, size, q, fo) || fo <= 0) break;
+                for (const auto& [o, i] : offset_to_face)
+                    if (o == fo) {
+                        part.draw_order[list].push_back(uint16_t(i));
+                        break;
+                    }
+            }
+        }
         for (const int fo : list0)
             for (const auto& [o, i] : offset_to_face)
                 if (o == fo) {
@@ -146,6 +160,7 @@ std::optional<Model> parse_model(const uint8_t* d, size_t size) {
         if (!part) return std::nullopt;
         m.parts.push_back(std::move(*part));
     }
+    rd(d, size, 0x32c, m.draw_class);
     // object_compute_depth: two simpler versions of each part for distant objects, the part
     // offset tables at +0x11c and +0x220 (65 entries further each); 0 = not drawn there.
     for (int lod = 1; lod <= 2; ++lod) {
@@ -250,6 +265,7 @@ void compute_bounds(Model& model) {
             }
         }        static const char* const kWheels[] = {"flx", "fli", "blx", "rli", "frx", "fri", "brx", "rri"};
         part.wheel = std::find(std::begin(kWheels), std::end(kWheels), part.name) != std::end(kWheels);
+        if (part.wheel) model.car = true;
         if (part.vertices.empty()) {
             part.center = {};
             part.radius = 0;

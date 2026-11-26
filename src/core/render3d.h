@@ -213,6 +213,14 @@ private:
         std::vector<float> wx, wy, wz;
         std::vector<std::array<int, 2>> env_uv;
         float edge_slack = 0;  // for the polygons of the model being drawn
+        // The job's model is a car (Model::car): its polygons come in the original's drawing
+        // order and each covers the earlier ones whatever their depths, as in the original,
+        // while the rest of the scene is still tested by depth. The filler writes such a
+        // polygon's depths negated, which marks the car's own pixels (anything is in front of
+        // a negative depth); finish() puts them right when the car is done.
+        bool painter = false;
+        std::vector<size_t> part_order;
+        std::vector<float> part_keys;
         RenderStats stats{};
         void clear();
     };
