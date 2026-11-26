@@ -237,6 +237,13 @@ void Renderer::draw_placement_range(Geo& g, size_t i0, size_t i1) {
         // drawn before the road and its verges, which cover them where the quad pokes
         // through. (Only ground below the eye: flat ceilings overhead keep their depth.)
         if (p.slot != 0 && m.flat && float(p.y + m.flat_y) < cam_->y) pose.depth_bias = -kFlatGroundBias;
+        // The objects the original itself draws early (vis_sort_cells: as if so much further
+        // away), the ground sheets and the cliff faces under a road: what lies up to that far
+        // behind them is drawn over them. A cliff's top edge stands above the road it carries
+        // and is only hidden by the road, the verge and the hills beyond being painted on top.
+        static constexpr float kClassBias[5] = {0.0f, 6000.0f, 3200.0f, 24000.0f, 800.0f};
+
+        if (m.draw_class >= 1 && m.draw_class <= 4) pose.depth_bias = std::min(pose.depth_bias, -kClassBias[m.draw_class]);
         // (road pieces; some stretches of road are listed with the scenery)
         pose.seal_edges = p.slot == 0 || (m.has_strips && !seal_all_edges_);
         if (weld_joints_ && i < track_->welds.size() && !track_->welds[i].empty()) pose.shifts = &track_->welds[i];

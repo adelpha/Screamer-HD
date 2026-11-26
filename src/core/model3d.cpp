@@ -146,6 +146,7 @@ std::optional<Model> parse_model(const uint8_t* d, size_t size) {
         if (!part) return std::nullopt;
         m.parts.push_back(std::move(*part));
     }
+    rd(d, size, 0x32c, m.draw_class);
     // object_compute_depth: two simpler versions of each part for distant objects, the part
     // offset tables at +0x11c and +0x220 (65 entries further each); 0 = not drawn there.
     for (int lod = 1; lod <= 2; ++lod) {

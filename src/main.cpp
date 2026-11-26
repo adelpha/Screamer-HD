@@ -1938,6 +1938,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             SDL_Log("car: pos %d,%d,%d yaw %.3f speed %.0f gear %d rpm %.0f wall %d", c.pos_x, c.pos_y, c.pos_z, double(c.yaw),
                     double(c.speed), c.gear, double(c.engine_rpm), int(c.wall_contact));
         }
+        // (the view, to look at the same one again with --scene track --camera, or in the original)
+        if (last_frame && track)
+            SDL_Log("camera: %d,%d,%d,%d,%d,%d", int(cam.x), int(cam.y), int(cam.z), int(cam.yaw), int(cam.pitch), int(cam.roll));
         if (last_frame) {
             if (!opt.screenshot.empty()) {
                 scr::SurfacePtr s(SDL_RenderReadPixels(renderer, nullptr));

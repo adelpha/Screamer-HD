@@ -180,6 +180,15 @@ code when they form tables (a lone fixup there is usually an instruction operand
   * object depth (`object_compute_depth`): distance of the bounding centre, with a bias for
     names not starting with 'A'/'a'; it also picks one of three entries of the object by
     distance (probably detail levels, not used here);
+  * drawing order (`vis_sort_cells`): placed objects are drawn far to near by the distance of
+    their position (key = -distance / 4), with no depth buffer. The object header's int at
+    +0x32C moves an object back in that order: 1, 2, 3, 4 add 1500, 800, 6000, 200 to the key
+    (6000, 3200, 24000, 800 units). Every track's `akk*` objects are class 3: ground sheets,
+    water, and the cliff faces under MAP2's mountain road, whose top edge stands some 400
+    units above the road and is only hidden because the road, the verges and the hills
+    beyond are painted over it. `Model::draw_class`; the renderer gives those objects that
+    much depth bias. Found by putting the original's camera where a port screenshot was taken
+    (`capture-vga.ps1 -Freeze -Camera x,y,z,yaw,pitch,roll`);
   * no distance fog anywhere in the renderer.
 * Float code: Ghidra drops most x87 math in this binary (values kept on the FPU stack across
   `__CHP`, `sin`, `cos`). `tools/ghidra/x87_lift.py FUNC_ADDR` follows the FPU stack through

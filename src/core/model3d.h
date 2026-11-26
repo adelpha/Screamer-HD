@@ -108,6 +108,12 @@ struct Model {
     // Some face is a strip (Face::strip): a piece of road with painted lines, wherever the
     // track file lists it (stretches of road are also among the scenery, MMP slot 1).
     bool has_strips = false;
+    // +0x32c: where the object goes in the original's drawing order (vis_sort_cells). It
+    // draws objects far to near with no depth buffer; an object of class 1, 2, 3 or 4 is
+    // drawn as if it were 6000, 3200, 24000 or 800 units further away, so everything up to
+    // that much behind it is painted over it (cliff faces under the road are class 3: the
+    // road, its verges and the hills beyond cover the top of them, which stands above the road).
+    int32_t draw_class = 0;
 };
 
 // A vertex of a placed object drawn a little away from where the file has it (Track::welds):

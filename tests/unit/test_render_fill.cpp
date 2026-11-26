@@ -1,5 +1,6 @@
 #include "testing.h"
 
+#include "core/gamedata.h"
 #include "core/mipmaps.h"
 #include "core/render3d.h"
 #include "core/render3d_fill.h"
@@ -461,4 +462,59 @@ TEST_CASE("render: the sky follows the yaw by less than a panorama column when a
     // and the same when the sky is tilted
     CHECK(row(100.0f, true, 40) != row(100.5f, true, 40));
     CHECK(row(100.0f, false, 40) == row(100.4f, false, 40));
+}
+
+TEST_CASE("render: objects the original draws early are covered by what lies behind them") {
+    // one object in front of a larger one
+    auto picture = [&](int draw_class, int behind_z) {
+        scr::Track t;
+        t.materials = make_library();
+        t.objects.push_back(make_model(0, 255, 300));
+        t.objects.push_back(make_model(0, 255, 900));
+        t.objects[0].draw_class = draw_class;
+        scr::Placement a, b;
+        a.object = 0;
+        a.z = -1500;
+        a.slot = 1;
+        b.object = 1;
+        b.z = behind_z;
+        b.slot = 1;
+        t.placements = {a, b};
+        for (size_t i = 0; i < 256; ++i) t.palette[i] = {uint8_t(i), uint8_t(i), uint8_t(i)};
+        scr::Renderer r;
+        r.set_threads(1);
+        r.set_mipmaps(false);
+        scr::Camera cam;
+        cam.z = 600;
+        scr::Framebuffer fb(320, 200);
+        r.draw_track(t, cam, fb, 3);
+        return std::vector<uint8_t>(fb.pixels(), fb.pixels() + 320 * 200);
+    };
+    // class 3 (cliff faces, ground sheets): as if 24000 units further away
+    const auto plain = picture(-1, -4000), early = picture(3, -4000);
+    CHECK(plain != early);
+    // ... so the object behind shows whole, as if the first were not there
+    const auto far_plain = picture(-1, -40000), far_early = picture(3, -40000);
+    CHECK(far_plain == far_early);  // (more than 24000 behind: still hidden by it)
+    CHECK(picture(0, -4000) == plain);
+}
+
+TEST_CASE("track: MAP2's cliff faces are in the original's early drawing class") {
+    auto dir = scr::find_game_dir();
+    if (!dir) SKIP("original game data not present");
+    auto path = scr::resolve_game_file(*dir, "GFX/MAP2H.DAT");
+    if (!path) SKIP("MAP2H.DAT not present");
+    auto t = scr::load_track(*path, "MAP2");
+    REQUIRE(t.has_value());
+    int cliffs = 0, roads_in_class = 0;
+    for (const scr::Placement& p : t->placements) {
+        const scr::Model& m = t->objects[size_t(p.object)];
+        if (!m.parts.empty() && m.parts[0].name.rfind("akk", 0) == 0) {
+            ++cliffs;
+            CHECK(m.draw_class == 3);
+        }
+        if (p.slot == 0 && m.draw_class > 0) ++roads_in_class;
+    }
+    CHECK(cliffs > 40);
+    CHECK(roads_in_class == 0);
 }
