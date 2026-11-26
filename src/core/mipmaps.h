@@ -3,7 +3,7 @@
 // whatever the distance, which breaks thin details such as the road's painted lines into
 // dashes where the road is seen at a shallow angle).
 //
-// Every texture is halved along u and along v separately, down to four texels: level
+// Every texture is halved along u and along v separately, down to eight texels: level
 // (lu, lv) averages 2^lu x 2^lv texels of the full texture. A road in the distance is
 // squeezed lengthwise much more than across, and takes a level that is shortened but as
 // wide as ever, so the lines stay sharp. The averages are taken in linear light and matched

@@ -116,7 +116,10 @@ MipSet build_mipmaps(const MaterialLibrary& lib, const Palette& palette) {
                     a[l].magic = 65536 / s;
                     a[l].scale = float(s) / float(size);
                     levels = l + 1;
-                    if (level_size(size, l + 1) < 4) break;  // (nothing smaller than four texels)
+                    // (nothing smaller than eight texels along either side: a fifth of the
+                    // textures are 8 to 15 texels across - rails, posts, kerb stripes, more
+                    // lines - and halved they lose their edges as the six-texel lines did)
+                    if (level_size(size, l + 1) < 8) break;
                 }
                 return levels;
             };
