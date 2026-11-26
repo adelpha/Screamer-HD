@@ -63,7 +63,7 @@ no manual steps.
 | `--dump-fb FILE` | After the last frame, save the native 320x200 framebuffer (palette applied). Directly comparable with DOSBox raw captures. |
 | `--screenshot FILE` | After the last frame, save the presented output (scaled, letterboxed) at `--size`. |
 | `--capture-every N` / `--capture-dir` | Dump the framebuffer every N frames. |
-| `--size WxH`, `--aspect 4:3\|stretch\|square`, `--renderer NAME`, `--fullscreen`, `--data DIR` | |
+| `--size WxH`, `--aspect 4:3\|stretch\|square\|wide`, `--renderer NAME`, `--fullscreen`, `--data DIR` | `wide`: widescreen. Square pixels on a picture of any shape (as large as the window unless `--render-size` says otherwise): races show more to the sides, the HUD keeps to the screen edges, menus stay 4:3 in the middle. Without it nothing changes. |
 | `--record-audio FILE.wav` | Write the run's sound (effects, announcer and CD music) to a 44.1 kHz WAV, one 1/50 s block per frame, so headless runs give the same file every time. |
 | `--music-source cd\|midi\|auto` | Music from the CD image, or the MIDI versions in DATA/MUSIC.DAT on the built-in FM synth (auto: CD when the image is found). `cd` and `midi` override the game's own setting, OPTIONS > SOUND > CD MUSIC / MIDI MUSIC (saved in `CHOICE.DAT` after the volumes; CD MUSIC behaves as `auto`). |
 | `--audio-log` | Log every sample that starts, with its frame: `frame 300: sound 19 go`. |

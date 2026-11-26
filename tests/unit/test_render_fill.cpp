@@ -135,6 +135,7 @@ struct Options {
     // road piece sealed, texel coordinates wrapping at every polygon's edges
     bool old_look = true;
     bool mipmaps = false;
+    bool wide = false;  // square pixels (Framebuffer::wide)
 };
 
 std::vector<uint8_t> draw(const scr::Track& track, int width, int height, const Options& o) {
@@ -151,6 +152,7 @@ std::vector<uint8_t> draw(const scr::Track& track, int width, int height, const 
         cam.fade_depth = 5000.0f;
     }
     scr::Framebuffer fb(width, height);
+    fb.wide = o.wide;
     fb.clear(7);
     r.begin(track, cam, fb, 3, o.clear_at_finish);
     r.draw_placements();
@@ -372,4 +374,55 @@ TEST_CASE("render: the sky turns with the camera's roll") {
     const auto other = draw_sky(2048 - 100, true, 1);
     CHECK((band_row(rolled, 20) < band_row(rolled, 300)) != (band_row(other, 20) < band_row(other, 300)));
     CHECK(draw_sky(100, true, 5) == rolled);
+}
+
+TEST_CASE("render: a wide picture is the 4:3 one with more to its sides") {
+    const scr::Track track = make_track();
+    Options o;
+    o.old_look = false;
+    o.threads = 1;
+    o.wide = true;
+    // square pixels: 240 lines of 320 are the original's view, 428 the same and 54 more each side
+    const auto narrow = draw(track, 320, 240, o), broad = draw(track, 428, 240, o);
+    REQUIRE(narrow.size() == size_t(320 * 240));
+    REQUIRE(broad.size() == size_t(428 * 240));
+    int differ = 0;
+    for (int y = 0; y < 240; ++y)
+        for (int x = 0; x < 320; ++x) differ += narrow[size_t(y) * 320 + size_t(x)] != broad[size_t(y) * 428 + size_t(x + 54)];
+    CHECK(differ < 320 * 240 / 200);  // (edges land a hair differently 54 pixels further along)
+    CHECK(std::set<uint8_t>(narrow.begin(), narrow.end()).size() > 100);
+    // and not the stretched picture the same size gives without it
+    o.wide = false;
+    CHECK(draw(track, 320, 240, o) != narrow);
+
+    // the sky: one panorama column a pixel either way from the middle, level or rolled
+    scr::Track t;
+    scr::PcxImage bck;
+    bck.width = 512;
+    bck.height = 256;
+    bck.pixels.resize(512 * 256);
+    for (int y = 0; y < 256; ++y)
+        for (int x = 0; x < 512; ++x) bck.pixels[size_t(y) * 512 + size_t(x)] = uint8_t(1 + (x / 4 + y / 4) % 250);
+    bck.vga_pal.resize(768, 0);
+    t.background = bck;
+    for (float roll : {0.0f, 60.0f}) {
+        auto sky = [&](int w) {
+            scr::Renderer r;
+            r.set_threads(1);
+            scr::Camera cam;
+            cam.roll = roll;
+            scr::Framebuffer fb(w, 240);
+            fb.wide = true;
+            r.begin(t, cam, fb, 0, true);
+            r.finish();
+            return std::vector<uint8_t>(fb.pixels(), fb.pixels() + size_t(w) * 240);
+        };
+        const auto a = sky(320), b = sky(428);
+        int off = 0;
+        for (int y = 0; y < 240; ++y)
+            for (int x = 0; x < 320; ++x) off += a[size_t(y) * 320 + size_t(x)] != b[size_t(y) * 428 + size_t(x + 54)];
+        CHECK(off < 320 * 240 / 100);
+        // (the panorama, not its fill colour, out to both edges)
+        CHECK(b[100 * 428] != b[100 * 428 + 427]);
+    }
 }

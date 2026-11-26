@@ -174,6 +174,7 @@ void Renderer::begin(const Track& track, const Camera& cam, Framebuffer& fb, uin
     // -y f <= (h - cy) d: four planes through (0, 0, 128).
     const float scale = float(h) / 200.0f;
     const float f = cam.focal * scale;
+    const float fx = cam.focal * fb.unit_x();  // (across: square pixels on a wide picture)
     const float cx = float(w) * 0.5f, cy = cam.center_y * scale;
     plane_count_ = 0;
     auto plane = [&](float nx, float ny, float k) {
@@ -182,8 +183,8 @@ void Renderer::begin(const Track& track, const Camera& cam, Framebuffer& fb, uin
         const float len = std::sqrt(nx * nx + ny * ny + k * k);
         planes_[size_t(plane_count_++)] = {nx / len, ny / len, k / len, -128.0f * k / len};
     };
-    plane(f, 0, cx);
-    plane(-f, 0, float(w) - cx);
+    plane(fx, 0, cx);
+    plane(-fx, 0, float(w) - cx);
     plane(0, f, cy);
     plane(0, -f, float(h) - cy);
     // the view-distance fade (d = 128 - z = 128 + depth)
@@ -546,6 +547,16 @@ void Renderer::background_columns(const PcxImage& bck, const Camera& cam, const 
     const int yaw = int(std::lround(cam.yaw)) & 0x7ff;
     const int x_offset = ((0x7ff - yaw) >> 1) & 0x1ff;
     column.resize(size_t(fb.width()));
+    if (fb.wide) {
+        // square pixels: the 320 columns the original shows in the middle, more of the
+        // panorama either side of them
+        const float cx = float(fb.width()) * 0.5f, across = 1.0f / fb.unit_x();
+        for (int x = 0; x < fb.width(); ++x) {
+            const int c = (x_offset + 160 + int(std::floor((float(x) - cx) * across))) % bck.width;
+            column[size_t(x)] = c < 0 ? c + bck.width : c;
+        }
+        return;
+    }
     for (int x = 0; x < fb.width(); ++x)
         column[size_t(x)] = (x_offset + int(float(x) / scale * 320.0f / (float(fb.width()) / scale))) % bck.width;
 }
@@ -572,18 +583,24 @@ void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Fram
         const float cx = float(w) * 0.5f, cy = cam.center_y * scale;
         const int yaw = int(std::lround(cam.yaw)) & 0x7ff;
         const int x_offset = ((0x7ff - yaw) >> 1) & 0x1ff;
-        const float across = 320.0f / (float(w) / scale) / scale;  // panorama columns per pixel
+        // panorama columns per pixel across, and per pixel down (the turn takes place in the
+        // original's columns and rows; with square pixels those are not the same size)
+        const float across = fb.wide ? 1.0f / fb.unit_x() : 320.0f / (float(w) / scale) / scale;
+        const float down = fb.wide ? 1.0f / scale : across;
+        // the column in the middle of the picture, less what the sums below make of it
+        const float mid = fb.wide ? 160.0f - cx * across : 0.0f;
         const int bw = bck.width, bh = bck.height;
         const uint8_t* const pixels = bck.pixels.data();
         // Along a row the panorama column and row change evenly: u = u0 + du x, v = v0 + dv x.
-        const float du = c2 * across, dv = s2 / scale;
+        const float du = c2 * across, dv = fb.wide ? s2 * across : s2 / scale;
         const bool pow2 = (bw & (bw - 1)) == 0;
         for (int y = y0; y < y1; ++y) {
             uint8_t* dst = &fb.at(0, y);
             const float* const drow = depth ? depth + size_t(y) * size_t(w) : nullptr;
             const float dy = float(y) - cy;
-            const float u0 = float(x_offset) + (cx - c2 * cx - s2 * dy) * across;
-            const float v0 = (cy - s2 * cx + c2 * dy - top) / scale;
+            const float u0 = fb.wide ? float(x_offset) + mid + (cx - c2 * cx) * across - s2 * dy * down
+                                     : float(x_offset) + (cx - c2 * cx - s2 * dy) * across;
+            const float v0 = fb.wide ? (cy + c2 * dy - top) / scale - s2 * cx * across : (cy - s2 * cx + c2 * dy - top) / scale;
             int x = 0;
             if (pow2) {
                 // four pixels at a time; rounded down by way of a positive number (the picture
@@ -693,13 +710,14 @@ void Renderer::draw_polygon(Geo& g, const ClipVert* in, size_t count, const Mate
 
     const float scale = float(fb.height()) / 200.0f;
     const float f = cam_->focal * scale;
+    const float fx = cam_->focal * fb.unit_x();
     const float cx = float(fb.width()) * 0.5f, cy = cam_->center_y * scale;
     std::array<Scr, 8> s;
     for (size_t i = 0; i < n; ++i) {
         const ClipVert& v = poly[i];
         const float d = 128.0f - v.z;  // the original projection: 128 / (128 + depth)
         const float iz = 1.0f / d;
-        s[i] = {cx - v.x * f * iz, cy - v.y * f * iz, iz, v.u * iz, v.v * iz};
+        s[i] = {cx - v.x * fx * iz, cy - v.y * f * iz, iz, v.u * iz, v.v * iz};
     }
 
     Fill fill{};

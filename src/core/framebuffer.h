@@ -47,6 +47,16 @@ public:
     // of rows on all its threads.
     void to_rgba(uint8_t* dst, int dst_pitch, class WorkerPool* pool = nullptr) const;
 
+    // The shape of a pixel on the screen. The original's 320x200 fills a 4:3 screen, so its
+    // pixels are 5/6 as wide as they are high, and by default a picture of any size is taken
+    // to be those 320 columns stretched across its width (wide = false). With wide set the
+    // pixels are square whatever the picture's shape (ours, for widescreen): the 320 columns
+    // take height * 4/3 of them, the 3D view shows more to the sides on a wider picture and
+    // 2D graphics keep their proportions (HudSurface).
+    bool wide = false;
+    // Pixels per column of the original's 320 in the 3D view.
+    float unit_x() const { return float(height_) / (wide ? 240.0f : 200.0f); }
+
 private:
     int width_, height_;
     std::vector<uint8_t> pixels_;

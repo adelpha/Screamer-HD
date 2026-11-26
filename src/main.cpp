@@ -81,7 +81,8 @@ struct Options {
     std::string capture_dir = "artifacts/capture";
     int width = 0, height = 0;      // output size; 0 = default
     std::string renderer;           // SDL renderer name, empty = default
-    std::string aspect = "4:3";     // 4:3 | stretch | square
+    std::string aspect = "4:3";     // 4:3 | stretch | square | wide
+    bool fb_set = false;            // --render-size was given
     std::string scene;              // title | track | testpattern; empty = title when game data is found
     std::string track = "MAP2";     // --scene track: which track
     bool reversed = false;          // tracks 7-12: the track driven the other way (DATA/MAPnI.DAT)
@@ -172,7 +173,10 @@ void print_usage() {
         "  --size WxH           window / output size\n"
         "  --fullscreen         borderless fullscreen\n"
         "  --renderer NAME      SDL renderer (direct3d11, direct3d12, vulkan, opengl, software, gpu)\n"
-        "  --aspect MODE        4:3 (default), stretch, square\n"
+        "  --aspect MODE        4:3 (default), stretch, square, or wide: widescreen. The picture fills a\n"
+        "                       window of any shape with square pixels; races show more to the sides,\n"
+        "                       the HUD keeps to the edges, menus stay 4:3 in the middle. Without\n"
+        "                       --render-size the picture is then drawn at the window's size.\n"
         "  --mute               no sound\n"
         "  --sfx-volume N       sound effects volume 0..100 (default 100)\n"
         "  --music-volume N     CD music volume 0..100 (default 70)\n"
@@ -348,6 +352,7 @@ bool parse_args(int argc, char** argv, Options& o) {
                 std::fprintf(stderr, "--render-size expects WxH\n");
                 return false;
             }
+            o.fb_set = true;
         }
         else if (a == "--size") {
             if (std::sscanf(next("--size"), "%dx%d", &o.width, &o.height) != 2 || o.width <= 0 || o.height <= 0) {
@@ -381,7 +386,7 @@ bool save_or_log(SDL_Surface* s, const std::string& path) {
 SDL_FRect present_rect(int out_w, int out_h, const std::string& aspect, int fb_w, int fb_h) {
     double target;
     if (aspect == "stretch") return {0, 0, float(out_w), float(out_h)};
-    if (aspect == "square") target = double(fb_w) / fb_h;
+    if (aspect == "square" || aspect == "wide") target = double(fb_w) / fb_h;
     else target = 4.0 / 3.0;
     double w = out_w, h = out_w / target;
     if (h > out_h) { h = out_h; w = out_h * target; }
@@ -418,7 +423,17 @@ struct Shared {
 // One scene (--scene ...): loads it and runs its loop until it ends.
 int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const std::optional<std::string>& game_dir,
               std::optional<scr::PcxImage>& title, Shared& shared) {
-    (void)window;
+    // --aspect wide: square pixels, and a picture as large as the window unless told otherwise
+    // (headless runs: the size asked for, whatever the window turns out to be)
+    const bool wide = opt.aspect == "wide";
+    if (wide && !opt.fb_set) {
+        int ww = opt.width, wh = opt.height;
+        if (!opt.headless) SDL_GetWindowSizeInPixels(window, &ww, &wh);
+        if (ww > 0 && wh > 0) {
+            opt.fb_width = ww;
+            opt.fb_height = wh;
+        }
+    }
     // STARTH.EXE's 640x400 HUD and menu graphics once the picture has the lines for them
     const bool ui_hires = opt.ui == "high" || (opt.ui != "low" && opt.fb_height >= 400);
     // A track viewed from a fixed camera (the first step of the 3D renderer).
@@ -869,7 +884,11 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             if (audio_stream) SDL_ResumeAudioStreamDevice(audio_stream);
         }
     }
-    scr::Framebuffer fb = (track || menu) ? scr::Framebuffer(opt.fb_width, opt.fb_height) : scr::Framebuffer();
+    // (wide: the menus are laid out for 4:3 and stay that shape, with bars beside them)
+    const int menu_width = wide ? std::min(opt.fb_width, int(std::lround(double(opt.fb_height) * 4.0 / 3.0))) : opt.fb_width;
+    scr::Framebuffer fb = track ? scr::Framebuffer(opt.fb_width, opt.fb_height)
+                          : menu ? scr::Framebuffer(menu_width, opt.fb_height) : scr::Framebuffer();
+    fb.wide = wide && (track || menu);
     // The picture goes to the renderer as it is, one byte a pixel, with its palette (the
     // graphics card looks the colours up); renderers that cannot get it converted to RGBA,
     // and so does SDL's software renderer (headless runs), which scales RGBA much faster.
@@ -929,7 +948,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         // three passes of draw_darkened_rect over the whole screen
         if (track) {
             scr::HudSurface hsurf(frozen);
-            for (int i = 0; i < 3; ++i) hsurf.darken(0, 0, 320, 200, track->darken075);
+            for (int i = 0; i < 3; ++i) hsurf.darken_all(track->darken075);
         }
     };
     int listener_x = player ? player->race.player.pos_x : 0, listener_z = player ? player->race.player.pos_z : 0;
@@ -1044,7 +1063,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     frozen = fb;
                     if (track) {
                         scr::HudSurface hsurf(frozen);
-                        hsurf.darken(0, 0, 320, 200, track->darken075);  // draw_darkened_rect
+                        hsurf.darken_all(track->darken075);  // draw_darkened_rect
                     }
                     panel.button = 0;
                     panel.track = cd_track ? cd_track : panel.track;
@@ -1115,7 +1134,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 paused = true;
                 frozen = fb;
                 scr::HudSurface hsurf(frozen);
-                hsurf.darken(0, 0, 320, 200, track->darken075);
+                hsurf.darken_all(track->darken075);
             }
             if (prompt >= 0) {
                 fb = frozen;
