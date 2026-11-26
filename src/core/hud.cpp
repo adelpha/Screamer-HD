@@ -73,11 +73,44 @@ std::optional<HudSprites> HudSprites::parse(const std::vector<uint8_t>& d) {
 
 HudSurface::HudSurface(Framebuffer& fb, int scale)
     : fb_(fb), w_(320 * std::max(1, scale)), h_(200 * std::max(1, scale)), sx_(float(fb.width()) / float(w_)),
-      sy_(float(fb.height()) / float(h_)), xs_(size_t(w_) + 1), ys_(size_t(h_) + 1) {
-    // where each of the w_ x h_ pixels starts in the framebuffer
-    for (int x = 0; x <= w_; ++x) xs_[size_t(x)] = int(float(x) * sx_);
+      sy_(float(fb.height()) / float(h_)), ys_(size_t(h_) + 1) {
+    // A wide picture (square pixels): the w_ columns keep their 4:3 shape, height * 4/3
+    // pixels of the picture's width, and what is left over lies to the sides.
+    const float sx43 = float(fb.height()) * (4.0f / 3.0f) / float(w_);
+    if (fb.wide && sx43 < sx_) {
+        sx_ = sx43;
+        spare_ = fb.width() - int(float(w_) * sx_);
+        pad_ = int(std::ceil(float(spare_) / sx_)) + 1;
+    }
+    // where each of the w_ x h_ pixels starts in the framebuffer (and, on a wide picture,
+    // the columns off either side of them)
+    xs_.resize(size_t(w_ + 2 * pad_) + 1);
+    for (int x = -pad_; x <= w_ + pad_; ++x)
+        xs_[size_t(x + pad_)] = x >= 0 ? int(float(x) * sx_) : int(std::floor(float(x) * sx_));
     for (int y = 0; y <= h_; ++y) ys_[size_t(y)] = int(float(y) * sy_);
     reset_clip();
+}
+
+int HudSurface::offset(int x) const {
+    switch (anchor_) {
+    case HudAnchor::Left: return 0;
+    case HudAnchor::Right: return spare_;
+    case HudAnchor::Sides: return x < w_ / 3 ? 0 : x < w_ - w_ / 3 ? spare_ / 2 : spare_;
+    default: return spare_ / 2;
+    }
+}
+
+void HudSurface::set_anchor(HudAnchor a) {
+    anchor_ = a;
+    reset_clip();
+}
+
+void HudSurface::reset_clip() {
+    // everything of the picture that the w_ columns and those beside them cover
+    clip_[0] = anchor_ == HudAnchor::Centre || anchor_ == HudAnchor::Right ? -pad_ : 0;
+    clip_[2] = anchor_ == HudAnchor::Centre || anchor_ == HudAnchor::Left ? w_ + pad_ : w_;
+    clip_[1] = 0;
+    clip_[3] = h_;
 }
 
 void HudSurface::set_clip(int x0, int y0, int x1, int y1) {
@@ -89,7 +122,11 @@ void HudSurface::set_clip(int x0, int y0, int x1, int y1) {
 
 void HudSurface::pixel(int x, int y, uint8_t c) {
     if (x < clip_[0] || y < clip_[1] || x >= clip_[2] || y >= clip_[3]) return;
-    const int x0 = xs_[size_t(x)], x1 = std::min(fb_.width(), std::max(x0 + 1, xs_[size_t(x) + 1]));
+    const int off = spare_ ? offset(x) : 0;
+    const int xa = xs_[size_t(x + pad_)] + off;
+    int x0 = std::max(0, xa), x1 = std::min(fb_.width(), std::max(xa + 1, xs_[size_t(x + pad_) + 1] + off));
+    if (extend_ && x == 0) x0 = 0;
+    if (extend_ && x == w_ - 1) x1 = fb_.width();
     const int y0 = ys_[size_t(y)], y1 = std::min(fb_.height(), std::max(y0 + 1, ys_[size_t(y) + 1]));
     if (x0 >= x1) return;
     for (int py = y0; py < y1; ++py) std::memset(&fb_.at(x0, py), c, size_t(x1 - x0));
@@ -189,7 +226,8 @@ int HudSurface::measure(const HudFonts& f, const std::string& str, int font) con
 
 void HudSurface::darken(int x, int y, int w, int h, const std::array<uint8_t, 256>& table) {
     // In framebuffer pixels, so the 3D view underneath keeps its resolution.
-    const int x0 = int(float(x) * sx_), x1 = int(float(x + w) * sx_);
+    const int off = spare_ ? offset(x) : 0;
+    const int x0 = int(float(x) * sx_) + off, x1 = int(float(x + w) * sx_) + off;
     const int y0 = int(float(y) * sy_), y1 = int(float(y + h) * sy_);
     const int xa = std::max(0, x0), xb = std::min(x1, fb_.width());
     const int ya = std::max(0, y0), yb = std::min(y1, fb_.height());
@@ -200,6 +238,14 @@ void HudSurface::darken(int x, int y, int w, int h, const std::array<uint8_t, 25
         uint8_t* const row = &fb_.at(xa, py);
         const int n = xb - xa;
         for (int i = 0; i < n; ++i) row[i] = t[row[i]];
+    }
+}
+
+void HudSurface::darken_all(const std::array<uint8_t, 256>& table) {
+    const std::array<uint8_t, 256> t = table;
+    for (int y = 0; y < fb_.height(); ++y) {
+        uint8_t* const row = &fb_.at(0, y);
+        for (int x = 0; x < fb_.width(); ++x) row[x] = t[row[x]];
     }
 }
 
@@ -319,11 +365,18 @@ void Hud::draw(Framebuffer& fb, const HudState& st, const std::array<uint8_t, 25
     // STARTH.EXE: the same, every position doubled for its 640x400 graphics
     const int k = scale;
     HudSurface s(fb, k);
+    // On a wide picture (ours) everything stays by its own edge of the screen: lap and times
+    // on the left, position and gauges on the right, the time left and messages in the middle.
     // hud_draw_cockpit: the labels, then the gauges of the chosen view.
+    s.set_anchor(HudAnchor::Sides);
     s.rle(labels);
+    s.set_anchor(HudAnchor::Centre);
     if (view == 1 && !cockpit.empty()) {
         // The dashboard: speed and rev needles (lerp k 0x5a), the gear as a sprite.
+        // (wide: the dashboard in the middle, its outermost columns carried on to the edges)
+        s.set_extend(true);
         s.rle(cockpit);
+        s.set_extend(false);
         const float speed_target = st.speed / st.maxspd * 4.084070563316345f;
         if (advance) speed_needle_ = (speed_needle_ - speed_target) * pow_table(pow_row, 0x5a) + speed_target;
         draw_needle(s, layout.speed_x, layout.speed_y, layout.needle_len, speed_needle_, 0xff);
@@ -334,6 +387,7 @@ void Hud::draw(Framebuffer& fb, const HudState& st, const std::array<uint8_t, 25
         const size_t g = size_t(std::clamp(st.gear, 0, 6));
         s.sprite(sprites, st.gear + layout.gear_sprite, layout.gear[g][0], layout.gear[g][1]);
     } else if (view == 2) {
+        s.set_anchor(HudAnchor::Right);
         s.rle(gauges);
         char buf[16];
         std::snprintf(buf, sizeof buf, "\x01%03d", int(st.speed * 0.017f));  // km/h
@@ -347,15 +401,19 @@ void Hud::draw(Framebuffer& fb, const HudState& st, const std::array<uint8_t, 25
     }
     // hud_draw: time left (centred), lap n/N, position, three times.
     char buf[64];
+    s.set_anchor(HudAnchor::Centre);
     std::snprintf(buf, sizeof buf, "%d", int(st.time_left));
     s.text(fonts, (s.width() - s.measure(fonts, buf, 6)) / 2, 8 * k, buf, 6, 2);
+    s.set_anchor(HudAnchor::Left);
     std::snprintf(buf, sizeof buf, "%d%c", st.lap < st.laps ? st.lap + 1 : st.lap, ':');
     const int lap_w = s.measure(fonts, buf, 1);
     s.text(fonts, 8 * k, 0xb * k, buf, 1, 5);
     std::snprintf(buf, sizeof buf, "%d", st.laps);
     s.text(fonts, lap_w + 5 * k, 0x14 * k, buf, 4, 5);
     std::snprintf(buf, sizeof buf, "%d", st.position);
+    s.set_anchor(HudAnchor::Right);
     s.text(fonts, 0x114 * k, 0xb * k, buf, 1, 5);
+    s.set_anchor(HudAnchor::Left);
     s.text(fonts, 8 * k, 0x38 * k, clock_text(st.total_time), 3, 2);
     s.text(fonts, 8 * k, 0x48 * k, clock_text(st.lap_time), 3, 2);
     s.text(fonts, 8 * k, 0x58 * k, st.best_lap, 3, 2);
@@ -390,8 +448,8 @@ void Hud::draw(Framebuffer& fb, const HudState& st, const std::array<uint8_t, 25
             s.sprite(sprites, 5, int((39.0f - float(rx) * dk) * float(k)), int((float(rz) * dk + 159.0f) * float(k)));
         }
         s.sprite(sprites, 4, 0x26 * k, 0x9e * k);
-        s.reset_clip();
     }
+    s.set_anchor(HudAnchor::Centre);
     // race_end_screen (race_end_draw_mode1, or "TIME OVER" when out of time)
     auto centred = [&](const std::string& t, int y) { s.text(fonts, (s.width() - s.measure(fonts, t, 0)) / 2, y * k, t, 0, 2); };
     if (st.end == 1 && (st.mode == 4 || st.mode == 0x20 || st.mode == 0x40) && texts.size() > 15) {

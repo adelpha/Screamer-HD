@@ -968,7 +968,8 @@ void Menu::champ_advance() {
         champ_step = st.fail;
         return;
     }
-    if (st.value < 3 || champ_pos[size_t(st.race)] == 1) {
+    // (the step's third field, here the league: only the last one asks for a win every time)
+    if (st.track < 3 || champ_pos[size_t(st.race)] == 1) {
         if (st.race != 5) {
             champ_prev = champ_step;
             champ_step = st.next;

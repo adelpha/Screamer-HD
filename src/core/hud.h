@@ -51,6 +51,12 @@ public:
     std::vector<uint8_t> data;
 };
 
+// Where the 320 columns sit on a wide picture (Framebuffer::wide; they are then narrower
+// than it): against its left or right edge or in the middle. Sides: the left third of the
+// columns to the left, the right third to the right, the rest in the middle (for the
+// whole-screen overlays, which hold graphics for every corner).
+enum class HudAnchor { Centre, Left, Right, Sides };
+
 // Draws in the original's 320x200 coordinates (scale 1, STARTL.EXE's) or 640x400 (scale 2,
 // STARTH.EXE's, for the *H assets) onto a framebuffer of any size.
 class HudSurface {
@@ -58,8 +64,14 @@ public:
     explicit HudSurface(Framebuffer& fb, int scale = 1);
     int width() const { return w_; }   // 320 * scale
     int height() const { return h_; }  // 200 * scale
+    // (also puts the clip back: on a wide picture x may then run past 0 and width() on the
+    // sides where there is picture left)
+    void set_anchor(HudAnchor a);
+    // Wide pictures: what is drawn in the first and the last column also fills the picture
+    // from there to its edge (a whole-screen graphic that must leave no gap beside it).
+    void set_extend(bool on) { extend_ = on; }
     void set_clip(int x0, int y0, int x1, int y1);  // surface units, end exclusive
-    void reset_clip() { set_clip(0, 0, w_, h_); }
+    void reset_clip();
     void pixel(int x, int y, uint8_t c);
     void line(int x0, int y0, int x1, int y1, uint8_t c);  // draw_clipped_line
     void rle(const std::vector<uint8_t>& pkc);               // rle_copy
@@ -68,12 +80,18 @@ public:
     int text(const HudFonts& f, int x, int y, const std::string& s, int font, int mode);
     int measure(const HudFonts& f, const std::string& s, int font) const;
     void darken(int x, int y, int w, int h, const std::array<uint8_t, 256>& table);  // draw_darkened_rect
+    void darken_all(const std::array<uint8_t, 256>& table);  // the whole picture, whatever its shape
 
 private:
+    int offset(int x) const;
     Framebuffer& fb_;
     int w_, h_;
     float sx_, sy_;
-    std::vector<int> xs_;  // int(x * sx_): the framebuffer column where pixel x starts
+    int spare_ = 0;  // wide pictures: the columns of the picture the w_ columns leave free
+    int pad_ = 0;    // and as many of ours as fit in them
+    HudAnchor anchor_ = HudAnchor::Centre;
+    bool extend_ = false;
+    std::vector<int> xs_;  // int(x * sx_): the framebuffer column where pixel x + pad_ starts
     std::vector<int> ys_;
     int clip_[4]{0, 0, 320, 200};
 };

@@ -164,7 +164,21 @@ TEST_CASE("menu: championship steps, standings and qualifying") {
     run(m, 1, enter);
     run(m, 100);
     CHECK(m.champ_step == 2);
+    // second in the second race: still on (only the last league asks for a win every time)
+    m.after_race(true, false, 2, 125.0f);
+    CHECK(m.champ_step == 3);
+    CHECK(m.champ_points[1] == 7);
+    run(m, 1, enter);
+    run(m, 100);
+    CHECK(m.champ_step == 4);
+    // the last league: second place is the end of it
+    m.champ_step = 39;
+    m.after_race(true, false, 2, 125.0f);
+    run(m, 1, enter);
+    run(m, 100);
+    CHECK(m.champ_step == 52);
     // fourth place: out of the championship
+    m.champ_pos.fill(-1);
     m.champ_step = 2;  // the second race
     m.after_race(true, false, 4, 130.0f);
     run(m, 1, enter);

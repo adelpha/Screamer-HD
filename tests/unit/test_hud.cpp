@@ -6,6 +6,7 @@
 #include "core/hud.h"
 
 #include <array>
+#include <vector>
 
 TEST_CASE("hud: fonts, sprites and overlays from GAME.DAT") {
     auto dir = scr::find_game_dir();
@@ -147,4 +148,53 @@ TEST_CASE("views: bumper to cockpit switches at once while driving") {
     }
     CHECK(frames <= 2);
     CHECK(v.viewport == 132);
+}
+
+TEST_CASE("hud surface: on a wide picture the 320 columns keep their shape and their edge") {
+    auto columns = [](const scr::Framebuffer& fb) {
+        std::vector<int> c;
+        for (int x = 0; x < fb.width(); ++x)
+            if (fb.at(x, 0)) c.push_back(x);
+        return c;
+    };
+    auto draw = [&](int w, int h, bool wide, scr::HudAnchor a, int x, bool extend = false) {
+        scr::Framebuffer fb(w, h);
+        fb.wide = wide;
+        scr::HudSurface s(fb);
+        s.set_anchor(a);
+        s.set_extend(extend);
+        s.pixel(x, 0, 5);
+        return columns(fb);
+    };
+    using A = scr::HudAnchor;
+    // as before on a picture that is not: stretched across it, whatever the anchor
+    CHECK((draw(640, 200, false, A::Right, 1) == std::vector<int>{2, 3}));
+    CHECK(draw(640, 200, false, A::Centre, -1).empty());
+    // 427x240 with square pixels: one pixel a column, 107 columns to spare
+    CHECK(draw(427, 240, true, A::Left, 0) == std::vector<int>{0});
+    CHECK(draw(427, 240, true, A::Right, 319) == std::vector<int>{426});
+    CHECK(draw(427, 240, true, A::Centre, 0) == std::vector<int>{53});
+    CHECK(draw(427, 240, true, A::Sides, 10) == std::vector<int>{10});
+    CHECK(draw(427, 240, true, A::Sides, 160) == std::vector<int>{213});
+    CHECK(draw(427, 240, true, A::Sides, 310) == std::vector<int>{417});
+    // past the 320 where there is picture left, no further
+    CHECK(draw(427, 240, true, A::Centre, -53) == std::vector<int>{0});
+    CHECK(draw(427, 240, true, A::Centre, -54).empty());
+    CHECK(draw(427, 240, true, A::Left, 426) == std::vector<int>{426});
+    CHECK(draw(427, 240, true, A::Right, 320).empty());
+    // a whole-screen graphic's outermost columns carried on to the edges
+    CHECK(draw(427, 240, true, A::Centre, 0, true).size() == 54);
+    CHECK(draw(427, 240, true, A::Centre, 319, true).size() == 55);  // (372 to 426)
+    // a picture no wider than 4:3 has nothing to spare
+    CHECK(draw(320, 240, true, A::Right, 5) == std::vector<int>{5});
+
+    scr::Framebuffer fb(427, 240);
+    fb.wide = true;
+    fb.clear(1);
+    std::array<uint8_t, 256> t{};
+    t[1] = 2;
+    scr::HudSurface s(fb);
+    s.darken_all(t);
+    CHECK(fb.at(0, 0) == 2);
+    CHECK(fb.at(426, 239) == 2);
 }
