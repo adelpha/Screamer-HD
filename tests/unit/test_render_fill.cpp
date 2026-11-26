@@ -326,3 +326,50 @@ TEST_CASE("track: corners of neighbouring road pieces are welded half way") {
     scr::weld_road_joints(lone);
     CHECK(lone.welds[0].empty());
 }
+
+TEST_CASE("render: the sky turns with the camera's roll") {
+    // a track of nothing but its panorama: a bright band on a dark sky
+    scr::Track t;
+    scr::PcxImage bck;
+    bck.width = 512;
+    bck.height = 256;
+    bck.pixels.assign(512 * 256, 1);
+    for (int y = 224; y < 234; ++y)  // (panorama row 234 lies on the horizon)
+        for (int x = 0; x < 512; ++x) bck.pixels[size_t(y) * 512 + size_t(x)] = 9;
+    bck.vga_pal.resize(768, 0);
+    t.background = bck;
+    auto draw_sky = [&](float roll, bool tilt, int threads) {
+        scr::Renderer r;
+        r.set_threads(threads);
+        r.set_sky_tilt(tilt);
+        scr::Camera cam;
+        cam.roll = roll;
+        scr::Framebuffer fb(320, 200);
+        r.begin(t, cam, fb, 0, true);
+        r.finish();
+        return std::vector<uint8_t>(fb.pixels(), fb.pixels() + 320 * 200);
+    };
+    const auto level = draw_sky(0, true, 1);
+    // level: the band is a level band, the same with or without the option
+    CHECK(level == draw_sky(0, false, 1));
+    int rows_with_band = 0;
+    for (int y = 0; y < 200; ++y) rows_with_band += level[size_t(y) * 320] == 9;
+    CHECK(rows_with_band == 10);
+    for (int y = 0; y < 200; ++y) CHECK(level[size_t(y) * 320] == level[size_t(y) * 320 + 319]);
+    // rolled: off, still level; on, the band is higher at one side of the picture than the other
+    CHECK(draw_sky(100, false, 1) == level);
+    const auto rolled = draw_sky(100, true, 1);
+    CHECK(rolled != level);
+    auto band_row = [&](const std::vector<uint8_t>& p, int x) {
+        for (int y = 0; y < 200; ++y)
+            if (p[size_t(y) * 320 + size_t(x)] == 9) return y;
+        return -1;
+    };
+    CHECK(band_row(rolled, 20) >= 0);
+    CHECK(band_row(rolled, 300) >= 0);
+    CHECK(std::abs(band_row(rolled, 20) - band_row(rolled, 300)) > 40);
+    // the other way round for the opposite roll, and the same picture on any number of threads
+    const auto other = draw_sky(2048 - 100, true, 1);
+    CHECK((band_row(rolled, 20) < band_row(rolled, 300)) != (band_row(other, 20) < band_row(other, 300)));
+    CHECK(draw_sky(100, true, 5) == rolled);
+}

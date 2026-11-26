@@ -70,6 +70,7 @@ struct Options {
     bool clamp_edges = true;        // --texture-edges clamp|wrap
     bool seal_all = false;          // --seal-edges all|open
     bool weld_joints = true;        // --weld-joints on|off
+    bool sky_tilt = true;           // --sky-tilt on|off
     int threads = 0;                // renderer threads (0: one per hardware thread)
     std::string fill;               // --fill: the pixel filler's build (sse2 | avx2; empty: the widest the CPU has)
     bool fullscreen = false;
@@ -137,6 +138,7 @@ void print_usage() {
         "  --mipmaps on|off     draw squeezed (distant) textures from averaged smaller versions: steadier, softer\n"
         "                       (default on; F10 switches in a race). --mip-sharpness X: 1 sharper .. 2 softer (1.4)\n"
         "  --weld-joints off    road pieces where the track file puts them (their lines step at every joint)\n"
+        "  --sky-tilt off       the sky stays level when the camera rolls, as before\n"
         "  --seal-edges all     road pieces reach past every face edge, as before (the painted lines break up)\n"
         "  --texture-edges wrap texel coordinates wrap at the edges of every polygon, as before\n"
         "  --fill sse2|avx2     the build of the pixel filler (default: avx2 when the CPU has it; same picture)\n"
@@ -293,6 +295,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--mipmaps") o.mipmaps = std::string(next("--mipmaps")) != "off";
         else if (a == "--texture-edges") o.clamp_edges = std::string(next("--texture-edges")) != "wrap";
         else if (a == "--seal-edges") o.seal_all = std::string(next("--seal-edges")) == "all";
+        else if (a == "--sky-tilt") o.sky_tilt = std::string(next("--sky-tilt")) != "off";
         else if (a == "--weld-joints") o.weld_joints = std::string(next("--weld-joints")) != "off";
         else if (a == "--mip-sharpness") o.mip_sharpness = float(std::atof(next("--mip-sharpness")));
         else if (a == "--threads") o.threads = std::atoi(next("--threads"));
@@ -766,6 +769,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     renderer3d.set_clamp_edges(opt.clamp_edges);
     renderer3d.set_seal_all_edges(opt.seal_all);
     renderer3d.set_weld_joints(opt.weld_joints);
+    renderer3d.set_sky_tilt(opt.sky_tilt);
 
     // --scene menu: the front end (kept by main across races)
     scr::Menu* menu = nullptr;

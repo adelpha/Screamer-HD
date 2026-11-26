@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <emmintrin.h>
 #include <cstring>
 #ifdef _MSC_VER
 #include <intrin.h>
@@ -112,7 +113,7 @@ void Renderer::clear_rows(int y0, int y1) {
     Framebuffer& fb = *fb_;
     const int w = fb.width();
     std::fill(depth_.begin() + ptrdiff_t(y0) * w, depth_.begin() + ptrdiff_t(y1) * w, 0.0f);
-    if (!bg_columns_.empty()) draw_background_rows(*track_->background, *cam_, fb, y0, y1, bg_columns_.data());
+    if (!bg_columns_.empty()) draw_background_rows(*track_->background, *cam_, fb, y0, y1, bg_columns_.data(), sky_tilt_);
     else std::fill(&fb.at(0, y0), &fb.at(0, y0) + size_t(y1 - y0) * size_t(w), sky_);
 }
 
@@ -532,16 +533,70 @@ void Renderer::background_columns(const PcxImage& bck, const Camera& cam, const 
 void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Framebuffer& fb, int y0, int y1) {
     std::vector<int> column;
     background_columns(bck, cam, fb, column);
-    if (!column.empty()) draw_background_rows(bck, cam, fb, y0, y1, column.data());
+    if (!column.empty()) draw_background_rows(bck, cam, fb, y0, y1, column.data(), false);
 }
 
-void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Framebuffer& fb, int y0, int y1, const int* column) {
+void Renderer::draw_background_rows(const PcxImage& bck, const Camera& cam, Framebuffer& fb, int y0, int y1, const int* column, bool tilt) {
     const float scale = float(fb.height()) / 200.0f;
     // Horizon: projection centre + focal * sin(pitch) (matched against frozen frames of the original).
     const float horizon = (cam.center_y + cam.focal * std::sin(cam.pitch * kAngle)) * scale;
     const float top = horizon - 234.0f * scale;
     const uint8_t fill = bck.pixels[size_t(bck.height - 1) * bck.width];
     const int w = fb.width();
+    // The camera rolled (a banked car): the panorama turns about the projection centre with
+    // the rest of the scene (ours). The scene's roll turns a point at (ux, uy) from the centre
+    // to (c ux + s uy, -s ux + c uy); each pixel looks up the panorama where it came from.
+    const float s2 = std::sin(cam.roll * kAngle), c2 = std::cos(cam.roll * kAngle);
+    if (tilt && s2 != 0.0f) {
+        const float cx = float(w) * 0.5f, cy = cam.center_y * scale;
+        const int yaw = int(std::lround(cam.yaw)) & 0x7ff;
+        const int x_offset = ((0x7ff - yaw) >> 1) & 0x1ff;
+        const float across = 320.0f / (float(w) / scale) / scale;  // panorama columns per pixel
+        const int bw = bck.width, bh = bck.height;
+        const uint8_t* const pixels = bck.pixels.data();
+        // Along a row the panorama column and row change evenly: u = u0 + du x, v = v0 + dv x.
+        const float du = c2 * across, dv = s2 / scale;
+        const bool pow2 = (bw & (bw - 1)) == 0;
+        for (int y = y0; y < y1; ++y) {
+            uint8_t* dst = &fb.at(0, y);
+            const float dy = float(y) - cy;
+            const float u0 = float(x_offset) + (cx - c2 * cx - s2 * dy) * across;
+            const float v0 = (cy - s2 * cx + c2 * dy - top) / scale;
+            int x = 0;
+            if (pow2) {
+                // four pixels at a time; rounded down by way of a positive number (the picture
+                // is some thousands of pixels across at most, a panorama column a few of them)
+                const __m128 lane = _mm_setr_ps(0.0f, 1.0f, 2.0f, 3.0f);
+                const __m128 vdu = _mm_set1_ps(du), vdv = _mm_set1_ps(dv);
+                const __m128 ub = _mm_set1_ps(u0 + 65536.0f), vb = _mm_set1_ps(v0 + 65536.0f);
+                const __m128i wrap = _mm_set1_epi32(bw - 1), up = _mm_set1_epi32(65536), rows = _mm_set1_epi32(bh);
+                const int shift = int(std::lround(std::log2(double(bw))));
+                for (; x + 4 <= w; x += 4) {
+                    const __m128 n = _mm_add_ps(_mm_set1_ps(float(x)), lane);
+                    const __m128i iu = _mm_and_si128(_mm_cvttps_epi32(_mm_add_ps(ub, _mm_mul_ps(vdu, n))), wrap);
+                    const __m128i iv = _mm_sub_epi32(_mm_cvttps_epi32(_mm_add_ps(vb, _mm_mul_ps(vdv, n))), up);
+                    // inside the panorama: 0 <= row < its height
+                    const __m128i inside = _mm_andnot_si128(_mm_srai_epi32(iv, 31), _mm_cmplt_epi32(iv, rows));
+                    const __m128i at = _mm_and_si128(_mm_add_epi32(_mm_slli_epi32(iv, shift), iu), inside);
+                    alignas(16) int32_t ats[4], in[4];
+                    _mm_store_si128(reinterpret_cast<__m128i*>(ats), at);
+                    _mm_store_si128(reinterpret_cast<__m128i*>(in), inside);
+                    for (int j = 0; j < 4; ++j) dst[x + j] = in[j] ? pixels[size_t(ats[j])] : fill;
+                }
+            }
+            for (; x < w; ++x) {
+                const int sy = int(std::floor(v0 + dv * float(x)));
+                if (sy < 0 || sy >= bh) {
+                    dst[x] = fill;
+                    continue;
+                }
+                int col = int(std::floor(u0 + du * float(x))) % bw;
+                if (col < 0) col += bw;
+                dst[x] = pixels[size_t(sy) * size_t(bw) + size_t(col)];
+            }
+        }
+        return;
+    }
     int drawn_sy = -1;                 // the panorama row of the last row drawn from it,
     const uint8_t* drawn = nullptr;    // and that row: the next rows are often the same
     for (int y = y0; y < y1; ++y) {
