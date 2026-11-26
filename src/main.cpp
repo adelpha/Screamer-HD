@@ -71,6 +71,8 @@ struct Options {
     bool seal_all = false;          // --seal-edges all|open
     bool weld_joints = true;        // --weld-joints on|off
     bool sky_tilt = true;           // --sky-tilt on|off
+    bool face_lists = true;         // --face-lists on|off
+    bool folded_faces = true;       // --folded-faces on|off
     int threads = 0;                // renderer threads (0: one per hardware thread)
     std::string fill;               // --fill: the pixel filler's build (sse2 | avx2; empty: the widest the CPU has)
     bool fullscreen = false;
@@ -307,6 +309,8 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--texture-edges") o.clamp_edges = std::string(next("--texture-edges")) != "wrap";
         else if (a == "--seal-edges") o.seal_all = std::string(next("--seal-edges")) == "all";
         else if (a == "--sky-tilt") o.sky_tilt = std::string(next("--sky-tilt")) != "off";
+        else if (a == "--face-lists") o.face_lists = std::string(next("--face-lists")) != "off";
+        else if (a == "--folded-faces") o.folded_faces = std::string(next("--folded-faces")) != "off";
         else if (a == "--smooth-turn") o.smooth_turn = std::string(next("--smooth-turn")) != "off";
         else if (a == "--weld-joints") o.weld_joints = std::string(next("--weld-joints")) != "off";
         else if (a == "--mip-sharpness") o.mip_sharpness = float(std::atof(next("--mip-sharpness")));
@@ -803,6 +807,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     renderer3d.set_seal_all_edges(opt.seal_all);
     renderer3d.set_weld_joints(opt.weld_joints);
     renderer3d.set_sky_tilt(opt.sky_tilt);
+    renderer3d.set_face_lists(opt.face_lists);
+    renderer3d.set_folded_faces(opt.folded_faces);
 
     // --scene menu: the front end (kept by main across races)
     scr::Menu* menu = nullptr;

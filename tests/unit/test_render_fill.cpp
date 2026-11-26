@@ -144,6 +144,7 @@ std::vector<uint8_t> draw(const scr::Track& track, int width, int height, const 
     if (!r.set_fill_path(o.path)) return {};
     r.set_threads(o.threads);
     r.set_seal_all_edges(o.old_look);
+    r.set_folded_faces(!o.old_look);
     r.set_clamp_edges(!o.old_look);
     r.set_mipmaps(o.mipmaps);
     scr::Camera cam;
@@ -577,4 +578,56 @@ TEST_CASE("render: a car's faces cover each other in drawing order, the rest of 
     CHECK(picture(true, true, false, FP::Sse2, 5) == ref);
     const auto avx = picture(true, true, false, FP::Avx2, 3);
     if (!avx.empty()) CHECK(avx == ref);
+}
+
+TEST_CASE("render: a folded face shows the half that faces the eye") {
+    scr::Track t;
+    t.materials = make_library();
+    for (size_t i = 0; i < 256; ++i) t.palette[i] = {uint8_t(i), uint8_t(i), uint8_t(i)};
+    // a quad folded right over along the diagonal from its first corner: whichever way it
+    // is turned, one half faces the camera and the other faces away
+    auto pixels = [&](bool reversed, int normal_sign, bool halves) {
+        scr::Model m;
+        scr::Part p;
+        p.name = "fold";
+        p.vertices = {{-300, -300, 0}, {300, -300, 0}, {300, 300, 0}, {500, -500, -300}};
+        p.uvs.assign(4, {0, 0});
+        scr::Face f;
+        f.count = 4;
+        f.vtx = reversed ? std::array<uint16_t, 6>{0, 3, 2, 1, 0, 0} : std::array<uint16_t, 6>{0, 1, 2, 3, 0, 0};
+        f.normal = {0, 0, 16384 * normal_sign};
+        f.folded = true;
+        p.faces.push_back(f);
+        m.parts.push_back(p);
+        scr::Renderer r;
+        r.set_threads(1);
+        r.set_mipmaps(false);
+        r.set_folded_faces(halves);
+        scr::Camera cam;
+        cam.z = 600;
+        scr::Framebuffer fb(320, 200);
+        r.begin(t, cam, fb, 3, true);
+        scr::Pose pose;
+        pose.z = -1500;
+        r.draw_model(m, pose);
+        r.finish();
+        int n = 0;
+        for (int i = 0; i < 320 * 200; ++i) n += fb.pixels()[i] != 3;
+        return n;
+    };
+    int halves_total = 0, whole_total = 0;
+    for (bool reversed : {false, true}) {
+        // by its one normal: all of the face or none of it
+        const int whole = std::max(pixels(reversed, 1, false), pixels(reversed, -1, false));
+        CHECK(std::min(pixels(reversed, 1, false), pixels(reversed, -1, false)) == 0);
+        CHECK(whole > 500);
+        // half by half: whatever the normal says, a part of it and not the whole
+        const int a = pixels(reversed, 1, true), b = pixels(reversed, -1, true);
+        CHECK(a == b);
+        CHECK(a > 100);
+        CHECK(a <= whole);
+        halves_total += a;
+        whole_total += whole;
+    }
+    CHECK(halves_total < whole_total);
 }

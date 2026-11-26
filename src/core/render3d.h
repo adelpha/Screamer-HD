@@ -86,7 +86,8 @@ struct Pose {
     // separately, and the hairline cracks between them would show the sky; their polygons
     // reach a third of an original pixel past their edges.
     bool seal_edges = false;
-    // A car (object_compute_depth_dynamic: half the distance for the detail levels).
+    // A car (an instance with part poses: object_compute_depth picks its detail levels, at
+    // 4000 and 7000 units; other objects change at 12000 and 16000).
     bool dynamic = false;
     // Vertices drawn a little away from the model's (Track::welds), or null.
     const std::vector<VertexShift>* shifts = nullptr;
@@ -143,6 +144,13 @@ public:
     // The sky panorama turns with the camera's roll like the rest of the scene (ours); off: it
     // stays level whatever the roll, as it was drawn before.
     void set_sky_tilt(bool on) { sky_tilt_ = on; }
+    // Only the faces in a part's draw order for the viewing direction are drawn, as in the
+    // original (Face::lists); off: every face that faces the eye.
+    void set_face_lists(bool on) { face_lists_ = on; }
+    // Faces that are not flat (Face::folded) are tested for facing the eye half by half, so
+    // the half that does is drawn (ours); off: the whole face by its one normal, as the
+    // original, which leaves a hole where such a face is skipped.
+    void set_folded_faces(bool on) { folded_faces_ = on; }
     void set_mipmaps(bool on, float sharpness = 1.4f) { mipmaps_ = on; mip_sharpness_ = sharpness; }
     // Threads that fill pixels (<= 0: one per hardware thread, the default).
     void set_threads(int threads);
@@ -271,6 +279,8 @@ private:
     bool seal_all_edges_ = false;
     bool weld_joints_ = true;
     bool sky_tilt_ = true;
+    bool face_lists_ = true;
+    bool folded_faces_ = true;
     float mip_sharpness_ = 1.4f;
     bool skip_ = false;
     bool fade_ = false;            // the view-distance fade is on this frame

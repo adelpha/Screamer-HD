@@ -422,11 +422,14 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
                 apply(view_, rx + ox, ry + oy, rz + oz, cx, cy, cz);
                 const float dist = std::sqrt(cx * cx + cy * cy + cz * cz);
                 int level = 0;
+                // (cell_load_objects: the instances with part poses, the cars, go through
+                // object_compute_depth, 4000 and 7000 units; everything else through
+                // object_compute_depth_dynamic, half the distance against 6000 and 8000)
                 if (pose.dynamic) {
+                    level = dist >= 7000.0f ? 2 : dist >= 4000.0f ? 1 : 0;
+                } else {
                     const float key = -dist * 0.5f + (!full.name.empty() && full.name[0] == 'Z' ? 8192.0f : 0.0f);
                     level = key < -7999.0f ? 2 : key < -5999.0f ? 1 : 0;
-                } else {
-                    level = dist >= 7000.0f ? 2 : dist >= 4000.0f ? 1 : 0;
                 }
                 if (level > 0 && !lods[size_t(level - 1)].empty() && pi < lods[size_t(level - 1)].size()) {
                     const LodPart& lp = lods[size_t(level - 1)][pi];
@@ -474,17 +477,22 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
         }
         // A car's faces in the order of the part's list for where the eye is, in the part's
         // own space (the transpose of its rotation turns the way to the camera back into it).
+        // Every other object: only the faces that are in that list (a few faces are left out
+        // of some directions, and would show as stray polygons from there).
         const std::vector<uint16_t>* order = nullptr;
-        if (painter) {
+        int list_index = -1;
+        if (!pose.billboard) {
             const float ex = -(prot.m[0][0] * ox + prot.m[1][0] * oy + prot.m[2][0] * oz);
             const float ey = -(prot.m[0][1] * ox + prot.m[1][1] * oy + prot.m[2][1] * oz);
             const float ez = -(prot.m[0][2] * ox + prot.m[1][2] * oy + prot.m[2][2] * oz);
-            const auto& list = part.draw_order[size_t(draw_order_index(ex, ey, ez))];
-            if (!list.empty()) order = &list;
+            list_index = draw_order_index(ex, ey, ez);
+            const auto& list = part.draw_order[size_t(list_index)];
+            if (painter && !list.empty()) order = &list;
         }
         const size_t face_count = order ? order->size() : part.faces.size();
         for (size_t fi = 0; fi < face_count; ++fi) {
             const Face& f = part.faces[order ? (*order)[fi] : fi];
+            if (face_lists_ && list_index >= 0 && !((f.lists >> list_index) & 1)) continue;
             // Back-face test like object_build_polygons: dot(vertex - eye, normal) >= 0 draws.
             float nx, ny, nz;
             apply(prot, float(f.normal[0]), float(f.normal[1]), float(f.normal[2]), nx, ny, nz);
@@ -494,7 +502,27 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
             // (render_patch_cull_jge: the animated objects' parts keep the other side.)
             if (v0 >= nv) continue;
             const float facing = g.wx[v0] * cnx + g.wy[v0] * cny + g.wz[v0] * cnz;
-            if (part.frames.empty() ? facing < 0 : facing >= 0) continue;
+            // A folded face: each triangle of its fan by its own side (the stored normals
+            // point against the corners' turning sense, so a triangle shows where its first
+            // corner lies on the negative side of its own cross product).
+            uint32_t halves = 0;  // bit t: fan triangle t faces the eye (0: not a folded face)
+            bool split = false;
+            if (f.folded && folded_faces_) {
+                uint32_t all = 0;
+                for (int k = 1; k + 1 < f.count && k < 5; ++k) {
+                    const size_t vb = f.vtx[size_t(k)], vc = f.vtx[size_t(k + 1)];
+                    if (vb >= nv || vc >= nv) continue;
+                    const float ux = g.wx[vb] - g.wx[v0], uy = g.wy[vb] - g.wy[v0], uz = g.wz[vb] - g.wz[v0];
+                    const float wx = g.wx[vc] - g.wx[v0], wy = g.wy[vc] - g.wy[v0], wz = g.wz[vc] - g.wz[v0];
+                    const float side = g.wx[v0] * (uy * wz - uz * wy) + g.wy[v0] * (uz * wx - ux * wz) + g.wz[v0] * (ux * wy - uy * wx);
+                    all |= 1u << (k - 1);
+                    if (side <= 0) halves |= 1u << (k - 1);
+                }
+                if (halves == 0) continue;
+                split = halves != all;
+            } else if (part.frames.empty() ? facing < 0 : facing >= 0) {
+                continue;
+            }
             const Material* mat = lib ? lib->find(f.material) : nullptr;
             size_t n = 0;
             float depth = 0;
@@ -515,6 +543,20 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
             if (n < 3) continue;
             ++g.stats.faces;
             const Mode mode = material_mode(mat);
+            if (split && n == size_t(f.count)) {
+                // only the halves that face the eye, as triangles
+                for (size_t k = 1; k + 1 < n; ++k) {
+                    if (!((halves >> (k - 1)) & 1)) continue;
+                    const std::array<ClipVert, 3> tri{poly[0], poly[k], poly[k + 1]};
+                    if (mode == Mode::Translucent || mode == Mode::Darken) {
+                        g.deferred.push_back({uint32_t(g.deferred_verts.size()), 3u, mat, f.color, pose.animation, pose.reflection, depth, bias});
+                        g.deferred_verts.insert(g.deferred_verts.end(), tri.begin(), tri.end());
+                    } else {
+                        draw_polygon(g, tri.data(), 3, mat, f.color, pose.animation, pose.reflection, bias, seal_all_edges_ ? uint8_t(0xff) : uint8_t(0));
+                    }
+                }
+                continue;
+            }
             if (mode == Mode::Translucent || mode == Mode::Darken) {
                 g.deferred.push_back({uint32_t(g.deferred_verts.size()), uint32_t(n), mat, f.color, pose.animation,
                                      pose.reflection, depth, bias});

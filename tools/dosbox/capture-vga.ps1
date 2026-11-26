@@ -49,8 +49,12 @@ if ($Camera) {
     # (0x11099C: pitch, yaw, roll, x, y, z) every frame; a RET at its start leaves ours there.
     $v = $Camera.Split(',') | ForEach-Object { [int]$_.Trim() }
     if ($v.Count -ne 6) { throw '-Camera expects x,y,z,yaw,pitch,roll' }
-    Invoke-WebRequest "$api/memory/$(0x1A134 + 0x1C2000)" -Method Put -ContentType 'application/octet-stream' `
-        -Body ([byte[]](0xC3)) -UseBasicParsing | Out-Null
+    # (and one at the start of camera_update, 0x19AA0, which race_frame and the intro demo call
+    # before drawing: the demo's trackside cameras fill g_camera themselves)
+    foreach ($at in 0x1A134, 0x19AA0) {
+        Invoke-WebRequest "$api/memory/$($at + 0x1C2000)" -Method Put -ContentType 'application/octet-stream' `
+            -Body ([byte[]](0xC3)) -UseBasicParsing | Out-Null
+    }
     $bytes = New-Object byte[] 24
     $k = 0
     foreach ($n in $v[4], $v[3], $v[5], $v[0], $v[1], $v[2]) { [BitConverter]::GetBytes([int]$n).CopyTo($bytes, $k); $k += 4 }
