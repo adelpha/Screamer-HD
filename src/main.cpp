@@ -857,7 +857,10 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             // a championship race left with Esc: it counts as lost
             menu->after_race(false, true, 10, 0);
         } else {
+            // back from the intro demo (or the first time in): the title, then the main page
+            // whatever page the menu was left on (show_title keeps the page itself)
             menu->show_title();
+            menu->page = 0;
         }
         shared.outcomes.clear();
         shared.race.reset();
