@@ -219,7 +219,8 @@ void Renderer::draw_placement_range(Geo& g, size_t i0, size_t i1) {
         // drawn before the road and its verges, which cover them where the quad pokes
         // through. (Only ground below the eye: flat ceilings overhead keep their depth.)
         if (p.slot != 0 && m.flat && float(p.y + m.flat_y) < cam_->y) pose.depth_bias = -kFlatGroundBias;
-        pose.seal_edges = p.slot == 0;
+        // (road pieces; some stretches of road are listed with the scenery)
+        pose.seal_edges = p.slot == 0 || (m.has_strips && !seal_all_edges_);
         if (weld_joints_ && i < track_->welds.size() && !track_->welds[i].empty()) pose.shifts = &track_->welds[i];
         draw_model_into(g, m, pose, nullptr);
     }

@@ -186,12 +186,14 @@ CarParts find_car_parts(const Model& car) {
     return out;
 }
 
-// Faces narrower than this (model units) and at least five times as long are strips (the
-// road's painted lines are about 127 wide and 1100 long, its lanes 665 and more wide).
+// Faces narrower than this (model units) and at least half as long again are strips (the
+// road's painted lines are about 127 wide and up to 1100 long, shorter in bends; its lanes
+// are 665 and more wide).
 constexpr double kStripWidth = 200.0;
 
 void compute_bounds(Model& model) {
     model.radius = 0;
+    model.has_strips = false;
     model.flat = false;
     bool any = false, flat = true;
     int flat_y = 0;
@@ -239,7 +241,8 @@ void compute_bounds(Model& model) {
                         longest = std::max(longest, std::sqrt(double(q.x - p.x) * (q.x - p.x) + double(q.y - p.y) * (q.y - p.y) + double(q.z - p.z) * (q.z - p.z)));
                     }
                     const double width = longest > 0 ? 0.5 * std::sqrt(ax * ax + ay * ay + az * az) / longest : 0;
-                    f.strip = n >= 3 && width < kStripWidth && longest > 5 * width;
+                    f.strip = n >= 3 && width < kStripWidth && longest > 1.5 * width;
+                    if (f.strip && pp < model.parts.data() + model.parts.size() && pp >= model.parts.data()) model.has_strips = true;
                 }
                 f.open_edges = 0;
                 for (int i = 0; i < f.count && i < 6; ++i)

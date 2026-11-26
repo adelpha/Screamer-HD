@@ -105,6 +105,9 @@ struct Model {
     // quads around the road).
     bool flat = false;
     int flat_y = 0;
+    // Some face is a strip (Face::strip): a piece of road with painted lines, wherever the
+    // track file lists it (stretches of road are also among the scenery, MMP slot 1).
+    bool has_strips = false;
 };
 
 // A vertex of a placed object drawn a little away from where the file has it (Track::welds):

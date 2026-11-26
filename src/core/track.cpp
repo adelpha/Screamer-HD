@@ -317,7 +317,8 @@ void weld_road_joints(Track& t, double reach) {
     const double unit = 6.28318530717958647692 / 2048.0;
     for (size_t pi = 0; pi < t.placements.size(); ++pi) {
         const Placement& p = t.placements[pi];
-        if (p.slot != 0 || p.object < 0 || size_t(p.object) >= t.objects.size()) continue;
+        if (p.object < 0 || size_t(p.object) >= t.objects.size()) continue;
+        if (p.slot != 0 && !t.objects[size_t(p.object)].has_strips) continue;  // (road, wherever it is listed)
         // the renderer's turn of a placed object: yaw about y (the other way round), pitch, roll
         const double ax = p.ax * unit, ay = -p.ay * unit, az = p.az * unit;
         const double cy = std::cos(ay), sy = std::sin(ay), cx = std::cos(ax), sx = std::sin(ax), cz = std::cos(az), sz = std::sin(az);
@@ -371,6 +372,7 @@ void weld_road_joints(Track& t, double reach) {
                 }
             }
     }
+    std::vector<bool> joined(corners.size(), false);
     std::map<int, std::vector<int>> groups;
     for (size_t i = 0; i < corners.size(); ++i) groups[find(int(i))].push_back(int(i));
     for (const auto& [root, members] : groups) {
@@ -399,6 +401,47 @@ void weld_road_joints(Track& t, double reach) {
             const float dx = float(r[0] * wx + r[3] * wy + r[6] * wz), dy = float(r[1] * wx + r[4] * wy + r[7] * wz), dz = float(r[2] * wx + r[5] * wy + r[8] * wz);
             for (const auto& [part, vertex] : a.vertices) t.welds[size_t(a.placement)].push_back({part, vertex, dx, dy, dz});
         }
+        for (const int i : members) joined[size_t(i)] = true;
+    }
+    // Some stretches (the hill sections of MAP2) are placed with their ends some 107 units
+    // into each other and a little to the side. Their corners are too far apart for the
+    // groups above (a line is 127 wide: within that distance lie the corners of its other
+    // edge), so the corners still on their own are paired, each with its nearest of another
+    // piece where that one's nearest is it, up to two and a half times the reach.
+    const double far = reach * 2.5;
+    std::map<std::pair<int, int>, std::vector<int>> wide;
+    auto wcell = [&](double v) { return int(std::floor(v / far)); };
+    for (size_t i = 0; i < corners.size(); ++i)
+        if (!joined[i]) wide[{wcell(corners[i].x), wcell(corners[i].z)}].push_back(int(i));
+    std::vector<int> nearest(corners.size(), -1);
+    for (size_t i = 0; i < corners.size(); ++i) {
+        if (joined[i]) continue;
+        const Corner& a = corners[i];
+        double best = far * far;
+        for (int gx = wcell(a.x) - 1; gx <= wcell(a.x) + 1; ++gx)
+            for (int gz = wcell(a.z) - 1; gz <= wcell(a.z) + 1; ++gz) {
+                const auto it = wide.find({gx, gz});
+                if (it == wide.end()) continue;
+                for (const int j : it->second) {
+                    const Corner& b = corners[size_t(j)];
+                    if (b.placement == a.placement) continue;
+                    const double d = (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z);
+                    if (d < best) {
+                        best = d;
+                        nearest[i] = j;
+                    }
+                }
+            }
+    }
+    for (size_t i = 0; i < corners.size(); ++i) {
+        const int j = nearest[i];
+        if (j < 0 || nearest[size_t(j)] != int(i)) continue;
+        const Corner& a = corners[i];
+        const Corner& b = corners[size_t(j)];
+        const double wx = (b.x - a.x) * 0.5, wy = (b.y - a.y) * 0.5, wz = (b.z - a.z) * 0.5;
+        const std::array<double, 9>& r = turned[size_t(a.placement)];
+        const float dx = float(r[0] * wx + r[3] * wy + r[6] * wz), dy = float(r[1] * wx + r[4] * wy + r[7] * wz), dz = float(r[2] * wx + r[5] * wy + r[8] * wz);
+        for (const auto& [part, vertex] : a.vertices) t.welds[size_t(a.placement)].push_back({part, vertex, dx, dy, dz});
     }
 }
 
