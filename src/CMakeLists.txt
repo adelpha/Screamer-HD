@@ -62,8 +62,13 @@ target_compile_definitions(screamer_core PUBLIC
 # The game executable: console subsystem, so headless runs log to stdout; in release packages
 # (SCREAMER_DIST) a Windows-subsystem program, which takes its parent's console for logs
 # (attach_parent_console) and pipes as given.
-add_executable(screamer main.cpp input.cpp debug_report.cpp)
-target_link_libraries(screamer PRIVATE screamer_core)
+add_executable(screamer main.cpp input.cpp debug_report.cpp
+  video/gl_api.cpp
+  video/presenter_gl.cpp
+  video/presenter_sdl.cpp
+)
+find_package(OpenGL REQUIRED)
+target_link_libraries(screamer PRIVATE screamer_core OpenGL::GL)
 if(SCREAMER_DIST AND WIN32)
   set_target_properties(screamer PROPERTIES WIN32_EXECUTABLE ON)
   target_compile_definitions(screamer PRIVATE SCREAMER_GUI_SUBSYSTEM=1)

@@ -73,6 +73,49 @@ if(EXISTS ${SCREAMER_DATA_DIR}/GFX/MENU.DAT)
   set_tests_properties(smoke.menu_pad_tap_b PROPERTIES LABELS "smoke" PASS_REGULAR_EXPRESSION "frames=400")
 endif()
 
+# --- The OpenGL presenter (--video-api opengl) against SDL's renderer, both on the graphics card
+# through a hidden window that is never shown (--hidden). Skipped without OpenGL 3.3. ---
+function(add_api_test name)
+  cmake_parse_arguments(AT "" "TOLERANCE;MAX_FRACTION;EXPECT" "ARGS" ${ARGN})
+  string(REPLACE ";" "|" AT_ARGS_PIPE "${AT_ARGS}")
+  add_test(NAME gpu.${name}
+    COMMAND ${CMAKE_COMMAND}
+      -DEXE=$<TARGET_FILE:screamer>
+      -DIMGCMP=$<TARGET_FILE:imgcmp>
+      "-DARGS=${AT_ARGS_PIPE}"
+      -DOUTPUT=${TEST_OUT_DIR}/api_${name}
+      -DTOLERANCE=${AT_TOLERANCE}
+      -DMAX_FRACTION=${AT_MAX_FRACTION}
+      "-DEXPECT=${AT_EXPECT}"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/compare_apis.cmake)
+  set_tests_properties(gpu.${name} PROPERTIES LABELS "gpu" SKIP_RETURN_CODE 77)
+endfunction()
+add_api_test(testpattern_640x480 ARGS --scene testpattern --frames 1 --size 640x480)
+add_api_test(testpattern_1280x720 ARGS --scene testpattern --frames 1 --size 1280x720)
+if(EXISTS ${SCREAMER_DATA_DIR}/GFX/MAP1H.DAT)
+  # the picture larger than the window: converted, halved twice, then filtered (exact); and
+  # neither halved nor whole (the linear filter's rounding: +-1)
+  add_api_test(track_supersampled ARGS --scene track --track MAP1 --frames 3 --size 1280x720 --render-size 2560x1600)
+  add_api_test(track_filtered ARGS --scene track --track MAP3 --frames 3 --size 1366x768 --render-size 1601x1001
+    TOLERANCE 1)
+  # 320x200 shown 4.5 times as large: SDL's renderer and OpenGL round some exact texel edges apart
+  add_api_test(track_upscaled ARGS --scene track --track MAP1 --frames 3 --size 1920x1080 --render-size 320x200
+    MAX_FRACTION 0.005)
+  add_api_test(race_wide ARGS --scene drive --track MAP1 --frames 300 --size 1280x720 --aspect wide --hold accel)
+endif()
+if(EXISTS ${SCREAMER_DATA_DIR}/GFX/MENU.DAT)
+  # the widescreen menu's backdrop
+  add_api_test(menu_wide ARGS --scene menu --frames 120 --size 1920x1080 --aspect wide)
+  # OPTIONS > VIDEO > ADVANCED > API, from DIRECT3D to OPENGL: the window made again, live
+  add_test(NAME gpu.menu_api_switch COMMAND screamer --hidden --scene menu --frames 1000 --size 1280x720 --menu-keys
+    100:down,130:down,160:down,190:down,240:enter,320:down,350:down,400:enter,480:down,510:down,540:down,570:down,600:down,640:enter,720:down,750:down,780:down,810:down,860:enter)
+  set_tests_properties(gpu.menu_api_switch PROPERTIES LABELS "gpu"
+    PASS_REGULAR_EXPRESSION "renderer: opengl[^
+]*
+(.*
+)?frames=1000")
+endif()
+
 # --- Car physics against recordings of the original (tools/dosbox/record-race.ps1) ---
 # The recordings stay in artifacts/traces (git-ignored); a test exists only when its recording
 # does. Allowed differences: bumps from CPU cars (not ported yet) and +-1 ground height on slopes.

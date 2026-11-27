@@ -237,7 +237,7 @@ TEST_CASE("menu: CHOICE.DAT keeps our volumes after the original's bytes") {
     c.music_midi = 1;
     c.set(0x14, 2);
     REQUIRE(c.save(path.string()));
-    CHECK(std::filesystem::file_size(path) == 0x460 + 4 + 4 + 14 * 4);  // 4 volumes, music, 9 VIDEO settings
+    CHECK(std::filesystem::file_size(path) == 0x460 + 4 + 4 + 15 * 4);  // 4 volumes, music, 10 VIDEO settings
     scr::ChoiceFile d;
     REQUIRE(d.load(path.string()));
     CHECK((d.volume == std::array<int32_t, 4>{3, 0, 7, 10}));
@@ -429,6 +429,10 @@ TEST_CASE("menu: OPTIONS > VIDEO and its settings in CHOICE.DAT") {
     press([](scr::MenuKeys& k) { k.down = true; });
     press([](scr::MenuKeys& k) { k.enter = true; });  // FAR MODELS LOW
     CHECK(m.video().lod);
+    for (int i = 0; i < 2; ++i) press([](scr::MenuKeys& k) { k.down = true; });
+    CHECK(!m.video().opengl);
+    press([](scr::MenuKeys& k) { k.enter = true; });  // API OPENGL
+    CHECK(m.video().opengl);
     press([](scr::MenuKeys& k) { k.esc = true; });
     CHECK(m.page == scr::Menu::kVideoPage);
     CHECK(!m.video_apply);  // (only leaving VIDEO itself applies)

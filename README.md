@@ -360,7 +360,8 @@ The menus are the original's 3D menus, rebuilt. New pages:
 
 - **OPTIONS > SOUND**: ANNOUNCER, ENGINE, EFFECTS, MUSIC volumes; CD MUSIC / MIDI MUSIC.
 - **OPTIONS > VIDEO**: FULLSCREEN, WIDESCREEN, RES, DISTANCE, DETAIL; ADVANCED: VSYNC,
-  FPS LIMIT, FAR MODELS (FULL/LOW), MIPMAPS.
+  FPS LIMIT, FAR MODELS (FULL/LOW), MIPMAPS, API (DIRECT3D/OPENGL: how the picture reaches
+  the screen; switching makes the window again).
 - **OPTIONS > CONTROLS**: KEYBOARD, CONTROLLER, RUMBLE, PAD, DEFAULTS.
 
 DETAIL works as in the original: LOW loads the low-detail track and has no moving scenery;
@@ -401,6 +402,7 @@ settings for that run.
 | `--detail high\|low` | High- or low-detail track files. |
 | `--level N` | Opponent level 0-4 (default 1). |
 | `--renderer NAME` | SDL renderer: `direct3d11`, `direct3d12`, `vulkan`, `opengl`, `software`, `gpu`. |
+| `--video-api sdl\|opengl` | The picture through SDL's renderer (default) or the game's own OpenGL 3.3 context (OPTIONS > VIDEO > ADVANCED > API). |
 | `--threads N` | Threads drawing the 3D view (default: all CPU threads). |
 | `--mute` | No sound at all. |
 | `--volumes A,E,F,M` | Announcer, engine, effects, music volumes 0-10. |

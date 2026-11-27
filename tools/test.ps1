@@ -3,7 +3,7 @@
   Build, then run the CTest suite. Exit code is non-zero if anything fails.
 .EXAMPLE
   .\tools\test.ps1                      # everything
-  .\tools\test.ps1 -Label render        # only one label: unit, render, smoke, gamedata
+  .\tools\test.ps1 -Label render        # only one label: unit, render, smoke, gpu, physics, gamedata
   .\tools\test.ps1 -Filter testpattern  # ctest -R regex
 #>
 param(

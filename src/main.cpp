@@ -33,6 +33,7 @@
 #include "core/testpattern.h"
 #include "debug_report.h"
 #include "input.h"
+#include "video/presenter.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -90,6 +91,7 @@ struct Options {
     std::string capture_dir = "artifacts/capture";
     int width = 0, height = 0;      // output size; 0 = default
     std::string renderer;           // SDL renderer name, empty = default
+    scr::video::Api video_api = scr::video::Api::Sdl;  // --video-api: SDL's 2D renderer or our OpenGL context
     std::string aspect = "4:3";     // 4:3 | stretch | square | wide
     bool fb_set = false;            // --render-size was given
     bool smooth_turn = true;        // --smooth-turn: the camera's angles as they are, not in 2048ths of a turn
@@ -349,6 +351,13 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--capture-every") o.capture_every = std::strtoull(next("--capture-every"), nullptr, 10);
         else if (a == "--capture-dir") o.capture_dir = next("--capture-dir");
         else if (a == "--renderer") o.renderer = next("--renderer");
+        else if (a == "--video-api") {
+            const std::string v = next("--video-api");
+            if (!scr::video::parse_api(v, o.video_api)) {
+                std::fprintf(stderr, "--video-api: sdl or opengl, not %s\n", v.c_str());
+                return false;
+            }
+        }
         else if (a == "--aspect") o.aspect = next("--aspect");
         else if (a == "--scene") o.scene = next("--scene");
         else if (a == "--track") o.track = next("--track");
@@ -443,6 +452,7 @@ scr::VideoSettings video_from(const Options& o) {
     v.frame_limit = o.frame_limit;
     v.lod = o.lod;
     v.mipmaps = o.mipmaps;
+    v.opengl = o.video_api == scr::video::Api::OpenGL;
     return v;
 }
 
@@ -465,6 +475,7 @@ void apply_video(Options& o, const scr::VideoSettings& v, bool force) {
     if (take("--frame-limit")) o.frame_limit = v.frame_limit;
     if (take("--lod")) o.lod = v.lod;
     if (take("--mipmaps")) o.mipmaps = v.mipmaps;
+    if (take("--video-api")) o.video_api = v.opengl ? scr::video::Api::OpenGL : scr::video::Api::Sdl;
 }
 
 // The window for the run's VIDEO settings: fullscreen or not, and in a window, the size of the
@@ -484,6 +495,57 @@ void apply_window(SDL_Window* window, const Options& o) {
         }
     }
     SDL_SyncWindow(window);
+}
+
+// The window and what puts the picture in it.
+struct Display {
+    SDL_Window* window = nullptr;
+    std::unique_ptr<scr::video::Presenter> presenter;
+};
+
+// A window (pos/size: where and how large, in window units; 0: from the options) with the api's
+// presenter; OpenGL falls back to SDL's renderer when it cannot be had.
+bool open_display(Display& d, const Options& o, scr::video::Api api, int x = SDL_WINDOWPOS_UNDEFINED,
+                  int y = SDL_WINDOWPOS_UNDEFINED, int w = 0, int h = 0) {
+    if (api == scr::video::Api::OpenGL && o.headless && !o.hidden) {
+        SDL_Log("video: OpenGL needs a real video driver (--hidden), not --headless: SDL's renderer instead");
+        api = scr::video::Api::Sdl;
+    }
+    for (;;) {
+        SDL_WindowFlags wflags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | scr::video::window_flags(api);
+        if (o.fullscreen) wflags |= SDL_WINDOW_FULLSCREEN;
+        if (o.hidden) wflags |= SDL_WINDOW_HIDDEN | SDL_WINDOW_NOT_FOCUSABLE;
+        SDL_PropertiesID props = SDL_CreateProperties();
+        SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, "Screamer HD");
+        SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, x);
+        SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, y);
+        SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, w > 0 ? w : o.width);
+        SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, h > 0 ? h : o.height);
+        SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER, Sint64(wflags));
+        d.window = SDL_CreateWindowWithProperties(props);
+        SDL_DestroyProperties(props);
+        if (!d.window) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "window: %s", SDL_GetError());
+            return false;
+        }
+        if (api == scr::video::Api::OpenGL) d.presenter = scr::video::make_gl_presenter(d.window);
+        else d.presenter = scr::video::make_sdl_presenter(d.window, {o.renderer, o.upload, !o.headless || o.hidden});
+        if (d.presenter) break;
+        SDL_DestroyWindow(d.window);
+        d.window = nullptr;
+        if (api == scr::video::Api::Sdl) return false;
+        SDL_Log("video: no OpenGL 3.3, SDL's renderer instead");
+        api = scr::video::Api::Sdl;
+    }
+    d.presenter->set_vsync(!o.headless && o.vsync);
+    SDL_Log("video driver: %s, renderer: %s", SDL_GetCurrentVideoDriver(), d.presenter->name().c_str());
+    return true;
+}
+
+void close_display(Display& d) {
+    d.presenter.reset();
+    if (d.window) SDL_DestroyWindow(d.window);
+    d.window = nullptr;
 }
 
 } // namespace
@@ -517,8 +579,11 @@ struct Shared {
 };
 
 // One scene (--scene ...): loads it and runs its loop until it ends.
-int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const std::optional<std::string>& game_dir,
+int run_scene(Options& opt, Display& display, const std::optional<std::string>& game_dir,
               std::optional<scr::PcxImage>& title, Shared& shared) {
+    // (both can change during the scene: OPTIONS > VIDEO's renderer makes the window again)
+    SDL_Window*& window = display.window;
+    auto presenter = [&]() -> scr::video::Presenter& { return *display.presenter; };
     // --aspect wide: square pixels, and a picture as large as the window unless told otherwise
     // (headless runs: the size asked for, whatever the window turns out to be)
     // (OPTIONS > VIDEO's RES NATIVE: the same, and on a 4:3 picture the largest 4:3 part of the window)
@@ -1050,18 +1115,13 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     scr::Framebuffer fb = track ? scr::Framebuffer(opt.fb_width, opt.fb_height)
                           : menu ? scr::Framebuffer(menu_width, opt.fb_height) : scr::Framebuffer();
     fb.wide = wide && (track || menu);
-    // The picture goes to the renderer as it is, one byte a pixel, with its palette (the
-    // graphics card looks the colours up); renderers that cannot get it converted to RGBA,
-    // and so does SDL's software renderer (headless runs), which scales RGBA much faster.
-    if (opt.upload.empty() && std::strcmp(SDL_GetRendererName(renderer), "software") == 0) opt.upload = "rgba";
-
     // Widescreen menus: the backdrop, blurred and darker, stretched over the whole window
     // behind the 4:3 menu (in place of black bars)
-    SDL_Texture* bars_tex = nullptr;
     const scr::PcxImage* bars_of = nullptr;
+    bool bars_set = false;
     auto make_bars = [&](const scr::PcxImage& bg) {
-        if (bars_tex) SDL_DestroyTexture(bars_tex);
-        bars_tex = nullptr;
+        presenter().set_backdrop(nullptr, 0, 0);
+        bars_set = false;
         constexpr int kW = 64, kH = 40;
         if (bg.width <= 0 || bg.pixels.empty()) return;
         const int bh = int(bg.pixels.size() / size_t(bg.width));
@@ -1106,44 +1166,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             for (size_t ch = 0; ch < 3; ++ch) px[i * 4 + ch] = uint8_t(std::clamp(rgb[i * 3 + ch] * 0.75f, 0.0f, 255.0f));
             px[i * 4 + 3] = 255;
         }
-        bars_tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, kW, kH);
-        if (!bars_tex) return;
-        SDL_UpdateTexture(bars_tex, nullptr, px.data(), kW * 4);
-        SDL_SetTextureScaleMode(bars_tex, SDL_SCALEMODE_LINEAR);
-        SDL_SetTextureBlendMode(bars_tex, SDL_BLENDMODE_NONE);
+        presenter().set_backdrop(px.data(), kW, kH);
+        bars_set = true;
     };
-    SDL_Texture* tex = nullptr;
-    std::vector<SDL_Texture*> halves;  // the picture halved, for showing it much smaller (see below)
-    SDL_Palette* tex_palette = nullptr;
-    std::array<SDL_Color, 256> tex_colors{};
-    bool tex_colors_set = false;
-    auto make_texture = [&]() {
-        if (tex) SDL_DestroyTexture(tex);
-        if (tex_palette) SDL_DestroyPalette(tex_palette);
-        tex = nullptr;
-        tex_palette = nullptr;
-        tex_colors_set = false;
-        // (and so does a picture larger than the window: it is filtered down, which takes colours)
-        int out_w = 0, out_h = 0;
-        SDL_GetRenderOutputSize(renderer, &out_w, &out_h);
-        const bool larger = (!opt.headless || opt.hidden) && out_w > 0 && (fb.width() > out_w || fb.height() > out_h);
-        if (opt.upload != "rgba" && !(opt.upload.empty() && larger)) {
-            tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_INDEX8, SDL_TEXTUREACCESS_STREAMING, fb.width(), fb.height());
-            if (tex) tex_palette = SDL_CreatePalette(256);
-            if (!tex_palette || !SDL_SetTexturePalette(tex, tex_palette) || !SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_NONE)) {
-                if (tex) SDL_DestroyTexture(tex);
-                if (tex_palette) SDL_DestroyPalette(tex_palette);
-                tex = nullptr;
-                tex_palette = nullptr;
-            }
-        }
-        if (!tex) {
-            tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, fb.width(), fb.height());
-            SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_NONE);  // (every pixel is opaque)
-        }
-        SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
-    };
-    make_texture();
     // OPTIONS > VIDEO in the menu, live: the menu's picture made again at the new size (from
     // the window's pixels for NATIVE and widescreen), and its texture
     auto resize_menu_picture = [&]() {
@@ -1165,7 +1190,6 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         scr::Framebuffer next(mw, opt.fb_height);
         next.wide = w;
         fb = std::move(next);
-        make_texture();
         SDL_Log("menu picture: %dx%d", fb.width(), fb.height());
     };
 
@@ -2278,8 +2302,10 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     menu_video = mv;
                     shared.saved_video = mv;
                     save_menu();
-                    if (mv.vsync != opt.vsync && !opt.headless) SDL_SetRenderVSync(renderer, mv.vsync ? 1 : 0);
+                    if (mv.vsync != opt.vsync && !opt.headless) presenter().set_vsync(mv.vsync);
                     scr::VideoSettings now = video_from(opt);
+                    const bool new_api = mv.opengl != now.opengl;
+                    now.opengl = mv.opengl;
                     const bool new_picture = mv.fullscreen != now.fullscreen || mv.width != now.width || mv.height != now.height;
                     now.widescreen = mv.widescreen;
                     now.view_distance = mv.view_distance;
@@ -2294,6 +2320,32 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         SDL_Log("video: %s, %s, %s", mv.fullscreen ? "fullscreen" : "window", mv.widescreen ? "widescreen" : "4:3",
                                 mv.width ? (std::to_string(mv.width) + "x" + std::to_string(mv.height)).c_str() : "native");
                         if (!opt.headless) apply_window(window, opt);
+                    }
+                    if (new_api && (!opt.headless || opt.hidden)) {
+                        // API: the window made again for the other way of drawing into it, where
+                        // it was and as large (the new presenter needs the backdrop again)
+                        int x = SDL_WINDOWPOS_UNDEFINED, y = SDL_WINDOWPOS_UNDEFINED, w = 0, h = 0;
+                        if (!opt.fullscreen) {
+                            SDL_GetWindowPosition(window, &x, &y);
+                            SDL_GetWindowSize(window, &w, &h);
+                        }
+                        close_display(display);
+                        if (!open_display(display, opt, opt.video_api, x, y, w, h)) {
+                            // (not even SDL's renderer any more: nothing left to show the game with)
+                            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "video: %s", SDL_GetError());
+                            if (!opt.headless) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Screamer HD", SDL_GetError(), nullptr);
+                            std::exit(1);
+                        }
+                        // (OpenGL not to be had: the menu shows what is used)
+                        opt.video_api = presenter().api();
+                        if (presenter().api() != (mv.opengl ? scr::video::Api::OpenGL : scr::video::Api::Sdl)) {
+                            menu_video.opengl = !mv.opengl;
+                            shared.saved_video = menu_video;
+                            menu->set_video(menu_video);
+                            save_menu();
+                        }
+                        bars_of = nullptr;
+                        bars_set = false;
                     }
                     resize_menu_picture();
                     menu->video_apply = false;
@@ -2405,73 +2457,24 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         }
         mark(stepped ? scr::prof::Hud : scr::prof::Other);
         if (stepped) {
-            void* pixels; int pitch;
-            if (tex_palette) {
-                std::array<SDL_Color, 256> colors;
-                for (size_t i = 0; i < 256; ++i) colors[i] = {fb.palette()[i].r, fb.palette()[i].g, fb.palette()[i].b, 255};
-                if (!tex_colors_set || std::memcmp(colors.data(), tex_colors.data(), sizeof colors) != 0) {
-                    SDL_SetPaletteColors(tex_palette, colors.data(), 0, 256);
-                    tex_colors = colors;
-                    tex_colors_set = true;
-                }
-                SDL_UpdateTexture(tex, nullptr, fb.pixels(), fb.width());
-            } else if (SDL_LockTexture(tex, nullptr, &pixels, &pitch)) {
-                fb.to_rgba(static_cast<uint8_t*>(pixels), pitch, renderer3d.pool());
-                SDL_UnlockTexture(tex);
-            }
+            presenter().upload(fb, renderer3d.pool());
             mark(scr::prof::Upload);
         }
 
         int ow, oh;
-        SDL_GetRenderOutputSize(renderer, &ow, &oh);
+        presenter().output_size(ow, oh);
         // (a menu made before WIDESCREEN went on keeps its 4:3 shape: its pixels need not be square)
         const SDL_FRect dst = present_rect(ow, oh, menu && !fb.wide && opt.aspect == "wide" ? "4:3" : opt.aspect, fb.width(), fb.height());
-        // A picture at least twice the size it is shown at (a render size above the screen's) is
-        // halved on the graphics card until it is less than that: each pass of the linear filter
-        // at exactly half the size averages 2x2 pixels, so every pixel counts (a box filter, as
-        // supersampling wants); the last step is the linear filter's.
-        SDL_Texture* shown = tex;
-        if (!tex_palette && (!opt.headless || opt.hidden)) {
-            int cw = fb.width(), ch = fb.height();
-            for (size_t level = 0; cw >= 2 * int(dst.w) && ch >= 2 * int(dst.h) && cw >= 2 && ch >= 2; ++level) {
-                const int nw = cw / 2, nh = ch / 2;
-                if (halves.size() <= level) halves.push_back(nullptr);
-                SDL_Texture*& t = halves[level];
-                float tw = 0, th = 0;
-                if (t) SDL_GetTextureSize(t, &tw, &th);
-                if (!t || int(tw) != nw || int(th) != nh) {
-                    if (t) SDL_DestroyTexture(t);
-                    t = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_TARGET, nw, nh);
-                    if (!t) break;
-                    SDL_SetTextureBlendMode(t, SDL_BLENDMODE_NONE);
-                }
-                SDL_SetTextureScaleMode(shown, SDL_SCALEMODE_LINEAR);
-                if (!SDL_SetRenderTarget(renderer, t)) break;
-                // (source: the whole even-sized part, so 2x2 blocks line up)
-                const SDL_FRect src{0, 0, float(nw * 2), float(nh * 2)};
-                SDL_RenderTexture(renderer, shown, &src, nullptr);
-                shown = t;
-                cw = nw;
-                ch = nh;
-            }
-            SDL_SetRenderTarget(renderer, nullptr);
-            SDL_SetTextureScaleMode(shown, dst.w < float(cw) ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
-        }
-        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-        SDL_RenderClear(renderer);
+        float backdrop = -1;  // (none)
         if (menu && opt.aspect == "wide" && (dst.w + 1.0f < float(ow) || dst.h + 1.0f < float(oh))) {
             if (menu->backdrop() != bars_of) {
                 bars_of = menu->backdrop();
                 if (bars_of) make_bars(*bars_of);
             }
-            if (bars_tex && bars_of) {
-                // (fading with the menu)
-                const auto m = uint8_t(std::clamp(menu->brightness, 0.0f, 1.0f) * 255.0f);
-                SDL_SetTextureColorMod(bars_tex, m, m, m);
-                SDL_RenderTexture(renderer, bars_tex, nullptr, nullptr);
-            }
+            // (fading with the menu)
+            if (bars_set && bars_of) backdrop = std::clamp(menu->brightness, 0.0f, 1.0f);
         }
-        SDL_RenderTexture(renderer, shown, nullptr, &dst);
+        presenter().draw(dst, backdrop);
 
         const bool last_frame = opt.frames && frame >= opt.frames;
         if (last_frame && player) {
@@ -2484,7 +2487,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             SDL_Log("camera: %d,%d,%d,%d,%d,%d", int(cam.x), int(cam.y), int(cam.z), int(cam.yaw), int(cam.pitch), int(cam.roll));
         if (last_frame) {
             if (!opt.screenshot.empty()) {
-                scr::SurfacePtr s(SDL_RenderReadPixels(renderer, nullptr));
+                scr::SurfacePtr s = presenter().read_pixels();
                 if (!s || !save_or_log(s.get(), opt.screenshot)) exit_code = 1;
             }
             if (!opt.dump_fb.empty()) {
@@ -2495,7 +2498,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         }
         // Interactive runs present only new pictures (vsync paces the loop then); with nothing
         // new and no step due, wait a little instead of spinning.
-        if (stepped || opt.headless) SDL_RenderPresent(renderer);
+        if (stepped || opt.headless) presenter().present();
         else if (!catching_up) SDL_Delay(1);
         mark(scr::prof::Present);
         if (stepped) scr::prof::frame_done(step);
@@ -2533,13 +2536,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     if (audio_stream) SDL_DestroyAudioStream(audio_stream);
     race_audio.stop();
     mixer.set_music(nullptr);
-    SDL_DestroyTexture(tex);
-    if (bars_tex) SDL_DestroyTexture(bars_tex);
-    for (SDL_Texture* t : halves)
-        if (t) SDL_DestroyTexture(t);
-    for (SDL_Texture* t : halves)
-        if (t) SDL_DestroyTexture(t);
-    if (tex_palette) SDL_DestroyPalette(tex_palette);
+    presenter().set_backdrop(nullptr, 0, 0);
     return exit_code;
 }
 
@@ -2661,16 +2658,9 @@ int main(int argc, char** argv) {
             p = *end == ',' ? end + 1 : end;
         }
     }
-    SDL_WindowFlags wflags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    if (opt.fullscreen) wflags |= SDL_WINDOW_FULLSCREEN;
-    if (opt.hidden) wflags |= SDL_WINDOW_HIDDEN | SDL_WINDOW_NOT_FOCUSABLE;
-    SDL_Window* window = SDL_CreateWindow("Screamer HD", opt.width, opt.height, wflags);
-    if (!window) { SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "window: %s", SDL_GetError()); return 1; }
-    SDL_Renderer* renderer = SDL_CreateRenderer(window, opt.renderer.empty() ? nullptr : opt.renderer.c_str());
-    if (!renderer) { SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "renderer: %s", SDL_GetError()); return 1; }
-    SDL_SetRenderVSync(renderer, opt.headless || !opt.vsync ? 0 : 1);
-    if (!opt.headless && !opt.was_given("--size")) apply_window(window, opt);
-    SDL_Log("video driver: %s, renderer: %s", SDL_GetCurrentVideoDriver(), SDL_GetRendererName(renderer));
+    Display display;
+    if (!open_display(display, opt, opt.video_api)) return 1;
+    if (!opt.headless && !opt.was_given("--size")) apply_window(display.window, opt);
 
     int exit_code = 0;
     if (!opt.replay_file.empty()) {
@@ -2707,7 +2697,7 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        exit_code = run_scene(opt, window, renderer, game_dir, title, shared);
+        exit_code = run_scene(opt, display, game_dir, title, shared);
         if (opt.attract) {
             opt.attract = false;
             if (exit_code == 0 && shared.attract_done) {
@@ -2771,8 +2761,7 @@ int main(int argc, char** argv) {
         break;
     }
     shared.input.shutdown();
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
+    close_display(display);
     SDL_Quit();
     return exit_code;
 }
