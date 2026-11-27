@@ -10,7 +10,7 @@ reproduced bit for bit, so the original's replay files play back identically.
 > or Steam release). This is an unofficial fan project, not affiliated with or endorsed by the
 > owners of Screamer. No licence is granted; see the [disclaimer](#disclaimer).
 
-Version **1.0** · Windows 10/11 (64-bit) · built on [SDL3](https://libsdl.org)
+Version **1.1** · Windows 10/11 (64-bit) · built on [SDL3](https://libsdl.org)
 
 ---
 
@@ -91,7 +91,7 @@ game always steps at its own fixed rate.
 
 ## Installing
 
-1. **Download** `ScreamerHD-1.0-win64.zip` from the release page and unzip it anywhere, for
+1. **Download** `ScreamerHD-1.1-win64.zip` from the release page and unzip it anywhere, for
    example `C:\Games\ScreamerHD`.
 2. **Copy your Screamer files** into the `SCREAMER` folder inside it, so that it looks like
    this:
@@ -212,7 +212,7 @@ Everything from the DOS game's menus works as it did:
 - **Replays**: every race is recorded; an instant replay is offered after a single race.
 - **Options**: detail (LOW / MID / HI), the original's options, plus new SOUND, VIDEO and
   CONTROLS pages.
-- **Network game** shows a "not supported" notice; multiplayer is not part of 1.0.
+- **Network game** shows a "not supported" notice; multiplayer is not supported yet.
 - **Cheats** typed in the menus work as in the original (unlock the secret car, all tracks,
   other obstacles, stop the clock, mirror and upside-down worlds).
 
