@@ -29,6 +29,7 @@
 #include "core/sound.h"
 #include "core/render3d.h"
 #include "core/track.h"
+#include "core/track_edit.h"
 #include "core/sim_clock.h"
 #include "core/testpattern.h"
 #include "debug_report.h"
@@ -46,6 +47,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <array>
@@ -71,6 +73,8 @@ struct Options {
     bool clamp_edges = true;        // --texture-edges clamp|wrap
     bool seal_all = false;          // --seal-edges all|open
     bool weld_joints = true;        // --weld-joints on|off
+    bool track_edits = true;        // --track-edits on|off: the hand-made corner moves of TRACKS\<track>.TXT (ours)
+    std::string track_edits_file;   // --track-edits-file: that file instead (also in headless runs)
     bool sky_tilt = true;           // --sky-tilt on|off
     bool face_lists = true;         // --face-lists on|off
     bool folded_faces = true;       // --folded-faces on|off
@@ -151,6 +155,8 @@ void print_usage() {
         "  --mipmaps on|off     draw squeezed (distant) textures from averaged smaller versions: steadier, softer\n"
         "                       (default on; F10 switches in a race). --mip-sharpness X: 1 sharper .. 2 softer (1.4)\n"
         "  --weld-joints off    road pieces where the track file puts them (their lines step at every joint)\n"
+        "  --track-edits off    leave out the corners moved in photo mode's edit mode (TRACKS\\MAPnH.TXT beside\n"
+        "                       CHOICE.DAT); --track-edits-file F: those of file F (drawing only, never the physics)\n"
         "  --face-lists off     draw every face that faces the eye, not only those in the part's draw order\n"
         "  --folded-faces off   test faces that are not flat by their one normal, as the original (holes)\n"
         "  --view-distance X    times the original's far clip (1..8, 0: no limit; default 2, or as OPTIONS > VIDEO)\n"
@@ -336,6 +342,8 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--ground-obstacles") o.ground_obstacles = std::string(next("--ground-obstacles")) != "off";
         else if (a == "--smooth-turn") o.smooth_turn = std::string(next("--smooth-turn")) != "off";
         else if (a == "--weld-joints") o.weld_joints = std::string(next("--weld-joints")) != "off";
+        else if (a == "--track-edits") o.track_edits = std::string(next("--track-edits")) != "off";
+        else if (a == "--track-edits-file") o.track_edits_file = next("--track-edits-file");
         else if (a == "--mip-sharpness") o.mip_sharpness = float(std::atof(next("--mip-sharpness")));
         else if (a == "--threads") o.threads = std::atoi(next("--threads"));
         else if (a == "--fill") o.fill = next("--fill");
@@ -605,6 +613,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     scr::Model ghost_model;              // the ghost's car when it is another than the player's
     std::vector<scr::Model> anim_models;  // per animation (an empty model draws nothing)
     const bool drive = opt.scene == "drive";
+    std::vector<std::vector<scr::VertexShift>> weld_base;  // the track's automatic welds, before the edits
+    scr::TrackEdits track_edits;
+    std::string track_edits_path;  // where the edits are kept (empty: nowhere)
     if (opt.scene == "track" || drive) {
         if (game_dir) {
             if (auto path = scr::resolve_game_file(*game_dir, "GFX/" + opt.track + opt.detail + ".DAT")) track = scr::load_track(*path, opt.track);
@@ -614,6 +625,27 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             return 1;
         }
         SDL_Log("track %s: %zu objects, %zu placements", opt.track.c_str(), track->objects.size(), track->placements.size());
+        // The corners moved by hand in photo mode's edit mode (core/track_edit.h): drawing only.
+        weld_base = track->welds;
+        track_edits.track = opt.track + opt.detail;
+        track_edits.placements = track->placements.size();
+        if (opt.track_edits) {
+            if (!opt.track_edits_file.empty()) track_edits_path = opt.track_edits_file;
+            else if (!shared.choice_path.empty())
+                track_edits_path = (std::filesystem::path(shared.choice_path).parent_path() / "TRACKS" / (track_edits.track + ".TXT")).string();
+            std::string err;
+            std::error_code ec;
+            if (!track_edits_path.empty() && std::filesystem::exists(track_edits_path, ec)) {
+                if (track_edits.load(track_edits_path, &err)) {
+                    scr::apply_track_edits(*track, weld_base, track_edits);
+                    SDL_Log("track edits: %zu corners from %s", track_edits.corners.size(), track_edits_path.c_str());
+                } else {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "track edits %s not used: %s", track_edits_path.c_str(), err.c_str());
+                    track_edits.corners.clear();
+                    track_edits_path.clear();  // (and not overwritten)
+                }
+            }
+        }
         // Tracks 7-12 (g_race_options & 8): the same scenery, driven the other way. The racing
         // lines, markers, obstacles and the rest come from DATA/MAPnI.DAT, and
         // track_find_nearest_point turns the centre line's heading round.
@@ -1281,8 +1313,49 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     float fc_x = 0, fc_y = 0, fc_z = 0, fc_yaw = 0, fc_pitch = 0;  // angles in 2048 units
     float fc_saved_sfx = 0, fc_saved_music = 0;
     int32_t fc_anim = 0;
+    // Tab in photo mode: the edit mode (core/track_edit.h). The mouse picks corners (Shift adds,
+    // Ctrl takes edges), the right button held looks about; M meets the two picked half way, J
+    // puts the second onto the first, the arrows and PgUp/PgDn nudge (Shift 8 units, Ctrl a
+    // quarter), Del puts back, Ctrl+Z / Ctrl+Y undo / redo, G / Shift+G the next open gap. Every
+    // change is saved at once. Drawing only: the game's sums keep the track file's corners.
+    bool editing = false, edit_look = false;
+    std::unique_ptr<scr::TrackEditor> editor;
+    scr::TrackEditor::Colors edit_colors;
+    int edit_hover = -1, edit_hover_edge = -1;
+    std::string edit_note;  // the last thing done, shown under the help
+    auto set_editing = [&](bool on) {
+        if (on && !editor && track) {
+            editor = std::make_unique<scr::TrackEditor>(*track, weld_base, track_edits);
+            edit_colors = scr::overlay_colors(track->palette);
+        }
+        editing = on && editor;
+        edit_look = false;
+        edit_hover = edit_hover_edge = -1;
+        if (window && !opt.headless) SDL_SetWindowRelativeMouseMode(window, freecam && !editing);
+        edit_note = !editing ? "" : track_edits_path.empty() ? "NOT SAVED: NO PLACE FOR THE FILE" : "SAVED TO " + track_edits_path;
+    };
+    auto edit_changed = [&](const char* what) {
+        char buf[96];
+        std::snprintf(buf, sizeof buf, "%s  %zu GAPS LEFT", what, editor->gaps().size());
+        edit_note = buf;
+        if (!track_edits_path.empty()) {
+            if (editor->edits().save(track_edits_path)) editor->mark_saved();
+            else edit_note = "CANNOT SAVE " + track_edits_path;
+        }
+    };
+    // window position (SDL's) -> framebuffer pixel
+    auto mouse_to_fb = [&](float wx, float wy, float& fx, float& fy) {
+        int ww = 1, wh = 1, ow = 1, oh = 1;
+        if (window) SDL_GetWindowSize(window, &ww, &wh);
+        if (renderer) SDL_GetRenderOutputSize(renderer, &ow, &oh);
+        const float px = wx * float(ow) / float(std::max(ww, 1)), py = wy * float(oh) / float(std::max(wh, 1));
+        const SDL_FRect dst = present_rect(ow, oh, opt.aspect, fb.width(), fb.height());
+        fx = (px - dst.x) / std::max(dst.w, 1.0f) * float(fb.width());
+        fy = (py - dst.y) / std::max(dst.h, 1.0f) * float(fb.height());
+    };
     auto set_freecam = [&](bool on) {
         if (on == freecam) return;
+        if (!on && editing) set_editing(false);
         freecam = on;
         if (on) {
             fc_x = cam.x;
@@ -1350,6 +1423,63 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     note_mipmaps = true;
                     break;
                 }
+                if (freecam && track && ev.key.key == SDLK_TAB && !ev.key.repeat) {
+                    set_editing(!editing);
+                    break;
+                }
+                if (freecam && editing) {
+                    const SDL_Keymod mod = ev.key.mod;
+                    const bool ctrl = (mod & SDL_KMOD_CTRL) != 0, shift = (mod & SDL_KMOD_SHIFT) != 0;
+                    const SDL_Keycode k = ev.key.key;
+                    bool used = true;
+                    if (k == SDLK_ESCAPE && !editor->selection().empty()) {
+                        editor->clear_selection();
+                    } else if (k == SDLK_M && !ev.key.repeat) {
+                        if (editor->meet()) edit_changed("MET HALF WAY");
+                    } else if (k == SDLK_J && !ev.key.repeat) {
+                        if (editor->join()) edit_changed("JOINED");
+                    } else if (k == SDLK_DELETE || k == SDLK_BACKSPACE) {
+                        if (editor->reset_selected()) edit_changed("PUT BACK");
+                    } else if (k == SDLK_Z && ctrl) {
+                        if (shift ? editor->redo() : editor->undo()) edit_changed(shift ? "REDONE" : "UNDONE");
+                    } else if (k == SDLK_Y && ctrl) {
+                        if (editor->redo()) edit_changed("REDONE");
+                    } else if (k == SDLK_G && !ev.key.repeat) {
+                        std::array<float, 3> mid{};
+                        if (editor->select_gap(shift ? -1 : 1, mid)) {
+                            // the camera 700 units back from the gap, looking the way it looked
+                            const float a = fc_yaw * 3.1415927f / 1024.0f, pch = fc_pitch * 3.1415927f / 1024.0f;
+                            const float fx = std::cos(pch) * std::sin(a), fy = std::sin(pch), fz = -std::cos(a) * std::cos(pch);
+                            fc_x = mid[0] - fx * 700.0f;
+                            fc_y = mid[1] - fy * 700.0f;
+                            fc_z = mid[2] - fz * 700.0f;
+                            const auto pa = editor->position(editor->selection()[0][0]), pb = editor->position(editor->selection()[1][0]);
+                            const double gap = std::sqrt(double((pa[0] - pb[0]) * (pa[0] - pb[0]) + (pa[1] - pb[1]) * (pa[1] - pb[1]) +
+                                                                (pa[2] - pb[2]) * (pa[2] - pb[2])));
+                            char buf[64];
+                            std::snprintf(buf, sizeof buf, "GAP OF %.0f UNITS  %zu LEFT", gap, editor->gaps().size());
+                            edit_note = buf;
+                        } else {
+                            edit_note = "NO OPEN GAPS";
+                        }
+                    } else if (k == SDLK_UP || k == SDLK_DOWN || k == SDLK_LEFT || k == SDLK_RIGHT || k == SDLK_PAGEUP || k == SDLK_PAGEDOWN) {
+                        // on the ground away from the eye and across the screen, or up and down
+                        const float step = shift ? 8.0f : ctrl ? 0.25f : 1.0f;
+                        const float a = fc_yaw * 3.1415927f / 1024.0f;
+                        const float fwd_x = std::sin(a), fwd_z = -std::cos(a), right_x = -std::cos(a), right_z = -std::sin(a);
+                        float dx = 0, dy = 0, dz = 0;
+                        if (k == SDLK_UP) { dx = fwd_x; dz = fwd_z; }
+                        if (k == SDLK_DOWN) { dx = -fwd_x; dz = -fwd_z; }
+                        if (k == SDLK_RIGHT) { dx = right_x; dz = right_z; }
+                        if (k == SDLK_LEFT) { dx = -right_x; dz = -right_z; }
+                        if (k == SDLK_PAGEUP) dy = 1;
+                        if (k == SDLK_PAGEDOWN) dy = -1;
+                        if (editor->nudge(dx * step, dy * step, dz * step)) edit_changed("NUDGED");
+                    } else {
+                        used = false;
+                    }
+                    if (used) break;
+                }
                 if (track && !menu && !paused && prompt < 0 && !ev.key.repeat &&
                     (ev.key.key == SDLK_F8 || (freecam && ev.key.key == SDLK_ESCAPE))) {
                     set_freecam(!freecam);
@@ -1394,6 +1524,34 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 }
                 else if (ev.key.key == SDLK_F12 && !ev.key.repeat) {
                     screenshot_pending = true;  // saved once the next frame is drawn
+                }
+                break;
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            case SDL_EVENT_MOUSE_BUTTON_UP:
+                if (freecam && editing) {
+                    const bool down = ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+                    if (ev.button.button == SDL_BUTTON_RIGHT) {
+                        // held: look about with the mouse
+                        edit_look = down;
+                        if (window && !opt.headless) SDL_SetWindowRelativeMouseMode(window, down);
+                        float ignore_x, ignore_y;
+                        SDL_GetRelativeMouseState(&ignore_x, &ignore_y);
+                    } else if (ev.button.button == SDL_BUTTON_LEFT && down) {
+                        const SDL_Keymod mod = SDL_GetModState();
+                        const bool add = (mod & SDL_KMOD_SHIFT) != 0;
+                        float mx, my;
+                        mouse_to_fb(ev.button.x, ev.button.y, mx, my);
+                        const float radius = float(fb.height()) / 40.0f;
+                        if (mod & SDL_KMOD_CTRL) {
+                            const int e = editor->pick_edge(cam, fb, &renderer3d, mx, my, radius);
+                            if (e >= 0) editor->select({editor->edges()[size_t(e)].first, editor->edges()[size_t(e)].second}, add);
+                            else if (!add) editor->clear_selection();
+                        } else {
+                            const int c = editor->pick_corner(cam, fb, &renderer3d, mx, my, radius);
+                            if (c >= 0) editor->select({c}, add);
+                            else if (!add) editor->clear_selection();
+                        }
+                    }
                 }
                 break;
             case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
@@ -1571,20 +1729,36 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 renderer3d.set_anim_counter(freecam ? fc_anim : clock.anim_counter());
                 if (step && !freecam && player && frame == 150 && opt.hold.find("freecam") != std::string::npos)
                     set_freecam(true);  // --hold freecam: photo mode at frame 150, flying forward (headless checks)
+                if (step && !freecam && player && frame == 150 && opt.hold.find("edit") != std::string::npos) {
+                    // --hold edit: photo mode's edit mode at frame 150, looking down at the widest open gap
+                    set_freecam(true);
+                    set_editing(true);
+                    std::array<float, 3> mid{};
+                    if (editor && editor->select_gap(1, mid)) {
+                        fc_pitch = -440.0f;
+                        const float a = fc_yaw * 3.1415927f / 1024.0f, pch = fc_pitch * 3.1415927f / 1024.0f;
+                        fc_x = mid[0] - std::cos(pch) * std::sin(a) * 700.0f;
+                        fc_y = mid[1] - std::sin(pch) * 700.0f;
+                        fc_z = mid[2] + std::cos(a) * std::cos(pch) * 700.0f;
+                        if (opt.hold.find("editmeet") != std::string::npos && editor->meet()) edit_changed("MET HALF WAY");
+                    }
+                }
                 if (freecam) {
                     // photo mode: move the free camera, nothing else moves
                     const bool* keys = SDL_GetKeyboardState(nullptr);
                     const float dt = clock.frame_time();
                     float mx = 0, my = 0;
                     SDL_GetRelativeMouseState(&mx, &my);
-                    if (opt.headless) mx = my = 0;
+                    if (opt.headless || (editing && !edit_look)) mx = my = 0;  // (edit mode: the mouse points)
                     const float turn = 600.0f * dt;  // 2048 units per turn
                     fc_yaw -= mx * 1.5f;
                     fc_pitch -= my * 1.5f;
-                    if (keys[SDL_SCANCODE_LEFT]) fc_yaw += turn;
-                    if (keys[SDL_SCANCODE_RIGHT]) fc_yaw -= turn;
-                    if (keys[SDL_SCANCODE_UP]) fc_pitch += turn;
-                    if (keys[SDL_SCANCODE_DOWN]) fc_pitch -= turn;
+                    if (!editing) {  // (edit mode: the arrows nudge)
+                        if (keys[SDL_SCANCODE_LEFT]) fc_yaw += turn;
+                        if (keys[SDL_SCANCODE_RIGHT]) fc_yaw -= turn;
+                        if (keys[SDL_SCANCODE_UP]) fc_pitch += turn;
+                        if (keys[SDL_SCANCODE_DOWN]) fc_pitch -= turn;
+                    }
                     fc_pitch = std::clamp(fc_pitch, -500.0f, 500.0f);
                     fc_yaw = std::fmod(fc_yaw + 2048.0f, 2048.0f);
                     float speed = 4000.0f * dt;
@@ -2125,6 +2299,32 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                             hs.radar_lines.push_back({ts.left_x, ts.left_z, ts.right_x, ts.right_z});
                     hud->draw(fb, hs, track->darken075, clock.frame_time(), clock.pow_table_row(), rear_view && player->camera.hud_view == 1 ? 2 : player->camera.hud_view,
                               radar, step);
+                }
+                if (freecam && editing && editor) {
+                    // the edit mode's marks: what the mouse is over (Ctrl: edges), the picked, the gaps
+                    if (!opt.headless && window) {
+                        float wx, wy, mx, my;
+                        SDL_GetMouseState(&wx, &wy);
+                        mouse_to_fb(wx, wy, mx, my);
+                        const float radius = float(fb.height()) / 40.0f;
+                        const bool edges = (SDL_GetModState() & SDL_KMOD_CTRL) != 0;
+                        edit_hover = edit_look || edges ? -1 : editor->pick_corner(cam, fb, &renderer3d, mx, my, radius);
+                        edit_hover_edge = edit_look || !edges ? -1 : editor->pick_edge(cam, fb, &renderer3d, mx, my, radius);
+                    }
+                    editor->draw_overlay(cam, fb, &renderer3d, edit_hover, edit_hover_edge, edit_colors);
+                    static const char* const kHelp[] = {
+                        "EDIT MODE   TAB LEAVES   HOLD RIGHT MOUSE TO LOOK",
+                        "CLICK PICKS A CORNER   SHIFT ADDS   CTRL PICKS AN EDGE",
+                        "M MEET HALF WAY   J JOIN ONTO THE FIRST   DEL PUT BACK",
+                        "ARROWS PGUP PGDN NUDGE (SHIFT 8, CTRL 1/4)   CTRL+Z UNDO   G NEXT GAP",
+                    };
+                    const int ts = std::max(1, fb.height() / 300);
+                    int ty = 4 * ts;
+                    for (const char* line : kHelp) {
+                        scr::draw_overlay_text(fb, 4 * ts, ty, line, edit_colors.corner, edit_colors.shadow, ts);
+                        ty += 10 * ts;
+                    }
+                    if (!edit_note.empty()) scr::draw_overlay_text(fb, 4 * ts, ty, edit_note, edit_colors.hover, edit_colors.shadow, ts);
                 }
                 if (view_note_timer > 0.0f && hud) {
                     // F9's note: the new view distance

@@ -951,4 +951,40 @@ void Renderer::draw_polygon(Geo& g, const ClipVert* in, size_t count, const Mate
     if (used) g.fills.push_back(fill);
 }
 
+Mat3 placement_rotation(float ax, float ay, float az) { return rotation(ax, -ay, az); }
+
+ScreenProjection::ScreenProjection(const Camera& cam, const Framebuffer& fb) {
+    // (the view matrix and projection of Renderer::begin and draw_polygon)
+    const float s0 = std::sin(cam.pitch * kAngle), c0 = std::cos(cam.pitch * kAngle);
+    const float s1 = std::sin(cam.yaw * kAngle), c1 = std::cos(cam.yaw * kAngle);
+    const float s2 = std::sin(cam.roll * kAngle), c2 = std::cos(cam.roll * kAngle);
+    const float t = s1 * s0, u = c1 * s0;
+    view_.m[0][0] = c2 * c1 - t * s2;    view_.m[0][1] = s2 * c0; view_.m[0][2] = u * s2 + s1 * c2;
+    view_.m[1][0] = -(c2 * t + c1 * s2); view_.m[1][1] = c2 * c0; view_.m[1][2] = u * c2 - s1 * s2;
+    view_.m[2][0] = -(c0 * s1);          view_.m[2][1] = -s0;     view_.m[2][2] = c1 * c0;
+    ex_ = cam.x;
+    ey_ = cam.y;
+    ez_ = cam.z;
+    const float scale = float(fb.height()) / 200.0f;
+    cx_ = float(fb.width()) * 0.5f;
+    cy_ = cam.center_y * scale;
+    fx_ = cam.focal * fb.unit_x();
+    fy_ = cam.focal * scale;
+}
+
+bool ScreenProjection::operator()(float x, float y, float z, float& sx, float& sy, float& iz) const {
+    float cx, cy, cz;
+    apply(view_, x - ex_, y - ey_, z - ez_, cx, cy, cz);
+    if (cz > -kNear) return false;
+    iz = 1.0f / (128.0f - cz);
+    sx = cx_ - cx * fx_ * iz;
+    sy = cy_ - cy * fy_ * iz;
+    return true;
+}
+
+float Renderer::depth_at(int x, int y) const {
+    if (!fb_ || x < 0 || y < 0 || x >= fb_->width() || y >= fb_->height() || depth_.size() < size_t(fb_->width()) * size_t(fb_->height())) return 0.0f;
+    return std::fabs(depth_[size_t(y) * size_t(fb_->width()) + size_t(x)]);
+}
+
 } // namespace scr

@@ -48,6 +48,24 @@ struct Mat3 {
 
 // Scroll state of an object's environment-mapped glass (instance +0x24..+0x38 in the game):
 // the object's movement, turned into camera space, accumulates into a texture offset.
+// Object space -> world for a placed object, as the renderer turns it (the yaw negated).
+Mat3 placement_rotation(float ax, float ay, float az);
+
+// Where world points land in fb as Renderer draws them with cam: pixel position and 1/depth
+// (the depth buffer's measure). False when the point lies behind the near plane.
+class ScreenProjection {
+public:
+    ScreenProjection(const Camera& cam, const Framebuffer& fb);
+    bool operator()(float x, float y, float z, float& sx, float& sy, float& iz) const;
+
+private:
+    Mat3 view_{};
+    float ex_, ey_, ez_, cx_, cy_, fx_, fy_;
+};
+inline bool project_point(const Camera& cam, const Framebuffer& fb, float x, float y, float z, float& sx, float& sy, float& iz) {
+    return ScreenProjection(cam, fb)(x, y, z, sx, sy, iz);
+}
+
 struct EnvScroll {
     float acc[3]{};
     int prev[3]{};
@@ -163,6 +181,9 @@ public:
     enum class FillPath { Auto, Sse2, Avx2 };
     bool set_fill_path(FillPath path);
     const char* fill_path_name() const;
+    // 1/depth of what was drawn at pixel x, y in the last finished frame (0: sky; ours, for
+    // telling whether a point is hidden).
+    float depth_at(int x, int y) const;
     WorkerPool* pool() { return pool_.get(); }
     // Skipped frames (a game step that is not shown): begin .. finish do nothing.
     void set_skip(bool skip) { skip_ = skip; }  // the fill threads, for other per-pixel work

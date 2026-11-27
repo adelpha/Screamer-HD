@@ -194,6 +194,28 @@ Photo mode (F8): W/S forward and back, A/D sideways, E or Space up, Q or C down,
 to look around, Shift moves 5x faster, Ctrl 5x slower. F12 takes the picture; F8 or Esc goes
 back to the race.
 
+**Track edit mode** (Tab in photo mode): fix gaps and misaligned corners of the track by hand.
+The mouse points (hold the right button to look around); WASD and the rest still fly.
+
+| Key | Action |
+| --- | --- |
+| Click / Shift+click | Pick a corner / add one to the picked (click it again to take it out) |
+| Ctrl+click | Pick an edge (both its corners); Ctrl+Shift+click adds one |
+| M | Two corners (or two edges, end to end) meet half way; more than two: all meet in their middle |
+| J | The second corner (or edge) is moved onto the first |
+| Arrows, Page Up / Down | Nudge the picked corners 1 unit (Shift: 8, Ctrl: a quarter) away from you, sideways, up or down |
+| Del / Backspace | Put the picked corners back where they were |
+| Ctrl+Z, Ctrl+Y | Undo, redo |
+| G / Shift+G | Fly to the next / previous gap the automatic welding left open (red) |
+| Esc | Drop the picked corners (with none picked: leave photo mode) |
+| Tab | Leave the edit mode |
+
+Every change is saved at once to `TRACKS\MAPnH.TXT` next to your saves
+(`%APPDATA%\ScreamerHD`; one file per track and detail level) and used every time the track is
+drawn. The game's files are not changed, and the edits only change the picture: the car drives on
+the track's own surface whatever you move, so races stay exactly as in the original. Delete the
+file to undo everything; `--track-edits off` leaves the edits out.
+
 ### Menus
 
 The menus always answer to the arrows, Enter and Esc, and to the gamepad's D-pad / left stick,

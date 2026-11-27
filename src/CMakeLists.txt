@@ -39,6 +39,7 @@ add_library(screamer_core STATIC
   core/sim_clock.cpp
   core/testpattern.cpp
   core/track.cpp
+  core/track_edit.cpp
 )
 # The AVX2 build of the pixel filler: this file only, used when the CPU has AVX2.
 if(MSVC)
