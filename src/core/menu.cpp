@@ -16,6 +16,7 @@ namespace {
 constexpr float kPi = 3.141592741f;
 constexpr float kToUnits = 1024.0f / 3.141592741f;
 constexpr float kRingStep = 0.241660982f;  // 2 pi / 26
+constexpr int kCameraZ = 0x1004;            // the text pages' camera distance
 
 std::vector<std::string> text_lines(const Archive& a, const std::string& name) {
     std::vector<std::string> out;
@@ -702,6 +703,20 @@ void Menu::setup_name_page() {
     }
 }
 
+namespace {
+// the usual name of a picture's shape (the nearest of them)
+const char* aspect_name(bool widescreen, int w, int h) {
+    if (!widescreen || h <= 0) return "4:3";
+    static constexpr struct { float ratio; const char* name; } kShapes[] = {
+        {4.0f / 3.0f, "4:3"}, {16.0f / 10.0f, "16:10"}, {16.0f / 9.0f, "16:9"}, {21.0f / 9.0f, "21:9"}, {32.0f / 9.0f, "32:9"}};
+    const float r = float(w) / float(h);
+    size_t best = 0;
+    for (size_t i = 1; i < std::size(kShapes); ++i)
+        if (std::fabs(kShapes[i].ratio - r) < std::fabs(kShapes[best].ratio - r)) best = i;
+    return kShapes[best].name;
+}
+} // namespace
+
 std::string Menu::entry_text(const Entry& e) const {
     if (e.text >= kOwnText) {
         // the cycled lines (1234) show the text of their value, like MENU.TXT's
@@ -714,8 +729,11 @@ std::string Menu::entry_text(const Entry& e) const {
             const int t = e.text - kOwnText;
             if (t == kTxResolution) {
                 const auto r = res_list_[size_t(std::clamp(e.value, 0, int(res_list_.size()) - 1))];
+                // a size: its shape after it, as shown (without widescreen every size is shown
+                // 4:3), and without the label, which would not fit
                 if (r.first == 0) std::snprintf(buf, sizeof buf, "NATIVE");
-                else std::snprintf(buf, sizeof buf, "%dX%d", r.first, r.second);
+                else return std::to_string(r.first) + "X" + std::to_string(r.second) + " (" +
+                            aspect_name(pages[kVideoPage][kWidescreenLine].value != 0, r.first, r.second) + ")";
             } else if (t == kTxDistance) {
                 const float d = kViewSteps[std::clamp(e.value, 0, int(std::size(kViewSteps)) - 1)];
                 if (d == 0) std::snprintf(buf, sizeof buf, "MAX");
@@ -970,6 +988,20 @@ void Menu::build_page_items(float dt) {
     // menu_build_page_items
     const auto& entries = pages[size_t(page)];
     if (built_page_ != page) {
+        // Ours: a page with lines longer than 15 letters (the original's are 13 at most) is
+        // seen from further back, so that they fit; the VIDEO page as for its longest size
+        size_t longest = 0;
+        for (const Entry& e : entries) longest = std::max(longest, entry_text(e).size());
+        if (page == kVideoPage) {
+            Entry res = pages[kVideoPage][kResolutionLine];
+            for (res.value = 0; res.value < int(res_list_.size()); ++res.value) longest = std::max(longest, entry_text(res).size());
+        }
+        const int z = longest > 15 ? int(float(kCameraZ) * float(longest + 1) / 16.0f) : kCameraZ;
+        if (to_[2] != z) {
+            from_[2] = int(cam_.z);
+            to_[2] = z;
+            cam_t_ = 1.0f;
+        }
         for (Item& it : items) it.ch = -1;
         block_.row = 0;
         block_.ypos = 8 - int(entries.size());
