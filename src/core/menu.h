@@ -17,10 +17,12 @@
 // Page tables (0x102de4): per item { text index, action, value, max }; the text shown is
 // MENU.TXT[index + value]; action 1234 (0x4d2) cycles the value (options).
 //   0 main: NORMAL GAME, CHAMPIONSHIP, SPECIAL MODES, NETWORK GAME, OPTIONS
-//   1 options: detail, difficulty, laps, (ours: SOUND instead of speech and music), VIEW RECORDS
+//   1 options: detail, difficulty, laps, speech, music, VIEW RECORDS (ours: difficulty, laps, VIDEO,
+//     SOUND, VIEW RECORDS; the detail is on VIDEO, speech and music are volumes on SOUND)
 //   2 network, 3 championship (new/resume), 4 special modes, 5 network (new/resume),
 //   6 records (the six tracks), 7 (ours) SOUND: the four volumes (Enter / left / right) and
-//   CD MUSIC / MIDI MUSIC
+//   CD MUSIC / MIDI MUSIC, 8 (ours) VIDEO: fullscreen, widescreen, resolution, view distance,
+//   detail, vsync, frame limit, far models, mipmaps
 
 #include "core/hud.h"
 #include "core/model3d.h"
@@ -79,11 +81,31 @@ private:
 // many int32 settings of the SOUND page: the four volumes (announcer, engine, effects,
 // music; 0..kVolumeMax), then the music source (0 CD, 1 MIDI). A file without them (the
 // original's), or with fewer, gets the defaults for the rest.
+// Then (ours) the VIDEO page: fullscreen, widescreen, render width and height (0: the screen's),
+// view distance in tenths (0: no limit), vsync, frame limit, far models simple, mipmaps.
 constexpr int kVolumeMax = 10;
+
+// The VIDEO page's settings (main applies them; the detail stays in CHOICE.DAT's own bytes).
+struct VideoSettings {
+    bool fullscreen = false;
+    bool widescreen = false;     // --aspect wide; off: the original's 4:3 picture
+    int width = 0, height = 0;   // the render size; 0: as many pixels as the window has (NATIVE)
+    float view_distance = 2.0f;  // times the original's far clip; 0: no limit
+    bool vsync = true;
+    int frame_limit = 0;         // pictures a second at most (0: no limit)
+    bool lod = false;            // far models in the original's simpler versions (off: full detail)
+    bool mipmaps = true;
+    bool operator==(const VideoSettings&) const = default;
+};
+// The VIDEO page's render sizes: {0, 0} (NATIVE) first, then 4:3 sizes (with the original's
+// 320x200 and 640x400) and with widescreen also 16:9, 16:10 and wider, up to 8K.
+std::vector<std::pair<int, int>> video_resolutions(bool widescreen);
+
 struct ChoiceFile {
     std::array<uint8_t, 0x460> raw{};
     std::array<int32_t, 4> volume{kVolumeMax, kVolumeMax, kVolumeMax, kVolumeMax};
     int32_t music_midi = 0;  // 1: the MIDI tunes on the FM synth even with the CD image there
+    VideoSettings video;
     ChoiceFile();  // the defaults read_choice_dat uses without a file
     bool load(const std::string& path);
     bool save(const std::string& path) const;
@@ -172,6 +194,7 @@ public:
     // One frame of frontend_draw_frame (keys, camera, page) at frame time dt.
     void update(const MenuKeys& keys, float dt);
     void draw(Framebuffer& fb, Renderer& renderer);
+    const PcxImage* backdrop() const { return backdrop_; }  // the page's backdrop (ours: widescreen's side bars)
 
     // Sound effects requested this frame (indices into MENU.DTR's SOUND_FX: menu1..menu9).
     std::vector<int> sounds;
@@ -190,6 +213,15 @@ public:
     // and its CD MUSIC / MIDI MUSIC line: true plays the MIDI tunes even with the CD image there
     bool music_midi() const;
     void set_music_midi(bool midi);
+    // Ours: the VIDEO page (OPTIONS > VIDEO) and its ADVANCED page (kVideoPage + 1).
+    static constexpr int kVideoPage = 8;
+    enum VideoLine : int { kFullscreenLine, kWidescreenLine, kResolutionLine, kDistanceLine, kDetailLine, kVsyncLine,
+                           kFpsLine, kFarModelsLine, kMipmapsLine };
+    VideoSettings video() const;
+    void set_video(const VideoSettings& v);
+    // Set when Esc leaves the VIDEO page: main then applies what needs a new picture
+    // (fullscreen, widescreen, resolution) and clears it.
+    bool video_apply = false;
     int page = 0;                    // DAT_0011fb5c
     std::array<int, 20> selected{};  // DAT_0011fb04: selected line per page
     std::vector<int> page_stack;     // DAT_0012034c
@@ -234,7 +266,7 @@ public:
         int ix = 0, iy = 0, iz = 0;  // the object instance
         float iax = 0, iay = 0, iaz = 0;
     };
-    std::array<Item, 80> items{};
+    std::array<Item, 200> items{};  // (the original has 80; ours has longer pages)
 
     // The spinning models of the selection pages (0x11d54c cars, 0x11d904 maps).
     struct Shown {
@@ -273,6 +305,11 @@ private:
     void champ_advance();
     void setup_records_page();
     int option(int item) const;
+    Entry& option_entry(int item);
+    Entry& video_line(int line);  // VideoLine: VIDEO's lines, then its ADVANCED page's
+    void cycle(int sel, int step);
+    void set_resolutions(bool widescreen, int w, int h);
+    std::vector<std::pair<int, int>> res_list_{{0, 0}};  // the RES line's sizes (its value indexes them)
     std::string entry_text(const Entry& e) const;
     void change_volume(int sel, int step);
 
