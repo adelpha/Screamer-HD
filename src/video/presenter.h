@@ -1,0 +1,64 @@
+#pragma once
+// Puts the finished picture (the 8-bit Framebuffer and its palette) in the window: scaled into
+// a rectangle, with a backdrop behind widescreen menus, read back for screenshots, presented.
+// Two ways to do it: SDL's 2D renderer (Direct3D on Windows; SDL's software renderer for
+// headless runs) or our own OpenGL 3.3 context, which the GPU 3D renderer builds on.
+
+#include "core/framebuffer.h"
+#include "core/image.h"
+
+#include <SDL3/SDL.h>
+
+#include <cstdint>
+#include <memory>
+#include <string>
+
+namespace scr {
+class WorkerPool;
+}
+
+namespace scr::video {
+
+enum class Api { Sdl, OpenGL };
+const char* api_name(Api api);                 // "sdl", "opengl"
+bool parse_api(const std::string& s, Api& out);
+
+class Presenter {
+public:
+    virtual ~Presenter() = default;
+    // For logs: "direct3d11", "software", "opengl (NVIDIA ...)".
+    virtual std::string name() const = 0;
+    virtual Api api() const = 0;
+    // The window's size in pixels (what draw() fills).
+    virtual void output_size(int& w, int& h) const = 0;
+    virtual void set_vsync(bool on) = 0;
+    // A new picture to show (pool: threads for converting it, if that is needed).
+    virtual void upload(const Framebuffer& fb, WorkerPool* pool) = 0;
+    // The backdrop behind a widescreen menu: w x h RGBA pixels, stretched over the whole window
+    // with a linear filter (null: none).
+    virtual void set_backdrop(const uint8_t* rgba, int w, int h) = 0;
+    // Clears the window to black, draws the backdrop (brightness 0..1 dims it; < 0: none) and
+    // the last uploaded picture into dst (window pixels). A picture larger than dst is filtered
+    // down: halved (2x2 averages) while it is at least twice the size, then linear; a smaller
+    // one is scaled up with nearest-neighbour.
+    virtual void draw(const SDL_FRect& dst, float backdrop_brightness) = 0;
+    // What the last draw() made, at output_size().
+    virtual SurfacePtr read_pixels() = 0;
+    virtual void present() = 0;
+};
+
+struct SdlOptions {
+    std::string renderer;  // SDL renderer name (empty: SDL's choice)
+    std::string upload;    // "index" | "rgba" | empty (index unless the renderer is "software" or the picture is filtered down)
+    bool real_output = true;  // false for the offscreen headless driver: no filtering passes
+};
+
+// null (with the error logged) when the renderer cannot be made.
+std::unique_ptr<Presenter> make_sdl_presenter(SDL_Window* window, const SdlOptions& o);
+// The window must have been made with window_flags(Api::OpenGL).
+std::unique_ptr<Presenter> make_gl_presenter(SDL_Window* window);
+
+// Flags (and, for OpenGL, the context attributes) for a window the api will draw into.
+SDL_WindowFlags window_flags(Api api);
+
+} // namespace scr::video

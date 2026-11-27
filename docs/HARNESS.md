@@ -48,6 +48,7 @@ no manual steps.
 | `--ground-obstacles off` | Cones, barriers and signs where the original draws them: their models are centred on their middle and stand with it at the ground, so the base is below the road and seems to slide along it as the camera nears. By default they are drawn raised, base on the road (the picture only). |
 | `--sky-tilt off` | The sky panorama stays level when the camera rolls (a banked car), as it was drawn before; by default it turns about the projection centre with the rest of the scene. |
 | `--hidden` | Like `--headless` (fixed steps, no sound device), but with the real video driver and renderer (Direct3D on the graphics card) on a window that is never shown. For checking and timing what a real run does: `--screenshot` reads the picture back from the graphics card, `--perf` shows the real upload and present times. |
+| `--video-api sdl\|opengl` | How the finished picture reaches the window (`src/video/presenter.h`): SDL's renderer (default) or our own OpenGL 3.3 core context, which looks the palette up in a shader and scales as SDL's path does (the same picture; the `gpu` tests compare them). OpenGL needs a real video driver: with `--headless` it falls back to SDL's renderer, so use `--hidden`. OPTIONS > VIDEO > ADVANCED > API switches live by making the window again. |
 | `--upload index\|rgba` | How the picture gets to SDL: as an 8-bit texture with the palette (default; the graphics card looks the colours up) or converted to RGBA first (the old way; still used with SDL's software renderer, which scales RGBA faster). Same picture. |
 | `--perf` | Profile the main loop (core/profiler.h): pictures and game steps per second, and the time per picture in each part (events, game step, blending, 3D geometry, 3D fill, HUD, texture upload, present), every 5 seconds and at exit. |
 | `--view-distance X` | How far the 3D view reaches, in multiples of the original's far clip on HI detail (43,808 units); the last quarter fades out in a 4x4 ordered dither. Default 2; 0 draws everything. In a race F9 / Shift+F9 step through 1, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8. |
@@ -86,6 +87,10 @@ no manual steps.
   After an intentional rendering change run `.\tools\update-golden.ps1`, look at the new
   images, and commit them.
 * **smoke**: the executable starts and exits cleanly.
+* **gpu** (`add_api_test`, `tests/cmake/compare_apis.cmake`): runs `screamer --hidden` (the
+  graphics card, a window that is never shown) once with `--video-api sdl` and once with
+  `opengl` and compares the two screenshots; skipped where there is no OpenGL 3.3. Also the
+  menu's live API switch.
 * **gamedata**: checks the local original files against `reference/manifest/screamer_files.sha256`
   (skipped when the files are absent).
 

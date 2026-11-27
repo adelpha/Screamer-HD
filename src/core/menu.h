@@ -82,7 +82,7 @@ private:
 // music; 0..kVolumeMax), then the music source (0 CD, 1 MIDI). A file without them (the
 // original's), or with fewer, gets the defaults for the rest.
 // Then (ours) the VIDEO page: fullscreen, widescreen, render width and height (0: the screen's),
-// view distance in tenths (0: no limit), vsync, frame limit, far models simple, mipmaps.
+// view distance in tenths (0: no limit), vsync, frame limit, far models simple, mipmaps, OpenGL.
 constexpr int kVolumeMax = 10;
 
 // The VIDEO page's settings (main applies them; the detail stays in CHOICE.DAT's own bytes).
@@ -95,6 +95,7 @@ struct VideoSettings {
     int frame_limit = 0;         // pictures a second at most (0: no limit)
     bool lod = false;            // far models in the original's simpler versions (off: full detail)
     bool mipmaps = true;
+    bool opengl = false;         // the picture through OpenGL (--video-api opengl); off: SDL's renderer
     bool operator==(const VideoSettings&) const = default;
 };
 // The VIDEO page's render sizes: {0, 0} (NATIVE) first, then 4:3 sizes (with the original's
@@ -217,7 +218,7 @@ public:
     // Ours: the VIDEO page (OPTIONS > VIDEO) and its ADVANCED page (kVideoPage + 1).
     static constexpr int kVideoPage = 8;
     enum VideoLine : int { kFullscreenLine, kWidescreenLine, kResolutionLine, kDistanceLine, kDetailLine, kVsyncLine,
-                           kFpsLine, kFarModelsLine, kMipmapsLine };
+                           kFpsLine, kFarModelsLine, kMipmapsLine, kApiLine };
     VideoSettings video() const;
     void set_video(const VideoSettings& v);
     // Set when Esc leaves the VIDEO page (main applies every change at once and clears it).

@@ -51,13 +51,14 @@ enum : int {
     kTxSound = 0, kTxAnnouncer, kTxEngine, kTxEffects, kTxMusic, kTxCdMusic, kTxMidiMusic, kTxVideo,
     kTxFullscreen, kTxFullscreenOn, kTxWidescreen, kTxWidescreenOn, kTxResolution, kTxDistance, kTxVsync,
     kTxVsyncOn, kTxFpsLimit, kTxFarModels, kTxFarModelsSimple, kTxMipmaps, kTxMipmapsOn, kTxAdvanced,
-    kTxControls, kTxKeyboard, kTxController, kTxRumble, kTxRumbleOn, kTxPad, kTxDefaults,
+    kTxControls, kTxKeyboard, kTxController, kTxRumble, kTxRumbleOn, kTxPad, kTxDefaults, kTxApi, kTxApiOpenGl,
 };
 const char* const kOwnTexts[] = {"SOUND", "ANNOUNCER", "ENGINE", "EFFECTS", "MUSIC", "CD MUSIC", "MIDI MUSIC", "VIDEO",
                                  "FULLSCREEN OFF", "FULLSCREEN ON", "WIDESCREEN OFF", "WIDESCREEN ON", "RES",
                                  "DISTANCE", "VSYNC OFF", "VSYNC ON", "FPS LIMIT", "FAR MODELS FULL",
                                  "FAR MODELS LOW", "MIPMAPS OFF", "MIPMAPS ON", "ADVANCED",
-                                 "CONTROLS", "KEYBOARD", "CONTROLLER", "RUMBLE OFF", "RUMBLE ON", "PAD", "DEFAULTS"};
+                                 "CONTROLS", "KEYBOARD", "CONTROLLER", "RUMBLE OFF", "RUMBLE ON", "PAD", "DEFAULTS",
+                                 "API DIRECT3D", "API OPENGL"};
 
 // The VIDEO page's steps: view distance (times the original's far clip; 0: no limit) and the
 // frame limit (0: none).
@@ -91,7 +92,8 @@ std::vector<std::vector<Menu::Entry>> default_pages() {
         {{kOwnText + kTxVsync, 1234, 1, 1},
          {kOwnText + kTxFpsLimit, kActionChoice, 0, int(std::size(kFpsSteps)) - 1},
          {kOwnText + kTxFarModels, 1234, 0, 1},
-         {kOwnText + kTxMipmaps, 1234, 1, 1}},
+         {kOwnText + kTxMipmaps, 1234, 1, 1},
+         {kOwnText + kTxApi, 1234, 0, 1}},  // how the picture reaches the screen: SDL's renderer or OpenGL
         // 10 (ours) CONTROLS, 11 its KEYBOARD and 12 its CONTROLLER pages (one line per action,
         // the text from Menu::bind_text)
         {{kOwnText + kTxKeyboard, kActionKeyboard, 0, 0},
@@ -251,7 +253,7 @@ enum : int { kChampPos = 0, kChampTrack = 1, kChampTime = 2, kChampScore = 3, kC
 namespace {
 constexpr size_t kLapRecords = 0x6c, kTotalRecords = 0x24c, kRecordStride = 0x50;
 constexpr char kExtMagic[4] = {'S', 'C', 'R', 'X'};  // our settings after the original's 0x460 bytes
-constexpr size_t kExtValues = 14;                      // the four volumes, music_midi, the VIDEO page (9)
+constexpr size_t kExtValues = 15;                      // the four volumes, music_midi, the VIDEO page (10)
 }
 
 std::vector<std::pair<int, int>> video_resolutions(bool widescreen) {
@@ -342,6 +344,7 @@ bool ChoiceFile::load(const std::string& path) {
             case 11: video.frame_limit = std::clamp(v, 0, 1000); break;
             case 12: video.lod = v != 0; break;
             case 13: video.mipmaps = v != 0; break;
+            case 14: video.opengl = v != 0; break;
             default: break;
             }
         }
@@ -367,6 +370,7 @@ bool ChoiceFile::save(const std::string& path) const {
     ext[11] = video.frame_limit;
     ext[12] = video.lod;
     ext[13] = video.mipmaps;
+    ext[14] = video.opengl;
     const int32_t count = int32_t(ext.size());
     ok = ok && std::fwrite(kExtMagic, 1, 4, f) == 4 && std::fwrite(&count, 4, 1, f) == 1 &&
          std::fwrite(ext.data(), 4, ext.size(), f) == ext.size();
@@ -812,6 +816,7 @@ VideoSettings Menu::video() const {
     v.frame_limit = kFpsSteps[std::clamp(p(kFpsLine).value, 0, int(std::size(kFpsSteps)) - 1)];
     v.lod = p(kFarModelsLine).value != 0;
     v.mipmaps = p(kMipmapsLine).value != 0;
+    v.opengl = p(kApiLine).value != 0;
     return v;
 }
 
@@ -835,6 +840,7 @@ void Menu::set_video(const VideoSettings& v) {
     p(kFpsLine).value = f;
     p(kFarModelsLine).value = v.lod ? 1 : 0;
     p(kMipmapsLine).value = v.mipmaps ? 1 : 0;
+    p(kApiLine).value = v.opengl ? 1 : 0;
 }
 
 void Menu::set_resolutions(bool widescreen, int w, int h) {
