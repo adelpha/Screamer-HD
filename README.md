@@ -17,6 +17,7 @@ Version **1.1** · Windows 10/11 (64-bit) · built on [SDL3](https://libsdl.org)
 <img src="screenshots/screamer_20261127_162319.png" alt="Screenshot1" width="300"> <img src="screenshots/screamer_20261127_162531.png" alt="Screenshot2" width="300"> <img src="screenshots/screamer_20261127_162611.png" alt="Screenshot3" width="300">
 <img src="screenshots/screamer_20261127_162751.png" alt="Screenshot4" width="300"> <img src="screenshots/screamer_20261127_162822.png" alt="Screenshot5" width="300"> <img src="screenshots/screamer_20261127_162955.png" alt="Screenshot6" width="300">
 </p>
+
 ---
 
 ## Contents
