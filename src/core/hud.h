@@ -133,7 +133,7 @@ struct HudState {
 // mode) and, on the volume buttons, a bar for the volume the mode selects. The original's
 // modes are CD, FX and MU (MIDI music) on 0..0x7fff; ours are OPTIONS > SOUND's four volumes
 // (AN announcer, EN engine, FX effects, MU music; 0..10), and the track numbers are the MIDI
-// tunes' too (MUSICn.HMP is CD track n + 1).
+// tunes' too (MUSICn.HMP is CD track n + 1); EJECT switches between the CD and the MIDI tunes.
 struct CdPanel {
     int button = 0;          // 0..6
     bool pressed = false;    // the button is being held / was just used
@@ -142,7 +142,6 @@ struct CdPanel {
     int volume_max = 10;
     int first_track = 2, last_track = 8, track = 3;
     bool blink = false;      // the current track flashes
-    bool stopped = false;    // EJECT stopped the music: no track flashes
 };
 
 class Hud {

@@ -951,7 +951,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         }
         menu = &*shared.menu;
         menu->quit = false;
-        menu->set_volumes(shared.volumes);  // (the race's P panel may have changed them)
+        menu->set_volumes(shared.volumes);  // (the race's P panel may have changed them,
+        menu->set_music_midi(shared.music_midi);  // and its EJECT the music's source)
         menu->set_video(video_from(opt));  // OPTIONS > VIDEO as this run has it
         menu_video = menu->video();
         // frontend_load, back from a race: the main page, nothing to go back to (Esc there
@@ -1169,19 +1170,26 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             panel.track = midi_song + 1;
         }
     };
-    // a track of the panel's (CD, or the MIDI tune with that number): true when it plays
-    auto play_panel_track = [&](int t) {
-        if (cd_track) {
+    // a track of the panel's, from the CD or as the MIDI tune with that number: true when it plays
+    auto play_panel_track = [&](int t, bool from_cd) {
+        if (from_cd) {
+            if (!cd_open && game_dir) {
+                auto cue = scr::find_cd_cue(*game_dir);
+                cd_open = cue && cd.open(*cue);
+            }
+            if (!cd_open) return false;
             auto music = std::make_shared<scr::CdAudioPlayer>(cd, t);
             if (!music->ok()) return false;
             mixer.set_music(music);
             cd_track = t;
+            midi_song = 0;
         } else {
             auto music_dat = game_dir ? scr::resolve_game_file(*game_dir, "DATA/MUSIC.DAT") : std::nullopt;
             auto song = music_dat ? scr::load_hmp_music(*music_dat, t - 1) : nullptr;
             if (!song) return false;
             mixer.set_music(song);
             midi_song = t - 1;
+            cd_track = 0;
         }
         panel.track = t;
         SDL_Log("music: %s track %d", cd_track ? "CD" : "MIDI", t);
@@ -1192,6 +1200,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         scr::ChoiceFile c;  // (our CHOICE.DAT, with the volumes changed)
         if (!c.load(shared.choice_path)) return;
         std::copy(shared.volumes.begin(), shared.volumes.end(), c.volume.begin());
+        c.music_midi = shared.music_midi ? 1 : 0;
         c.save(shared.choice_path);
     };
     scr::Framebuffer frozen;
@@ -1440,7 +1449,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             } else if (paused) {
                 fb = frozen;
                 // --hold pause: headless looks at the panel (pausevol: the volume bar, after
-                // pressing previous, volume - and mode)
+                // pressing previous, volume -, mode, volume - and eject)
                 const bool scripted = opt.hold.find("pause") != std::string::npos;
                 bool script_enter = false;
                 if (scripted && opt.hold.find("pausevol") != std::string::npos) {
@@ -1449,7 +1458,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     if (f == 4) panel.button = 4;
                     if (f == 8) panel.button = 6;
                     if (f == 12) panel.button = 4;
-                    script_enter = f == 3 || f == 5 || f == 9 || f == 13;
+                    if (f == 16) panel.button = 1;  // eject: the other source
+                    script_enter = f == 3 || f == 5 || f == 9 || f == 13 || f == 17;
                 } else if (scripted) {
                     panel.button = 4;
                 }
@@ -1466,18 +1476,18 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         paused = false;  // play: back to the race
                         apply_volumes();
                     } else if (panel.button == 1) {
-                        // eject (ours): the music stops, and starts again with the track shown
-                        if (!panel.stopped) {
-                            mixer.set_music(nullptr);
-                            panel.stopped = true;
-                        } else if (play_panel_track(panel.track)) {
-                            panel.stopped = false;
+                        // eject (ours): the same track from the other source, CD <-> MIDI, as
+                        // OPTIONS > SOUND's CD MUSIC / MIDI MUSIC (saved); off is MUSIC 0
+                        const bool to_cd = !cd_track;
+                        if ((cd_track || midi_song) && play_panel_track(panel.track, to_cd)) {
+                            shared.music_midi = !to_cd;
+                            panel_tracks();
+                            save_volumes();
                         }
                     } else if (panel.button == 2 || panel.button == 3) {
                         // previous / next track, CD or MIDI, playing at once
                         const int t = std::clamp(panel.track + (panel.button == 3 ? 1 : -1), panel.first_track, panel.last_track);
-                        if ((t != panel.track || panel.stopped) && (cd_track || midi_song) && play_panel_track(t))
-                            panel.stopped = false;
+                        if (t != panel.track && (cd_track || midi_song)) play_panel_track(t, cd_track != 0);
                     } else if (panel.button == 4 || panel.button == 5) {
                         // a step of the volume the mode shows, as OPTIONS > SOUND (saved)
                         int& v = shared.volumes[size_t(std::clamp(panel.mode, 0, 3))];

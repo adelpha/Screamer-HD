@@ -283,7 +283,7 @@ void Hud::draw_cd_panel(Framebuffer& fb, const CdPanel& p) {
             x = 0;
         }
         const int n = p.first_track + i;
-        if (n != p.track || !p.blink || p.stopped) s.text(fonts, (x + 0x40) * k, (y + 0x4e) * k, "" + std::to_string(n), 5, 9);
+        if (n != p.track || !p.blink) s.text(fonts, (x + 0x40) * k, (y + 0x4e) * k, "" + std::to_string(n), 5, 9);
         x += 0xd;
     }
     // the selected button (x, sprite, sprite when pressed: table 0x101f1c)
