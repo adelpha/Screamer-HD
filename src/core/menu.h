@@ -220,8 +220,7 @@ public:
                            kFpsLine, kFarModelsLine, kMipmapsLine };
     VideoSettings video() const;
     void set_video(const VideoSettings& v);
-    // Set when Esc leaves the VIDEO page: main then applies what needs a new picture
-    // (fullscreen, widescreen, resolution) and clears it.
+    // Set when Esc leaves the VIDEO page (main applies every change at once and clears it).
     bool video_apply = false;
     int page = 0;                    // DAT_0011fb5c
     std::array<int, 20> selected{};  // DAT_0011fb04: selected line per page
