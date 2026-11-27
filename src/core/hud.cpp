@@ -283,7 +283,7 @@ void Hud::draw_cd_panel(Framebuffer& fb, const CdPanel& p) {
             x = 0;
         }
         const int n = p.first_track + i;
-        if (n != p.track || !p.blink) s.text(fonts, (x + 0x40) * k, (y + 0x4e) * k, "" + std::to_string(n), 5, 9);
+        if (n != p.track || !p.blink || p.stopped) s.text(fonts, (x + 0x40) * k, (y + 0x4e) * k, "" + std::to_string(n), 5, 9);
         x += 0xd;
     }
     // the selected button (x, sprite, sprite when pressed: table 0x101f1c)
@@ -292,12 +292,14 @@ void Hud::draw_cd_panel(Framebuffer& fb, const CdPanel& p) {
     const int b = std::clamp(p.button, 0, 6);
     s.sprite(sprites, p.pressed ? kButtons[b][2] : kButtons[b][1], kButtons[b][0] * k, 0x61 * k);
     if (3 < b) {
-        // hud_draw_message_box: the volume as a bar of lines, 3 pixels per 1024
-        static const char* kLabels[3] = {"CD", "FX", "MU"};
+        // hud_draw_message_box: the volume as a bar of lines 3 pixels apart (the original: one
+        // per 1024 of 0x7fff; ours: the bar of 30 lines in volume_max steps)
+        static const char* kLabels[4] = {"AN", "EN", "FX", "MU"};
         static constexpr uint8_t kColours[4] = {0x16, 0xd6, 0xd0, 0xd0};  // 0x101fa0
-        const int m = std::clamp(p.mode, 0, 2);
+        const int m = std::clamp(p.mode, 0, 3);
         s.text(fonts, 0x40 * k, 0x45 * k, kLabels[m], 5, 3);
-        for (int i = 0; i < p.volume[m] / 0x400; ++i) {
+        const int lines = p.volume_max > 0 ? std::clamp(p.volume[m], 0, p.volume_max) * 30 / p.volume_max : 0;
+        for (int i = 0; i < lines; ++i) {
             const int lx = (i * 3 + 0x55) * k;
             s.line(lx, 0x45 * k, lx, 0x4a * k, kColours[std::min(i / 10, 3)]);
         }
