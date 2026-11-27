@@ -60,7 +60,10 @@ the race's own keys P, M and F1-F12 are not taken); the new one comes first and 
 second, and catching the one already first again leaves it alone.
 
 The menus, the car stereo and PLAY AGAIN? always answer to the arrows, Enter and Esc, and to
-the D-pad / left stick, A (confirm), B (back) and Start, whatever the bindings.
+the D-pad / left stick, A (confirm), B (back) and Start, whatever the bindings. On the main
+page the pad's Back quits the game (as Esc does); a pad without Back quits when B is held for
+2 seconds (a ring fills in the bottom right corner, shown once B has been held 0.2 s, so a
+tap shows nothing). Tapping B there does nothing.
 
 Whatever is bound, the game gets its inputs as the original's controls gave them (keys 1023;
 axes through its clamp and dead zone; the brake set straight from a pedal, ramped from a key;

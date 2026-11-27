@@ -882,6 +882,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     int capture_action = -1;  // the rebinding screen waits for this action's key / button
     bool capture_pad = false;
     bool nav_block = false;   // after a capture: the menu's keys wait until all are let go
+    bool pad_back_was = false;  // the main page: Back quits (on its press)
+    float quit_hold = 0;        // the main page: seconds B has been held (pads without Back)
+    constexpr float kQuitHold = 2.0f, kQuitHoldShow = 0.2f;
     scr::Renderer renderer3d;
     renderer3d.set_textures(!opt.flat);
     renderer3d.set_threads(opt.threads);
@@ -2123,6 +2126,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 }
             } else if (menu) {
                 scr::MenuKeys mk;
+                bool script_back = false, script_b = false;  // --menu-keys padback / padb
                 // the default keys and pad buttons, whatever the bindings (Start as Enter)
                 const auto nv = input.nav();
                 // (B on the main page would quit the game: only Esc does that)
@@ -2140,8 +2144,14 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     const std::string item = opt.menu_keys.substr(pos, end - pos);
                     pos = end + 1;
                     const size_t colon = item.find(':');
-                    if (colon == std::string::npos || std::strtoull(item.c_str(), nullptr, 10) != frame) continue;
+                    // "frame:key", or "first-last:key" held over those frames
+                    char* dash = nullptr;
+                    const uint64_t first = std::strtoull(item.c_str(), &dash, 10);
+                    const uint64_t last_frame = dash && *dash == '-' ? std::strtoull(dash + 1, nullptr, 10) : first;
+                    if (colon == std::string::npos || frame < first || frame > last_frame) continue;
                     const std::string k = item.substr(colon + 1);
+                    script_back |= k == "padback";
+                    script_b |= k == "padb";  // B on a pad without Back
                     mk.esc |= k == "esc";
                     mk.enter |= k == "enter";
                     mk.up |= k == "up";
@@ -2224,6 +2234,21 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     }
                 }
                 menu->update(mk, clock.frame_time());
+                // The main page's way out on a pad (ours): Back quits as Esc does there; a pad
+                // without Back holds B for 2 seconds (the ring in the corner fills, shown after
+                // 0.2 s so a tap shows nothing). Game time: headless runs count frames.
+                {
+                    const bool top_page = menu->mode == 0 && menu->page == 0 && menu->page_stack.empty() && capture_action < 0;
+                    const bool back = input.back_held() || script_back;
+                    if (top_page && back && !pad_back_was) menu->quit = true;
+                    pad_back_was = back;
+                    if (top_page && (input.b_held_without_back() || script_b)) {
+                        quit_hold += clock.frame_time();
+                        if (quit_hold >= kQuitHold) menu->quit = true;
+                    } else {
+                        quit_hold = 0;
+                    }
+                }
                 if (menu->music_midi() != shared.music_midi) {
                     // CD MUSIC / MIDI MUSIC: the menu tune again from the other source, saved
                     shared.music_midi = menu->music_midi();
@@ -2266,6 +2291,35 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 // (only a picture that will be shown: a slow picture at a large size must not
                 // keep the steps from catching up, or nothing would be shown at all)
                 if (!skip_draw) menu->draw(fb, renderer3d);
+                if (!skip_draw && quit_hold > kQuitHoldShow) {
+                    // the hold to quit: a ring in the bottom right corner filling clockwise from the top
+                    const scr::Palette& pal = fb.palette();
+                    auto nearest = [&](int r, int g, int b) {
+                        int best = 0, bd2 = 1 << 30;
+                        for (int i = 0; i < 256; ++i) {
+                            const int dr = pal[size_t(i)].r - r, dg = pal[size_t(i)].g - g, db = pal[size_t(i)].b - b;
+                            const int d2 = dr * dr + dg * dg + db * db;
+                            if (d2 < bd2) { bd2 = d2; best = i; }
+                        }
+                        return uint8_t(best);
+                    };
+                    const uint8_t lit = nearest(255, 255, 255), dim = nearest(70, 70, 70);
+                    const float fill = std::min(1.0f, quit_hold / kQuitHold);
+                    const int h = fb.height(), w = fb.width();
+                    // (round on the screen: the pixels' shape, 5/6 as wide as high at 320x200)
+                    const float px = fb.wide ? 1.0f : 4.0f * float(h) / (3.0f * float(w));
+                    const float ro = float(h) / 14.0f, ri = ro * 0.6f, rx = ro / px;
+                    const int cx = w - int(rx * 1.7f), cy = h - int(ro * 1.7f);
+                    for (int y = int(float(cy) - ro) - 1; y <= int(float(cy) + ro) + 1; ++y)
+                        for (int x = int(float(cx) - rx) - 1; x <= int(float(cx) + rx) + 1; ++x) {
+                            if (x < 0 || y < 0 || x >= w || y >= h) continue;
+                            const float dx = (float(x - cx) + 0.5f) * px, dy = float(y - cy) + 0.5f, d = std::sqrt(dx * dx + dy * dy);
+                            if (d > ro || d < ri) continue;
+                            float a = std::atan2(dx, -dy) / 6.2831853f;  // 0 at the top, clockwise
+                            if (a < 0) a += 1.0f;
+                            fb.at(x, y) = a <= fill ? lit : dim;
+                        }
+                }
                 if (menu->quit) {
                     running = false;
                     save_menu();

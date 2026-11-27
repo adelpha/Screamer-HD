@@ -580,6 +580,19 @@ Input::Nav Input::nav() const {
     return n;
 }
 
+bool Input::back_held() const {
+    for (const Device& d : devices_)
+        if (d.pad && SDL_GetGamepadButton(d.pad, SDL_GAMEPAD_BUTTON_BACK)) return true;
+    return false;
+}
+
+bool Input::b_held_without_back() const {
+    for (const Device& d : devices_)
+        if (d.pad && !SDL_GamepadHasButton(d.pad, SDL_GAMEPAD_BUTTON_BACK) && SDL_GetGamepadButton(d.pad, SDL_GAMEPAD_BUTTON_EAST))
+            return true;
+    return false;
+}
+
 bool Input::any_pad_button() const {
     for (const Device& d : devices_)
         if (d.pad && (SDL_GetGamepadButton(d.pad, SDL_GAMEPAD_BUTTON_SOUTH) || SDL_GetGamepadButton(d.pad, SDL_GAMEPAD_BUTTON_START) ||

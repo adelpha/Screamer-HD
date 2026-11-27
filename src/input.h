@@ -98,6 +98,9 @@ public:
     Nav nav() const;     // held now (keyboard and pads)
     Nav pad_nav() const; // pads only
     bool any_pad_button() const;  // A, Start or the right trigger (the intro demo)
+    // The main menu's way out on a pad: Back, or on a pad without Back, B held (main times it).
+    bool back_held() const;
+    bool b_held_without_back() const;
 
     // Rumble from what the car did this step (off when the option is off).
     void rumble(const Car& car, bool racing);
