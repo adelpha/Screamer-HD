@@ -41,7 +41,8 @@ std::vector<std::string> text_lines(const Archive& a, const std::string& name) {
 // kActionVideo opens the VIDEO page; kActionChoice lines show their label and a value that
 // Enter / right steps up and left down (both wrap round).
 constexpr int kOwnText = 1000, kActionSound = 2000, kActionVolume = 2001, kActionVideo = 2002, kActionChoice = 2003,
-              kActionAdvanced = 2004;
+              kActionAdvanced = 2004, kActionControls = 2005, kActionKeyboard = 2006, kActionController = 2007,
+              kActionBind = 2008, kActionDefaults = 2009;
 constexpr int kSoundPage = 7;
 constexpr size_t kMusicSourceLine = 4;  // the SOUND page's CD MUSIC / MIDI MUSIC
 
@@ -50,11 +51,13 @@ enum : int {
     kTxSound = 0, kTxAnnouncer, kTxEngine, kTxEffects, kTxMusic, kTxCdMusic, kTxMidiMusic, kTxVideo,
     kTxFullscreen, kTxFullscreenOn, kTxWidescreen, kTxWidescreenOn, kTxResolution, kTxDistance, kTxVsync,
     kTxVsyncOn, kTxFpsLimit, kTxFarModels, kTxFarModelsSimple, kTxMipmaps, kTxMipmapsOn, kTxAdvanced,
+    kTxControls, kTxKeyboard, kTxController, kTxRumble, kTxRumbleOn, kTxPad, kTxDefaults,
 };
 const char* const kOwnTexts[] = {"SOUND", "ANNOUNCER", "ENGINE", "EFFECTS", "MUSIC", "CD MUSIC", "MIDI MUSIC", "VIDEO",
                                  "FULLSCREEN OFF", "FULLSCREEN ON", "WIDESCREEN OFF", "WIDESCREEN ON", "RES",
                                  "DISTANCE", "VSYNC OFF", "VSYNC ON", "FPS LIMIT", "FAR MODELS FULL",
-                                 "FAR MODELS LOW", "MIPMAPS OFF", "MIPMAPS ON", "ADVANCED"};
+                                 "FAR MODELS LOW", "MIPMAPS OFF", "MIPMAPS ON", "ADVANCED",
+                                 "CONTROLS", "KEYBOARD", "CONTROLLER", "RUMBLE OFF", "RUMBLE ON", "PAD", "DEFAULTS"};
 
 // The VIDEO page's steps: view distance (times the original's far clip; 0: no limit) and the
 // frame limit (0: none).
@@ -68,7 +71,7 @@ std::vector<std::vector<Menu::Entry>> default_pages() {
         // (ours: the original's DETAIL line went to VIDEO, and its SPEECH ON/OFF and MUSIC ON/OFF
         // lines (texts 17, 19) gave way to SOUND, the volume page, where a volume of 0 does the same)
         {{8, 1234, 1, 2}, {13, 1234, 0, 3}, {kOwnText + kTxVideo, kActionVideo, 0, 0}, {kOwnText, kActionSound, 0, 0},
-         {21, 21, 0, 0}},
+         {kOwnText + kTxControls, kActionControls, 0, 0}, {21, 21, 0, 0}},
         {{3, 3, 0, 0}, {23, 23, 0, 0}},
         {{24, 24, 0, 0}, {25, 25, 0, 0}},
         {{28, 28, 0, 0}, {29, 29, 0, 0}, {30, 30, 0, 0}},
@@ -89,6 +92,17 @@ std::vector<std::vector<Menu::Entry>> default_pages() {
          {kOwnText + kTxFpsLimit, kActionChoice, 0, int(std::size(kFpsSteps)) - 1},
          {kOwnText + kTxFarModels, 1234, 0, 1},
          {kOwnText + kTxMipmaps, 1234, 1, 1}},
+        // 10 (ours) CONTROLS, 11 its KEYBOARD and 12 its CONTROLLER pages (one line per action,
+        // the text from Menu::bind_text)
+        {{kOwnText + kTxKeyboard, kActionKeyboard, 0, 0},
+         {kOwnText + kTxController, kActionController, 0, 0},
+         {kOwnText + kTxRumble, 1234, 1, 1},
+         {kOwnText + kTxPad, kActionChoice, 0, 0},
+         {kOwnText + kTxDefaults, kActionDefaults, 0, 0}},
+        {{0, kActionBind, 0, 0}, {0, kActionBind, 1, 0}, {0, kActionBind, 2, 0}, {0, kActionBind, 3, 0},
+         {0, kActionBind, 4, 0}, {0, kActionBind, 5, 0}, {0, kActionBind, 6, 0}},
+        {{0, kActionBind, 0, 0}, {0, kActionBind, 1, 0}, {0, kActionBind, 2, 0}, {0, kActionBind, 3, 0},
+         {0, kActionBind, 4, 0}, {0, kActionBind, 5, 0}, {0, kActionBind, 6, 0}},
     };
 }
 
@@ -718,6 +732,13 @@ const char* aspect_name(bool widescreen, int w, int h) {
 } // namespace
 
 std::string Menu::entry_text(const Entry& e) const {
+    if (e.action == kActionBind) {
+        // ours: the KEYBOARD / CONTROLLER lines, from main (upper case; the letters have no others)
+        const auto& t = page == kControllerPage ? pad_text : key_text;
+        std::string str = size_t(e.value) < t.size() ? t[size_t(e.value)] : std::string();
+        for (char& c : str) c = (c >= 'a' && c <= 'z') ? char(c - 'a' + 'A') : (c < 0x20 || c > 0x5f) ? '?' : c;
+        return str;
+    }
     if (e.text >= kOwnText) {
         // the cycled lines (1234) show the text of their value, like MENU.TXT's
         const bool labelled = e.action == kActionVolume || e.action == kActionChoice;
@@ -738,6 +759,12 @@ std::string Menu::entry_text(const Entry& e) const {
                 const float d = kViewSteps[std::clamp(e.value, 0, int(std::size(kViewSteps)) - 1)];
                 if (d == 0) std::snprintf(buf, sizeof buf, "MAX");
                 else std::snprintf(buf, sizeof buf, "%gX", double(d));
+            } else if (t == kTxPad) {
+                const size_t pi = size_t(std::clamp(e.value, 0, std::max(0, int(pad_names.size()) - 1)));
+                std::string n = pi < pad_names.size() ? pad_names[pi] : "ANY";
+                for (char& c : n) c = (c >= 'a' && c <= 'z') ? char(c - 'a' + 'A') : (c < 0x20 || c > 0x5f) ? ' ' : c;
+                if (n.size() > 18) n.resize(18);
+                return "PAD " + n;
             } else if (t == kTxFpsLimit) {
                 const int n = kFpsSteps[std::clamp(e.value, 0, int(std::size(kFpsSteps)) - 1)];
                 if (n == 0) std::snprintf(buf, sizeof buf, "OFF");
@@ -759,6 +786,14 @@ std::array<int, 4> Menu::volumes() const {
 
 bool Menu::music_midi() const { return pages[kSoundPage][kMusicSourceLine].value != 0; }
 void Menu::set_music_midi(bool midi) { pages[kSoundPage][kMusicSourceLine].value = midi ? 1 : 0; }
+
+void Menu::set_pad_choice(int index, std::vector<std::string> names) {
+    if (names.empty()) names.push_back("ANY");
+    pad_names = std::move(names);
+    Entry& e = pages[kControlsPage][kPadLine];
+    e.max = int(pad_names.size()) - 1;
+    e.value = std::clamp(index, 0, e.max);
+}
 
 void Menu::set_volumes(const std::array<int, 4>& v) {
     for (size_t i = 0; i < v.size(); ++i) pages[kSoundPage][i].value = std::clamp(v[i], 0, kVolumeMax);
@@ -1404,6 +1439,18 @@ void Menu::activate() {
     case kActionSound: push(kSoundPage); break;  // ours: the volumes
     case kActionVideo: push(kVideoPage); break;  // ours: the picture
     case kActionAdvanced: push(kVideoPage + 1); break;
+    case kActionControls: push(kControlsPage); break;  // ours: the controls
+    case kActionKeyboard: push(kKeyboardPage); break;
+    case kActionController: push(kControllerPage); break;
+    case kActionBind:
+        // ours: main waits for the key, button or axis (and sets the line's text meanwhile)
+        bind_request = BindRequest{page == kControllerPage, entries[size_t(sel)].value};
+        sounds.push_back(2);
+        break;
+    case kActionDefaults:
+        controls_reset = true;
+        sounds.push_back(2);
+        break;
     case kActionVolume:
         change_volume(sel, 1);
         break;
@@ -1548,6 +1595,11 @@ void Menu::handle_keys(const MenuKeys& k) {
             last_key_ = key;
             const Entry& e = entries[size_t(sel)];
             if (key == 4 ? e.value > 0 : e.value < e.max) change_volume(sel, key == 4 ? -1 : 1);
+        } else if (page == kControllerPage && sel >= 0 && size_t(sel) < entries.size()) {
+            // ours: an axis between analog and digital (read as a key)
+            last_key_ = key;
+            bind_toggle = entries[size_t(sel)].value;
+            sounds.push_back(2);
         } else if (page >= kSoundPage && sel >= 0 && size_t(sel) < entries.size() &&
                    (entries[size_t(sel)].action == 1234 || entries[size_t(sel)].action == kActionChoice)) {
             // ours: our pages' other lines step either way

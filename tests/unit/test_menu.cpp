@@ -286,8 +286,9 @@ TEST_CASE("menu: OPTIONS > SOUND sets the four volumes and the music source") {
     for (int i = 0; i < 4; ++i) press([](scr::MenuKeys& k) { k.down = true; });
     press([](scr::MenuKeys& k) { k.enter = true; });  // OPTIONS
     REQUIRE(m.page == 1);
-    // DIFFICULTY, LAPS, VIDEO (with the DETAIL), SOUND (in place of SPEECH and MUSIC), VIEW RECORDS
-    CHECK(m.pages[1].size() == 5);
+    // DIFFICULTY, LAPS, VIDEO (with the DETAIL), SOUND (in place of SPEECH and MUSIC), CONTROLS,
+    // VIEW RECORDS
+    CHECK(m.pages[1].size() == 6);
     for (int i = 0; i < 3; ++i) press([](scr::MenuKeys& k) { k.down = true; });
     press([](scr::MenuKeys& k) { k.enter = true; });  // SOUND
     REQUIRE(m.page == 7);
@@ -500,4 +501,55 @@ TEST_CASE("menu: lines longer than 15 letters stay centred") {
     CHECK(letters > 60);
     CHECK(lo >= -8 * 0x280);  // (17 letters 0x280 apart about the middle, x = 0)
     CHECK(hi <= 8 * 0x280);
+}
+
+TEST_CASE("menu: OPTIONS > CONTROLS asks main for bindings and shows its texts") {
+    if (!scr::find_game_dir()) SKIP("original game data not present");
+    auto a = load_menu();
+    REQUIRE(a.has_value());
+    scr::Menu m(*a);
+    m.load_choice(scr::ChoiceFile{});
+    m.show_title();
+    run(m, 100);
+    auto press = [&](auto set) {
+        scr::MenuKeys k;
+        set(k);
+        run(m, 1, k);
+        run(m, 30);
+    };
+    for (int i = 0; i < 4; ++i) press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.enter = true; });  // OPTIONS
+    for (int i = 0; i < 4; ++i) press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.enter = true; });  // CONTROLS
+    REQUIRE(m.page == scr::Menu::kControlsPage);
+    CHECK(m.rumble());
+    press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.enter = true; });  // RUMBLE OFF
+    CHECK(!m.rumble());
+    m.set_pad_choice(1, {"ANY", "PAD ONE", "PAD TWO"});
+    press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.right = true; });  // PAD: the next one
+    CHECK(m.pad_choice() == 2);
+    press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.enter = true; });  // DEFAULTS
+    CHECK(m.controls_reset);
+    for (int i = 0; i < 4; ++i) press([](scr::MenuKeys& k) { k.up = true; });
+    m.pad_text = {"ACCEL PAD RT", "BRAKE PAD LT", "LEFT", "RIGHT", "GEAR UP", "GEAR DOWN", "LOOK BACK"};
+    press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.enter = true; });  // CONTROLLER
+    REQUIRE(m.page == scr::Menu::kControllerPage);
+    run(m, 60);
+    int letters = 0;
+    for (const auto& it : m.items) letters += it.ch != -1;
+    CHECK(letters == int(std::string("ACCELPADRTBRAKEPADLTLEFTRIGHTGEARUPGEARDOWNLOOKBACK").size()) + 2 + 2 + 1 + 1 + 1);
+    press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.enter = true; });  // BRAKE: main waits for a button
+    REQUIRE(m.bind_request.has_value());
+    CHECK(m.bind_request->pad);
+    CHECK(m.bind_request->action == 1);
+    press([](scr::MenuKeys& k) { k.left = true; });  // its axis analog <-> digital
+    CHECK(m.bind_toggle == 1);
+    press([](scr::MenuKeys& k) { k.esc = true; });
+    CHECK(m.page == scr::Menu::kControlsPage);
 }

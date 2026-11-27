@@ -109,7 +109,7 @@ TEST_CASE("car: steering turns the car and the walls keep it on the road") {
     const float yaw0 = car.yaw;
     scr::CarInput in;
     in.accel = 1023;
-    in.steer_left = 1023;
+    in.steer = 1023;  // the left key (keyboard setup)
     drive(car, w->track, in, 300);
     CHECK(car.yaw != yaw0);
     // Still over the road: the ground is found under the car.

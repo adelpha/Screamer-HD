@@ -325,6 +325,24 @@ Key facts for the port:
 * **Input**: INT 9 keyboard handler fills a 128-byte scancode table; `keyboard_snapshot`
   copies it into `g_key_state` (object 2) once per frame; `controls_update` maps bindings
   from `config\controls.cfg`; joystick through the game port (`joy_*`).
+  `config\controls.cfg` (SETUP.EXE; also the first 0x530 bytes of every `.RPL`) is
+  `g_control_bindings` (6 bindings x 7 ints at 0x1197d4: accelerate, brake, steer, steer right,
+  gear up, gear down; each `{enabled, is axis, device (0 joystick, 2 axis read as a key, else
+  keyboard), joystick, axis, direction, scancode or button mask}`), the joystick calibration
+  (0x28 x 0x1c at 0x1192a0) and 10 port ints (0x119700). `controls_update` writes
+  `g_input_*` (0x11987c..0x119890): keys and buttons 1023, axes clamped to +-1023, device 2
+  past half way to +-1023, below 0x66 zero, a binding on the same axis as an earlier one
+  copies its value. The physics also reads the bindings: throttle, brake and the gear changes
+  only take a value whose sign is the binding's direction (`0x1197e8`, `0x119804`, `0x119858`,
+  `0x119874`); the brake is set directly from a joystick axis (`brake.device == 0 &&
+  brake.is_axis == 1`) and ramps otherwise; `car_update_steering` branches on the steer
+  binding's device (0x119814): 0 the axis is the angle (snapped while the tyres grip), 1 two
+  keys ramped, 2 the value ramped (no steer right), anything else leaves the angle. The
+  coasting brake is `direction << 9`. A manual gearbox changes one gear per press
+  (`gear_shift_latch`, opened when neither gear input counts). `replay_save` / `replay_load`
+  write and read the bindings with the replay, and `read_controls_cfg` restores the player's
+  after it. Ported in `src/core/controls.*` and `src/core/car.cpp`; our replays' format in
+  `src/core/replay.h`.
 * **Files**: game data lives in archive files (`data\*.dat`, `gfx\*.dat`) read with
   `archive_*`: a directory at the end of the file with names XOR 0x3A, entries optionally
   LZW compressed. Text sections are parsed by `data_load_section` (`END_LIST` terminated).

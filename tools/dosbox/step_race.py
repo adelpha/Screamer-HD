@@ -17,15 +17,25 @@ frame times are whatever the game measured.
 
 Usage: py -3.14 tools/dosbox/step_race.py OUT.trace FRAMES SCRIPT [SKIP]
   SKIP: frames to drive (following SCRIPT) before recording FRAMES frames
-  SCRIPT: comma-separated segments "frames:keys", keys from accel, brake, left, right, e.g.
-          "100:accel,60:accel+left,40:brake"
+  SCRIPT: comma-separated segments "frames:keys", keys from accel, brake, left, right, gearup,
+          geardown (1023 with the binding's direction), or values written as they are:
+          accel=N, brake=N, steer=N (g_input_steer: the left key, or the axis), right=N, e.g.
+          "100:accel,60:accel+left,40:brake" or "100:accel=-700+steer=300"
+Set SETUP=analog|digital (and MANUAL=1) to change the control setup before recording:
+  analog   accel and brake on one joystick axis (accel direction -1, brake +1, the brake a pedal),
+           steering a joystick axis (device 0)
+  digital  the same axes read as keys (device 2): brake ramped, steering ramped
+  The bindings are switched off (enabled 0) so controls_update leaves the scripted values alone
+  (the physics reads only the directions and devices). MANUAL=1: the car's gearbox manual.
 Set STALL_SECONDS=N to stop once no race frame has run for N seconds.
 Set COMPACT=1 for positions only (version 4 records; see COMPACT_COPIES).
 Set RECORD_OPPONENTS=1 in the environment to also copy g_opponents (9 x 0x590 bytes) after
 the player; the buffer then holds about 65 frames.
-Trace file: b"SCRTRACE", u32 version (2, or 3 with opponents), u32 record size, then records of
+Trace file: b"SCRTRACE", u32 version (5, 3 with opponents, 4 COMPACT), u32 record size, then
+  version 5: the 6 bindings (g_control_bindings, 0xa8 bytes) and records of
   f32 frame_time, i32 pow_row, u32 race_flags, i32 accel, brake, steer_left, steer_right,
-  u8[CAR_BYTES] g_player_car [, u8[OPP_BYTES] g_opponents]
+  gear_up, gear_down, u8[CAR_BYTES] g_player_car
+  version 3: the same without bindings and gear inputs, then u8[OPP_BYTES] g_opponents
 """
 import struct
 import sys
@@ -43,7 +53,10 @@ CAR_BYTES = 0x800          # PlayerCar up to the network fields (0x1084 in all)
 FRAME_TIME, POW_TABLE, POW_BASE = 0x118E00, 0x10CF04, 0x1080E4
 RACE_FLAGS = 0x118E18
 INPUT_ACCEL, INPUT_BRAKE, INPUT_STEER, INPUT_STEER_R = 0x11987C, 0x119880, 0x119884, 0x119888
+INPUT_GEAR_UP, INPUT_GEAR_DOWN = 0x11988C, 0x119890
+BINDINGS = 0x1197D4        # g_control_bindings: 6 x 7 ints
 ACCEL_SIGN, BRAKE_SIGN = 0x1197E8, 0x119804
+SHIFTMODE = 0x490          # PlayerCar.car.shiftmode (0 manual)
 
 HOOK_BASE = 0xF00000       # vars: +0 write pointer, +4 frame count, +8 buffer end, +0x10 code
 SCRIPT_AT = HOOK_BASE + 0x100
@@ -55,7 +68,9 @@ COMPACT = bool(__import__("os").environ.get("COMPACT"))
 # REPLAY=1 (implied by COMPACT): leave the inputs alone (a replay sets them itself)
 NO_INPUTS = COMPACT or bool(__import__("os").environ.get("REPLAY"))
 COMPACT_COPIES = [(PLAYER_CAR + 0x4B0, 0x24), (PLAYER_CAR + 0x50C, 4)] +     [(OPPONENTS + k * 0x590 + 0x498, 12) for k in range(9)]
-HEADER = 28
+# version 5 (player only): six inputs a frame, the gears too
+SIX = not COMPACT and not WITH_OPPONENTS
+HEADER = 36 if SIX else 28
 if COMPACT:
     RECORD = HEADER + sum(n for _, n in COMPACT_COPIES)
 else:
@@ -93,14 +108,41 @@ def parse_script(s):
     return out
 
 
+def frame_inputs(keys, signs):
+    """The six g_input_* values for one frame's keys (see SCRIPT)."""
+    accel_sign, brake_sign, up_sign, down_sign = signs
+    v = [1023 * accel_sign if "accel" in keys else 0, 1023 * brake_sign if "brake" in keys else 0,
+         1023 if "left" in keys else 0, 1023 if "right" in keys else 0,
+         1023 * up_sign if "gearup" in keys else 0, 1023 * down_sign if "geardown" in keys else 0]
+    for k in keys:
+        if "=" in k:
+            name, val = k.split("=")
+            v[{"accel": 0, "brake": 1, "steer": 2, "right": 3, "gearup": 4, "geardown": 5}[name]] = int(val)
+    return v
+
+
+def apply_setup(kind):
+    """SETUP=analog|digital: the bindings as SETUP.EXE would write them for a joystick."""
+    b = [list(struct.unpack_from("<7i", mem(BINDINGS + DATA + 28 * i, 28))) for i in range(6)]
+    device = {"analog": 0, "digital": 2}[kind]
+    # accel and brake on joystick 0's y axis (forward negative), steering on its x axis
+    b[0] = [0, 1, device, 0, 1, -1, 0]
+    b[1] = [0, 1, device, 0, 1, 1, 0]
+    b[2] = [0, 1, device, 0, 0, 1, 0]
+    b[3] = [0, 1, device, 0, 0, 1, 0]
+    put(BINDINGS + DATA, b"".join(struct.pack("<7i", *x) for x in b))
+
+
 def hook_code():
     d = lambda a: struct.pack("<I", a & 0xFFFFFFFF)
     x = bytes.fromhex
     inputs = (INPUT_ACCEL, INPUT_BRAKE, INPUT_STEER, INPUT_STEER_R)
+    if SIX:
+        inputs += (INPUT_GEAR_UP, INPUT_GEAR_DOWN)
     c = bytearray()
     c += x("60fc")                                     # pushad; cld
     c += x("8b1d") + d(HOOK_BASE + 4)                  # mov ebx, [count]
-    c += x("c1e304")                                   # shl ebx, 4
+    c += x("c1e305")                                   # shl ebx, 5 (8 ints a frame)
     for i, target in enumerate(() if NO_INPUTS else inputs):  # COMPACT: the game's own inputs (a replay)
         c += x("8b83") + d(SCRIPT_AT + 4 * i)          # mov eax, [ebx + script + 4i]
         c += x("a3") + d(target + DATA)                # mov [input], eax
@@ -138,14 +180,18 @@ def main():
     out, frames, script = sys.argv[1], int(sys.argv[2]), parse_script(sys.argv[3])
     skip = int(sys.argv[4]) if len(sys.argv) > 4 else 0  # frames to drive before recording
     i32 = lambda b: struct.unpack("<i", b)[0]
-    accel_sign = i32(mem(ACCEL_SIGN + DATA, 4)) or 1
-    brake_sign = i32(mem(BRAKE_SIGN + DATA, 4)) or 1
+    env = __import__("os").environ
+    if env.get("SETUP"):
+        apply_setup(env["SETUP"])
+    if env.get("MANUAL"):
+        put(PLAYER_CAR + SHIFTMODE + DATA, struct.pack("<i", 0))
+    bindings = mem(BINDINGS + DATA, 0xA8)
+    sign = lambda i: -1 if struct.unpack_from("<i", bindings, 28 * i + 20)[0] < 0 else 1
+    signs = (sign(0), sign(1), sign(4), sign(5))
     table = bytearray()
     for k in range(0 if NO_INPUTS else skip + frames + 1):
         keys = script[k] if k < len(script) else set()
-        table += struct.pack("<iiii", 1023 * accel_sign if "accel" in keys else 0,
-                             1023 * brake_sign if "brake" in keys else 0,
-                             1023 if "left" in keys else 0, 1023 if "right" in keys else 0)
+        table += struct.pack("<8i", *frame_inputs(keys, signs), 0, 0)
     buffer_at = (SCRIPT_AT + len(table) + 0xFFF) & ~0xFFF
     end = buffer_at + frames * RECORD
     if end > 0x1000000:
@@ -186,7 +232,9 @@ def main():
         struct.pack_into("<i", r, 4, (ptr - (POW_BASE + DATA)) // 400)
         recs.append(bytes(r))
     with open(out, "wb") as f:
-        f.write(b"SCRTRACE" + struct.pack("<II", 4 if COMPACT else 3 if WITH_OPPONENTS else 2, RECORD))
+        f.write(b"SCRTRACE" + struct.pack("<II", 4 if COMPACT else 3 if WITH_OPPONENTS else 5, RECORD))
+        if SIX:
+            f.write(bindings)
         f.write(b"".join(recs))
     flags = [struct.unpack_from("<I", r, 8)[0] for r in recs]
     if flags:

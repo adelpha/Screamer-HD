@@ -32,6 +32,7 @@
 #include "core/sim_clock.h"
 #include "core/testpattern.h"
 #include "debug_report.h"
+#include "input.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -490,6 +491,8 @@ struct Shared {
     };
     std::vector<Outcome> outcomes;      // the races since the menu (PLAY AGAIN repeats it)
     std::string choice_path;            // our copy of CONFIG/CHOICE.DAT
+    scr::input::Input input;            // the controls (input.h)
+    std::string controls_path;          // CONTROLS.INI next to CHOICE.DAT ("": not saved)
     // the SOUND page: announcer, the player's engine, other effects, music (0..kVolumeMax)
     std::array<int, 4> volumes{scr::kVolumeMax, scr::kVolumeMax, scr::kVolumeMax, scr::kVolumeMax};
     bool music_midi = false;            // and its CD MUSIC / MIDI MUSIC line
@@ -875,7 +878,10 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             }
         }
     }
-    SDL_Gamepad* pad = nullptr;
+    scr::input::Input& input = shared.input;
+    int capture_action = -1;  // the rebinding screen waits for this action's key / button
+    bool capture_pad = false;
+    bool nav_block = false;   // after a capture: the menu's keys wait until all are let go
     scr::Renderer renderer3d;
     renderer3d.set_textures(!opt.flat);
     renderer3d.set_threads(opt.threads);
@@ -954,6 +960,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         menu->set_music_midi(shared.music_midi);  // and its EJECT the music's source)
         menu->set_video(video_from(opt));  // OPTIONS > VIDEO as this run has it
         menu_video = menu->video();
+        menu->set_rumble(shared.input.bindings.rumble);  // OPTIONS > CONTROLS
         // frontend_load, back from a race: the main page, nothing to go back to (Esc there
         // quits); a records page replay goes back to its page
         if (shared.race && shared.race->replay.empty()) {
@@ -1300,6 +1307,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     while (running) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
+            if (input.handle_event(ev)) continue;  // controllers coming and going; the rebinding screen's keys
             switch (ev.type) {
             case SDL_EVENT_QUIT: running = false; break;
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
@@ -1376,10 +1384,22 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     screenshot_pending = true;  // saved once the next frame is drawn
                 }
                 break;
-            case SDL_EVENT_GAMEPAD_ADDED:
-                if (SDL_Gamepad* p = SDL_OpenGamepad(ev.gdevice.which)) {
-                    SDL_Log("gamepad connected: %s", SDL_GetGamepadName(p));
-                    if (!pad) pad = p;
+            case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+                // the pad in a race: Start the car-stereo panel (P) and out of it again, Back
+                // as Esc; in the panel and the question B goes back (Esc)
+                if (!menu && player && !freecam) {
+                    SDL_Keycode k = 0;
+                    const int b = ev.gbutton.button;
+                    if (b == SDL_GAMEPAD_BUTTON_START) k = paused ? SDLK_ESCAPE : prompt < 0 ? SDLK_P : 0;
+                    else if (b == SDL_GAMEPAD_BUTTON_BACK) k = SDLK_ESCAPE;
+                    else if (b == SDL_GAMEPAD_BUTTON_EAST && (paused || prompt >= 0)) k = SDLK_ESCAPE;
+                    if (k) {
+                        SDL_Event kev{};
+                        kev.type = SDL_EVENT_KEY_DOWN;
+                        kev.key.key = k;
+                        kev.key.down = true;
+                        SDL_PushEvent(&kev);
+                    }
                 }
                 break;
             default: break;
@@ -1444,9 +1464,10 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             if (prompt >= 0) {
                 fb = frozen;
                 const bool* keys = SDL_GetKeyboardState(nullptr);
-                const bool now[4] = {keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_LEFT],
-                                     keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_RIGHT],
-                                     keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER] ||
+                const auto pn = input.pad_nav();  // (B answers as Esc, an event)
+                const bool now[4] = {keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_LEFT] || pn.up || pn.left,
+                                     keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_RIGHT] || pn.down || pn.right,
+                                     keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER] || pn.enter ||
                                          opt.hold.find("promptno") != std::string::npos,  // headless checks: answer no
                                      false};
                 if (opt.hold.find("promptno") != std::string::npos) prompt = 1;
@@ -1492,8 +1513,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     panel.button = 4;
                 }
                 const bool* keys = SDL_GetKeyboardState(nullptr);
-                const bool now[3] = {bool(keys[SDL_SCANCODE_LEFT]), bool(keys[SDL_SCANCODE_RIGHT]),
-                                     keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER] || script_enter};
+                const auto pn = input.pad_nav();  // (B and Start leave it, as Esc: an event)
+                const bool now[3] = {keys[SDL_SCANCODE_LEFT] || pn.left, keys[SDL_SCANCODE_RIGHT] || pn.right,
+                                     keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER] || pn.enter || script_enter};
                 if (now[0] && !panel_keys[0] && panel.button > 0) --panel.button;
                 if (now[1] && !panel_keys[1] && panel.button < 6) ++panel.button;
                 panel.pressed = now[2];
@@ -1581,9 +1603,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     bool leave = keys[SDL_SCANCODE_SPACE] || keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER] ||
                                  keys[SDL_SCANCODE_ESCAPE] || keys[SDL_SCANCODE_UP] ||
                                  (frame >= 300 && opt.hold.find("accel") != std::string::npos);  // headless checks
-                    if (pad && (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH) || SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_START) ||
-                                SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 1000))
-                        leave = true;
+                    if (input.any_pad_button()) leave = true;
                     if (leave) attract.leave();
                     player->race.update_attract(*track, clock.frame_time(), clock.pow_table_row(), tv_camera.x, tv_camera.z);
                     anims.update(tv_camera.x, tv_camera.z, clock.frame_time());
@@ -1601,33 +1621,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     cam.yaw = angle_units(tv_camera.yaw);
                     cam.roll = 0;
                 } else if (player) {
-                    scr::CarInput in;
-                    const bool* keys = SDL_GetKeyboardState(nullptr);
+                    // the controls as the original's g_input_* and control setup (input.h)
+                    scr::CarInput in = input.drive(opt.hold);
                     auto held = [&](const char* k) { return opt.hold.find(k) != std::string::npos; };
-                    if (keys[SDL_SCANCODE_UP] || held("accel")) in.accel = 1023;
-                    if (keys[SDL_SCANCODE_DOWN] || held("brake")) in.brake = 1023;
-                    if (keys[SDL_SCANCODE_LEFT] || held("left")) in.steer_left = 1023;
-                    if (keys[SDL_SCANCODE_RIGHT] || held("right")) in.steer_right = 1023;
-                    if (pad) {
-                        // controls_update for a joystick axis: -1023..1023, nothing below 0x66
-                        // (the original's dead zone), then as the original uses it
-                        auto axis = [&](SDL_GamepadAxis ax) {
-                            const int v = std::clamp(int(SDL_GetGamepadAxis(pad, ax)) * 1023 / 32767, -1023, 1023);
-                            return std::abs(v) < 0x66 ? 0 : v;
-                        };
-                        const int rt = axis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
-                        const int lt = axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
-                        const int lx = axis(SDL_GAMEPAD_AXIS_LEFTX);
-                        if (rt > 0) in.accel = std::max(in.accel, rt);
-                        if (lt > 0 && !in.brake) {
-                            in.brake = lt;
-                            in.analog_brake = true;
-                        }
-                        if (lx != 0 && !in.steer_left && !in.steer_right) {
-                            in.analog_steer = true;
-                            in.steer = lx;
-                        }
-                    }
                     float ft = clock.frame_time();
                     int pow_row = clock.pow_table_row();
                     if (positions) {
@@ -1648,17 +1644,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         if (replay_pos < replay.frames.size()) {
                             const scr::ReplayFrame& rf = replay.frames[replay_pos++];
                             in = scr::CarInput{};
-                            in.accel = rf.accel;
-                            in.brake = rf.brake;
-                            if (rf.steer_right == -32768) {
-                                in.analog_steer = true;
-                                in.steer = rf.steer_left;
-                            } else {
-                                in.steer_left = rf.steer_left;
-                                in.steer_right = rf.steer_right;
-                            }
-                            in.gear_up = rf.gear_up != 0;
-                            in.gear_down = rf.gear_down != 0;
+                            replay.read_frame(rf, in);  // (with the replay's control setup)
                             // (as recorded; only nonsense is kept out)
                             ft = rf.frame_time > 0.0f && rf.frame_time < 1.0f ? rf.frame_time : 0.02f;
                             pow_row = int(1.0 / double(ft));
@@ -1674,26 +1660,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         }
                     } else if ((opt.from_menu || !opt.record_file.empty()) && (opt.game_mode & 3) && replay.frames.size() < 400000) {
                         // replay_write_frame
-                        scr::ReplayFrame rf;
-                        rf.frame_time = rf.raw_time = ft;
-                        rf.accel = int16_t(in.accel);
-                        rf.brake = int16_t(in.brake);
-                        if (in.analog_steer) {
-                            rf.steer_left = int16_t(in.steer);
-                            rf.steer_right = -32768;
-                        } else {
-                            rf.steer_left = int16_t(in.steer_left);
-                            rf.steer_right = int16_t(in.steer_right);
-                        }
-                        rf.gear_up = in.gear_up;
-                        rf.gear_down = in.gear_down;
-                        replay.frames.push_back(rf);
+                        replay.add_frame(in, ft, ft);
                     }
-                    if (opt.race_options & 0x10) {
-                        // MIRRO: car_update_steering turns the steering round
-                        std::swap(in.steer_left, in.steer_right);
-                        in.steer = -in.steer;
-                    }
+                    in.mirror = (opt.race_options & 0x10) != 0;  // MIRRO: car_update_steering turns the steering round
                     // camera_update_view: only camera_mode_car (F3, F4) wraps the car's yaw;
                     // a replay is seen from the trackside cameras
                     player->race.player.camera_car_mode = !replaying && (player->camera.view == 2 || player->camera.view == 3);
@@ -1705,6 +1674,8 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     }
                     if (frame == 700 && held("finish") && !replaying) player->race.finished = true;  // headless checks of the race end
                     race_audio.update(player->race, clock.frame_time());
+                    // rumble (an option): from what the car did; nothing goes back into the race
+                    input.rumble(player->race.player, !replaying && player->race.started && !player->race.finished && !player->race.failed);
                     if (player->cpu_cars && player->race.started && !player->race.finished && !player->race.failed) {
                         // car_check_obstacle_hits: in every race the player knocks cones and
                         // barriers flying (car_collide_vs_cpu in races, car_collide_obstacles in
@@ -1785,14 +1756,12 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 const auto perf_t0 = std::chrono::steady_clock::now();
                 scr::Camera view_cam = draw_cam;
                 // Looking back (ours; the picture only, the race does not know): while B or the
-                // pad's right shoulder is held the camera faces the other way. In the chase
+                // pad's right shoulder, or their bindings) is held the camera faces the other way. In the chase
                 // views it also goes to the other side of the car, so the car is seen from the
                 // front with what follows it behind.
                 rear_view = false;
                 if (player && !freecam && !opt.attract && !(replaying && tv_camera.has_trackside())) {
-                    const bool* keys = SDL_GetKeyboardState(nullptr);
-                    rear_view = keys[SDL_SCANCODE_B] || opt.hold.find("rear") != std::string::npos ||
-                                (pad && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER));
+                    rear_view = input.look_back() || opt.hold.find("rear") != std::string::npos;
                 }
                 if (rear_view) {
                     if (player->camera.car_visible) {
@@ -2103,6 +2072,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                                 std::error_code ec;
                                 std::filesystem::create_directories(shared.replay_dir, ec);
                                 const std::string path = shared.replay_dir + "temp" + std::to_string(shared.outcomes.size()) + ".rpl";
+                                replay.finish_recording(input.replay_controls());
                                 if (replay.save(path)) shared.outcomes.back().replay = path;
                             }
                             if (keep && opt.game_mode == 1 && !shared.outcomes.back().replay.empty()) {
@@ -2153,13 +2123,16 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 }
             } else if (menu) {
                 scr::MenuKeys mk;
-                const bool* keys = SDL_GetKeyboardState(nullptr);
-                mk.esc = keys[SDL_SCANCODE_ESCAPE];
-                mk.enter = keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER];
-                mk.up = keys[SDL_SCANCODE_UP];
-                mk.down = keys[SDL_SCANCODE_DOWN];
-                mk.left = keys[SDL_SCANCODE_LEFT];
-                mk.right = keys[SDL_SCANCODE_RIGHT];
+                // the default keys and pad buttons, whatever the bindings (Start as Enter)
+                const auto nv = input.nav();
+                // (B on the main page would quit the game: only Esc does that)
+                const bool top = menu->mode == 0 && menu->page == 0 && menu->page_stack.empty();
+                mk.esc = top ? bool(SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_ESCAPE]) : nv.esc;
+                mk.enter = nv.enter || nv.start;
+                mk.up = nv.up;
+                mk.down = nv.down;
+                mk.left = nv.left;
+                mk.right = nv.right;
                 // scripted keys: "frame:key" held for that one frame
                 for (size_t pos = 0; pos < opt.menu_keys.size();) {
                     size_t end = opt.menu_keys.find(',', pos);
@@ -2175,6 +2148,80 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     mk.down |= k == "down";
                     mk.left |= k == "left";
                     mk.right |= k == "right";
+                }
+                // OPTIONS > CONTROLS (ours): the lines' texts from the bindings, the rebinding
+                // screen's requests, RUMBLE and PAD (saved and used straight away)
+                {
+                    scr::input::Bindings& bd = input.bindings;
+                    const scr::input::Bindings before = bd;
+                    if (const auto c = input.poll_capture(); c.done) {
+                        if (!c.cancelled) bd.assign(capture_action, capture_pad, c.bind);
+                        capture_action = -1;
+                        nav_block = true;  // (what was pressed must not also work the menu)
+                    }
+                    if (menu->bind_request && capture_action < 0) {
+                        capture_action = menu->bind_request->action;
+                        capture_pad = menu->bind_request->pad;
+                        input.start_capture(capture_pad);
+                    }
+                    menu->bind_request.reset();
+                    if (menu->bind_toggle >= 0) bd.toggle_digital(menu->bind_toggle);
+                    menu->bind_toggle = -1;
+                    if (menu->controls_reset) {
+                        const bool rumble = bd.rumble;
+                        const std::string guid = bd.pad_guid;
+                        bd = scr::input::Bindings::defaults();
+                        bd.rumble = rumble;
+                        bd.pad_guid = guid;
+                        menu->controls_reset = false;
+                    }
+                    bd.rumble = menu->rumble();
+                    if (!bd.rumble && before.rumble) input.stop_rumble();
+                    // PAD: ANY, then the connected controllers (the chosen one stays listed while away)
+                    std::vector<std::string> names{"ANY"}, guids{""};
+                    for (const auto& d : input.devices()) {
+                        names.push_back(d.name);
+                        guids.push_back(d.guid);
+                    }
+                    if (!bd.pad_guid.empty() && std::find(guids.begin(), guids.end(), bd.pad_guid) == guids.end()) {
+                        names.push_back("NOT CONNECTED");
+                        guids.push_back(bd.pad_guid);
+                    }
+                    const int choice = menu->pad_choice();
+                    if (names == menu->pad_names && choice >= 0 && size_t(choice) < guids.size()) bd.pad_guid = guids[size_t(choice)];
+                    const int want = int(std::find(guids.begin(), guids.end(), bd.pad_guid) - guids.begin());
+                    bool changed = false;
+                    if (names != menu->pad_names || want != choice) {
+                        menu->set_pad_choice(want, names);
+                        changed = menu->page == scr::Menu::kControlsPage;
+                    }
+                    for (int a = 0; a < scr::input::kActionCount; ++a) {
+                        auto line = [&](bool on_pad) {
+                            std::string t = scr::input::action_short(a);
+                            if (capture_action == a && capture_pad == on_pad) return t + (on_pad ? " PRESS BUTTON" : " PRESS KEY");
+                            const auto& slots = on_pad ? bd.pad[size_t(a)] : bd.keys[size_t(a)];
+                            bool any = false;
+                            for (const auto& b : slots)
+                                if (b.kind != scr::input::Bind::kNone) {
+                                    t += " " + b.name();
+                                    any = true;
+                                }
+                            return any ? t : t + " -";
+                        };
+                        const std::string k = line(false), pd = line(true);
+                        if (k != menu->key_text[size_t(a)]) changed |= menu->page == scr::Menu::kKeyboardPage;
+                        if (pd != menu->pad_text[size_t(a)]) changed |= menu->page == scr::Menu::kControllerPage;
+                        menu->key_text[size_t(a)] = k;
+                        menu->pad_text[size_t(a)] = pd;
+                    }
+                    if (changed && menu->mode == 0) menu->refresh();
+                    if (!(bd == before) && !shared.controls_path.empty()) bd.save(shared.controls_path);
+                    if (capture_action >= 0 || nav_block) {
+                        // waiting for a key (the menu stands still), then for everything to be let go
+                        if (capture_action < 0 && !mk.esc && !mk.enter && !mk.up && !mk.down && !mk.left && !mk.right)
+                            nav_block = false;
+                        mk = scr::MenuKeys{};
+                    }
                 }
                 menu->update(mk, clock.frame_time());
                 if (menu->music_midi() != shared.music_midi) {
@@ -2414,6 +2461,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         replay.level = opt.level;
         replay.game_mode = opt.game_mode;
         replay.race_options = opt.race_options;
+        replay.finish_recording(input.replay_controls());
         if (!replay.save(opt.record_file)) exit_code = 1;
     }
     if (!opt.record_audio.empty() && !write_wav(opt.record_audio, recorded, 44100)) exit_code = 1;
@@ -2483,6 +2531,24 @@ int main(int argc, char** argv) {
             shared.choice_path = std::string(pref) + "CHOICE.DAT";
             shared.replay_dir = std::string(pref) + "REPLAYS/";
             SDL_free(pref);
+        }
+    }
+    // The controls: CONTROLS.INI next to CHOICE.DAT; the first time, the keys of the game's
+    // CONFIG/CONTROLS.CFG (SETUP.EXE's) come over. Headless runs: the defaults, nothing saved.
+    shared.input.init();
+    shared.input.bindings = scr::input::Bindings::defaults();
+    {
+        const auto cfg = game_dir ? scr::resolve_game_file(*game_dir, "CONFIG/CONTROLS.CFG") : std::nullopt;
+        const bool have_cfg = cfg && shared.input.original.load(*cfg);
+        if (!shared.choice_path.empty()) {
+            shared.controls_path = shared.choice_path.substr(0, shared.choice_path.size() - std::strlen("CHOICE.DAT")) + "CONTROLS.INI";
+            if (!shared.input.bindings.load(shared.controls_path)) {
+                if (have_cfg) {
+                    shared.input.bindings.import_original(shared.input.original);
+                    SDL_Log("controls: the keys of %s", cfg->c_str());
+                }
+                shared.input.bindings.save(shared.controls_path);
+            }
         }
     }
     // The SOUND and VIDEO pages: saved after our CHOICE.DAT's own bytes; --volumes and the
@@ -2614,6 +2680,7 @@ int main(int argc, char** argv) {
         }
         break;
     }
+    shared.input.shutdown();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();

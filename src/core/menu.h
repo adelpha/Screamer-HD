@@ -222,6 +222,26 @@ public:
     void set_video(const VideoSettings& v);
     // Set when Esc leaves the VIDEO page (main applies every change at once and clears it).
     bool video_apply = false;
+    // Ours: OPTIONS > CONTROLS (kControlsPage): KEYBOARD and CONTROLLER (a line per action, the
+    // texts main gives in key_text / pad_text), RUMBLE ON/OFF, PAD (which controller drives:
+    // pad_names, the first "ANY") and DEFAULTS. Main takes the requests and clears them.
+    static constexpr int kControlsPage = 10, kKeyboardPage = 11, kControllerPage = 12;
+    enum ControlsLine : int { kKeyboardLine, kControllerLine, kRumbleLine, kPadLine, kDefaultsLine };
+    std::array<std::string, 7> key_text, pad_text;
+    std::vector<std::string> pad_names{"ANY"};
+    struct BindRequest {
+        bool pad = false;
+        int action = 0;
+    };
+    std::optional<BindRequest> bind_request;  // Enter on a KEYBOARD / CONTROLLER line
+    int bind_toggle = -1;        // left / right on a CONTROLLER line: that action's axis analog <-> digital
+    bool controls_reset = false; // DEFAULTS
+    bool rumble() const { return pages[kControlsPage][kRumbleLine].value != 0; }
+    void set_rumble(bool on) { pages[kControlsPage][kRumbleLine].value = on ? 1 : 0; }
+    int pad_choice() const { return pages[kControlsPage][kPadLine].value; }
+    void set_pad_choice(int index, std::vector<std::string> names);
+    // The texts changed (main): the selected line flips over to show them (as an option's).
+    void refresh() { if (flipping_ == 0) flipping_ = 1; }
     int page = 0;                    // DAT_0011fb5c
     std::array<int, 20> selected{};  // DAT_0011fb04: selected line per page
     std::vector<int> page_stack;     // DAT_0012034c
@@ -266,7 +286,7 @@ public:
         int ix = 0, iy = 0, iz = 0;  // the object instance
         float iax = 0, iay = 0, iaz = 0;
     };
-    std::array<Item, 200> items{};  // (the original has 80; ours has longer pages)
+    std::array<Item, 320> items{};  // (the original has 80; ours has longer pages)
 
     // The spinning models of the selection pages (0x11d54c cars, 0x11d904 maps).
     struct Shown {
