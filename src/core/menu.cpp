@@ -857,7 +857,10 @@ void Menu::draw_text(const std::string& s) {
         x = 0x1200 - block_.start * 0x280;
     } else {
         const int len = int(s.size());
-        x = 0x1200 - int(unsigned((len - 1) * -0x280 + 0x2400) >> 1);
+        // (the original shifts this unsigned, which goes wrong past 15 letters: none of its lines
+        // has more, but ours do; the same for 15 or fewer)
+        const int span = (len - 1) * -0x280 + 0x2400;
+        x = 0x1200 - (span >= 0 ? int(unsigned(span) >> 1) : -((-span + 1) / 2));
     }
     const int y = block_.ypos * -0x180 + 0x820;
     size_t slot = 0;
