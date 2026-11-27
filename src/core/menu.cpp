@@ -1359,6 +1359,11 @@ void Menu::activate() {
         sounds.push_back(3);
         break;
     case 2: push(4); break;   // special modes
+    case 3:                   // NETWORK GAME (ours: there is no network play; a notice says so)
+        notice_ = kNoticeTime;
+        if (backdrop_) darken_ = build_darken_table(backdrop_->vga_pal.data(), 0.3f);
+        sounds.push_back(0);
+        break;
     case 4: push(1); break;   // options
     case 21: push(6); break;  // view records
     case kActionSound: push(kSoundPage); break;  // ours: the volumes
@@ -1408,6 +1413,12 @@ void Menu::handle_keys(const MenuKeys& k) {
     if (key != 0) idle_ = 0;
     if (key == 0 || key == last_key_) {
         last_key_ = key;
+        return;
+    }
+    if (notice_ > 0 && mode == 0) {
+        // the notice goes away with any key (and does nothing else)
+        last_key_ = key;
+        notice_ = 0;
         return;
     }
     if (key == 0x20) {
@@ -1580,6 +1591,7 @@ void Menu::update(const MenuKeys& keys, float dt) {
     update_camera(dt);
     // frontend_handle_keys / frontend_draw_frame: 30 seconds without a key on a menu page and
     // frontend_run ends: the intro demo again
+    if (notice_ > 0) notice_ = std::max(0.0f, notice_ - dt);
     if (mode == 0) {
         idle_ += dt;
         if (30.0f < idle_) {
@@ -1749,6 +1761,12 @@ void Menu::draw(Framebuffer& fb, Renderer& renderer) {
     case 5: draw_champ(s); break;
     case 6: draw_records(s); break;
     default: break;
+    }
+    if (notice_ > 0 && draw_mode_ == 0) {
+        // ours: NETWORK GAME is not there (in a box like the records')
+        s.darken(0x30, 0x58, 0xe0, 0x30, darken_);
+        s.centre(a_.fonts, "NETWORK GAME", 0x5e, 0, 2);
+        s.centre(a_.fonts, "IS NOT SUPPORTED YET", 0x72, 0, 2);
     }
     for (auto& c : fb.palette()) {
         c.r = uint8_t(float(c.r) * brightness);

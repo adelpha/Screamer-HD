@@ -177,6 +177,7 @@ public:
     bool type_letter(char c);
     int race_options = 0;  // g_race_options (the cheats; see MenuRace)
     bool want_demo = false;  // left alone for 30 seconds: back to the intro demo
+    bool notice_shown() const { return notice_ > 0; }  // ours: NETWORK GAME's "not supported" box
     // The saved state (read_choice_dat) and back (write_choice_dat).
     void load_choice(const ChoiceFile& c);
     ChoiceFile save_choice() const;
@@ -333,6 +334,8 @@ private:
     int records_track_ = 0;   // DAT_00120988
     int records_row_ = 0;     // DAT_0012098c
     float idle_ = 0;          // DAT_0011d248: seconds without a key (texts move on after 10)
+    float notice_ = 0;        // ours: seconds left of the NETWORK GAME notice
+    static constexpr float kNoticeTime = 4.0f;
     int champ_total_ = 0;     // DAT_001203e0
     bool ghost_ = false;      // DAT_0011d260
     std::array<uint8_t, 256> darken_{};  // build_darken_tables for the dialog's backdrop

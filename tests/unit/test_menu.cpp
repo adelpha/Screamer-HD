@@ -447,3 +447,30 @@ TEST_CASE("menu: OPTIONS > VIDEO and its settings in CHOICE.DAT") {
     n.load_choice(d);
     CHECK(n.video() == m.video());
 }
+
+TEST_CASE("menu: NETWORK GAME says it is not supported") {
+    if (!scr::find_game_dir()) SKIP("original game data not present");
+    auto a = load_menu();
+    REQUIRE(a.has_value());
+    scr::Menu m(*a);
+    m.show_title();
+    run(m, 100);
+    auto press = [&](auto set) {
+        scr::MenuKeys k;
+        set(k);
+        run(m, 1, k);
+        run(m, 10);
+    };
+    for (int i = 0; i < 3; ++i) press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.enter = true; });
+    CHECK(m.notice_shown());
+    CHECK(m.page == 0);
+    CHECK(m.mode == 0);
+    press([](scr::MenuKeys& k) { k.down = true; });  // any key closes it, and does nothing else
+    CHECK(!m.notice_shown());
+    CHECK(m.selected[0] == 3);
+    press([](scr::MenuKeys& k) { k.enter = true; });
+    run(m, 250);  // and it goes by itself
+    CHECK(!m.notice_shown());
+    CHECK(m.page == 0);
+}
