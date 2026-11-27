@@ -494,7 +494,9 @@ docs/            documentation
 A: Graffiti didn't always line things up precisely, and they often cut out
 polygons entirely when they thought they were insignificant to the final presentation. These 
 cracks are also present in the original game, but at the 320x200 and 640x400 resolutions 
-available they were essentially invisible.
+available they were essentially invisible. I've closed the gaps in the roads and made sure the 
+lines on the roads are contiguous as much as possible, but fixing all of it would require 
+modifying the track models themselves.
 
 **Q: Why do the car wheels have no upper portions?**
 
@@ -516,7 +518,7 @@ reasonable range of vision, but you can go nuts if you want.
 A: I'm sure you get it by now but: fill rate. A pixel not drawn is time saved. This is just 
 how the game was built. Fixing it would require remodelling the tracks.
 
-**Q: Why only software renderer?**
+**Q: Why only a software renderer?**
 
 A: I was intrigued by how far performance could be pushed with a software rendering solution.
 The answer is: pretty far on modern hardware! I also wanted to focus on it being stable and 
