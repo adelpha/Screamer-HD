@@ -37,17 +37,37 @@ std::vector<std::string> text_lines(const Archive& a, const std::string& name) {
 
 // Ours: text indices from kOwnText are kOwnTexts, not MENU.TXT; the actions open the SOUND
 // page and change a volume (Enter or right: up, wrapping to 0; left: down).
-constexpr int kOwnText = 1000, kActionSound = 2000, kActionVolume = 2001;
+// kActionVideo opens the VIDEO page; kActionChoice lines show their label and a value that
+// Enter / right steps up and left down (both wrap round).
+constexpr int kOwnText = 1000, kActionSound = 2000, kActionVolume = 2001, kActionVideo = 2002, kActionChoice = 2003,
+              kActionAdvanced = 2004;
 constexpr int kSoundPage = 7;
 constexpr size_t kMusicSourceLine = 4;  // the SOUND page's CD MUSIC / MIDI MUSIC
+
+// kOwnTexts (MENU.TXT has none for our pages)
+enum : int {
+    kTxSound = 0, kTxAnnouncer, kTxEngine, kTxEffects, kTxMusic, kTxCdMusic, kTxMidiMusic, kTxVideo,
+    kTxFullscreen, kTxFullscreenOn, kTxWidescreen, kTxWidescreenOn, kTxResolution, kTxDistance, kTxVsync,
+    kTxVsyncOn, kTxFpsLimit, kTxFarModels, kTxFarModelsSimple, kTxMipmaps, kTxMipmapsOn, kTxAdvanced,
+};
+const char* const kOwnTexts[] = {"SOUND", "ANNOUNCER", "ENGINE", "EFFECTS", "MUSIC", "CD MUSIC", "MIDI MUSIC", "VIDEO",
+                                 "FULLSCREEN OFF", "FULLSCREEN ON", "WIDESCREEN OFF", "WIDESCREEN ON", "RES",
+                                 "DISTANCE", "VSYNC OFF", "VSYNC ON", "FPS LIMIT", "FAR MODELS FULL",
+                                 "FAR MODELS LOW", "MIPMAPS OFF", "MIPMAPS ON", "ADVANCED"};
+
+// The VIDEO page's steps: view distance (times the original's far clip; 0: no limit) and the
+// frame limit (0: none).
+constexpr float kViewSteps[] = {1.0f, 1.5f, 2.0f, 2.5f, 3.0f, 3.5f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 0.0f};
+constexpr int kFpsSteps[] = {0, 30, 60, 75, 120, 144, 165, 240};
 
 // The page tables at 0x102de4 (text index, action, value, max).
 std::vector<std::vector<Menu::Entry>> default_pages() {
     return {
         {{0, 0, 0, 0}, {1, 1, 0, 0}, {2, 2, 0, 0}, {3, 3, 0, 0}, {4, 4, 0, 0}},
-        // (ours: the original's SPEECH ON/OFF and MUSIC ON/OFF lines (texts 17, 19) gave way to
-        // SOUND, the volume page, where a volume of 0 does the same)
-        {{5, 1234, 2, 2}, {8, 1234, 1, 2}, {13, 1234, 0, 3}, {kOwnText, kActionSound, 0, 0}, {21, 21, 0, 0}},
+        // (ours: the original's DETAIL line went to VIDEO, and its SPEECH ON/OFF and MUSIC ON/OFF
+        // lines (texts 17, 19) gave way to SOUND, the volume page, where a volume of 0 does the same)
+        {{8, 1234, 1, 2}, {13, 1234, 0, 3}, {kOwnText + kTxVideo, kActionVideo, 0, 0}, {kOwnText, kActionSound, 0, 0},
+         {21, 21, 0, 0}},
         {{3, 3, 0, 0}, {23, 23, 0, 0}},
         {{24, 24, 0, 0}, {25, 25, 0, 0}},
         {{28, 28, 0, 0}, {29, 29, 0, 0}, {30, 30, 0, 0}},
@@ -57,11 +77,19 @@ std::vector<std::vector<Menu::Entry>> default_pages() {
         {{kOwnText + 1, kActionVolume, kVolumeMax, kVolumeMax}, {kOwnText + 2, kActionVolume, kVolumeMax, kVolumeMax},
          {kOwnText + 3, kActionVolume, kVolumeMax, kVolumeMax}, {kOwnText + 4, kActionVolume, kVolumeMax, kVolumeMax},
          {kOwnText + 5, 1234, 0, 1}},  // CD MUSIC / MIDI MUSIC
+        // 8 (ours) VIDEO and 9 its ADVANCED page (the lines in the order of Menu::VideoLine)
+        {{kOwnText + kTxFullscreen, 1234, 0, 1},
+         {kOwnText + kTxWidescreen, 1234, 0, 1},
+         {kOwnText + kTxResolution, kActionChoice, 0, 0},
+         {kOwnText + kTxDistance, kActionChoice, 2, int(std::size(kViewSteps)) - 1},
+         {5, 1234, 2, 2},  // MENU.TXT's LOW / MID / HI DETAIL
+         {kOwnText + kTxAdvanced, kActionAdvanced, 0, 0}},
+        {{kOwnText + kTxVsync, 1234, 1, 1},
+         {kOwnText + kTxFpsLimit, kActionChoice, 0, int(std::size(kFpsSteps)) - 1},
+         {kOwnText + kTxFarModels, 1234, 0, 1},
+         {kOwnText + kTxMipmaps, 1234, 1, 1}},
     };
 }
-
-// The lines of our own pages (MENU.TXT has none for them).
-const char* const kOwnTexts[] = {"SOUND", "ANNOUNCER", "ENGINE", "EFFECTS", "MUSIC", "CD MUSIC", "MIDI MUSIC"};
 
 // Fly-in variants (0x102218): start x, y, z and the spiral radii.
 constexpr int kVariants[8][5] = {
@@ -208,7 +236,26 @@ enum : int { kChampPos = 0, kChampTrack = 1, kChampTime = 2, kChampScore = 3, kC
 namespace {
 constexpr size_t kLapRecords = 0x6c, kTotalRecords = 0x24c, kRecordStride = 0x50;
 constexpr char kExtMagic[4] = {'S', 'C', 'R', 'X'};  // our settings after the original's 0x460 bytes
-constexpr size_t kExtValues = 5;                       // the four volumes, music_midi
+constexpr size_t kExtValues = 14;                      // the four volumes, music_midi, the VIDEO page (9)
+}
+
+std::vector<std::pair<int, int>> video_resolutions(bool widescreen) {
+    static constexpr std::pair<int, int> k43[] = {{320, 200},   {640, 400},   {640, 480},   {800, 600},  {1024, 768},
+                                                  {1280, 960},  {1440, 1080}, {1600, 1200}, {1920, 1440}, {2048, 1536},
+                                                  {2880, 2160}, {4096, 3072}, {5760, 4320}};
+    static constexpr std::pair<int, int> kWide[] = {
+        {1280, 720},  {1280, 800},  {1366, 768},  {1600, 900},  {1680, 1050}, {1920, 1080}, {1920, 1200},
+        {2560, 1080}, {2560, 1440}, {2560, 1600}, {3440, 1440}, {3840, 1080}, {3840, 1600}, {3840, 2160},
+        {3840, 2400}, {5120, 1440}, {5120, 2160}, {5120, 2880}, {7680, 4320}};
+    std::vector<std::pair<int, int>> r(std::begin(k43), std::end(k43));
+    if (widescreen) r.insert(r.end(), std::begin(kWide), std::end(kWide));
+    // by size (pixels, then width)
+    std::stable_sort(r.begin(), r.end(), [](const auto& a, const auto& b) {
+        const long long pa = 1LL * a.first * a.second, pb = 1LL * b.first * b.second;
+        return pa != pb ? pa < pb : a.first < b.first;
+    });
+    r.insert(r.begin(), {0, 0});
+    return r;
 }
 
 ChoiceFile::ChoiceFile() {
@@ -260,6 +307,7 @@ bool ChoiceFile::load(const std::string& path) {
     // our settings after the original's bytes
     volume.fill(kVolumeMax);
     music_midi = 0;
+    video = {};
     char magic[4]{};
     int32_t count = 0;
     if (std::fread(magic, 1, 4, f) == 4 && std::memcmp(magic, kExtMagic, 4) == 0 &&
@@ -267,10 +315,23 @@ bool ChoiceFile::load(const std::string& path) {
         for (size_t i = 0; i < size_t(count) && i < kExtValues; ++i) {
             int32_t v = 0;
             if (std::fread(&v, 4, 1, f) != 1) break;
-            if (i < volume.size()) volume[i] = std::clamp(v, 0, kVolumeMax);
-            else music_midi = v ? 1 : 0;
+            switch (i) {
+            case 0: case 1: case 2: case 3: volume[i] = std::clamp(v, 0, kVolumeMax); break;
+            case 4: music_midi = v ? 1 : 0; break;
+            case 5: video.fullscreen = v != 0; break;
+            case 6: video.widescreen = v != 0; break;
+            case 7: video.width = std::clamp(v, 0, 16384); break;
+            case 8: video.height = std::clamp(v, 0, 16384); break;
+            case 9: video.view_distance = float(std::clamp(v, 0, 1000)) / 10.0f; break;
+            case 10: video.vsync = v != 0; break;
+            case 11: video.frame_limit = std::clamp(v, 0, 1000); break;
+            case 12: video.lod = v != 0; break;
+            case 13: video.mipmaps = v != 0; break;
+            default: break;
+            }
         }
     }
+    if (video.width == 0 || video.height == 0) video.width = video.height = 0;
     std::fclose(f);
     return true;
 }
@@ -282,6 +343,15 @@ bool ChoiceFile::save(const std::string& path) const {
     std::array<int32_t, kExtValues> ext{};
     std::copy(volume.begin(), volume.end(), ext.begin());
     ext[4] = music_midi;
+    ext[5] = video.fullscreen;
+    ext[6] = video.widescreen;
+    ext[7] = video.width;
+    ext[8] = video.height;
+    ext[9] = int32_t(std::lround(video.view_distance * 10.0f));
+    ext[10] = video.vsync;
+    ext[11] = video.frame_limit;
+    ext[12] = video.lod;
+    ext[13] = video.mipmaps;
     const int32_t count = int32_t(ext.size());
     ok = ok && std::fwrite(kExtMagic, 1, 4, f) == 4 && std::fwrite(&count, 4, 1, f) == 1 &&
          std::fwrite(ext.data(), 4, ext.size(), f) == ext.size();
@@ -320,10 +390,11 @@ void Menu::load_choice(const ChoiceFile& c) {
     track = std::max(0, c.get(0x004));
     name = c.str(0x008);
     if (name.empty()) name = "AAA";
-    pages[1][0].value = std::clamp(c.get(0x00c), 0, 2);
-    pages[1][1].max = std::clamp(c.get(0x45c), 2, 3);
-    pages[1][1].value = std::clamp(c.get(0x010), 0, pages[1][1].max);
-    pages[1][2].value = std::clamp(c.get(0x014), 0, 3);
+    option_entry(0).value = std::clamp(c.get(0x00c), 0, 2);
+    option_entry(1).max = std::clamp(c.get(0x45c), 2, 3);
+    option_entry(1).value = std::clamp(c.get(0x010), 0, option_entry(1).max);
+    option_entry(2).value = std::clamp(c.get(0x014), 0, 3);
+    set_video(c.video);
     for (size_t i = 0; i < c.volume.size(); ++i) pages[kSoundPage][i].value = std::clamp(c.volume[i], 0, kVolumeMax);
     pages[kSoundPage][kMusicSourceLine].value = c.music_midi ? 1 : 0;
     cars_unlocked = std::clamp(c.get(0x42c), 0, 2);
@@ -346,13 +417,14 @@ ChoiceFile Menu::save_choice() const {
     c.set(0x000, car);
     c.set(0x004, track);
     c.setstr(0x008, name);
-    c.set(0x00c, pages[1][0].value);
-    c.set(0x010, pages[1][1].value);
-    c.set(0x014, pages[1][2].value);
+    c.set(0x00c, option(0));
+    c.set(0x010, option(1));
+    c.set(0x014, option(2));
+    c.video = video();
     const auto v = volumes();
     std::copy(v.begin(), v.end(), c.volume.begin());
     c.music_midi = music_midi() ? 1 : 0;
-    c.set(0x45c, pages[1][1].max);
+    c.set(0x45c, pages[1][0].max);  // (the difficulty's)
     c.set(0x42c, cars_unlocked);
     c.set(0x454, tracks_unlocked);
     c.set(0x458, tracks_seen_);
@@ -461,7 +533,15 @@ void Menu::draw_records(MenuUi& s) {
 
 Menu::Menu(MenuAssets& assets) : pages(default_pages()), a_(assets) {}
 
-int Menu::option(int item) const { return pages[1][size_t(item)].value; }
+// The original's OPTIONS lines by their place there (0 detail, 1 difficulty, 2 laps): ours moved
+// the detail to the VIDEO page.
+Menu::Entry& Menu::option_entry(int item) {
+    return item == 0 ? video_line(kDetailLine) : pages[1][size_t(item - 1)];
+}
+Menu::Entry& Menu::video_line(int line) {
+    return line < kVsyncLine ? pages[kVideoPage][size_t(line)] : pages[kVideoPage + 1][size_t(line - kVsyncLine)];
+}
+int Menu::option(int item) const { return const_cast<Menu*>(this)->option_entry(item).value; }
 
 void Menu::hide_objects() {
     // frontend_hide_objects
@@ -625,9 +705,28 @@ void Menu::setup_name_page() {
 std::string Menu::entry_text(const Entry& e) const {
     if (e.text >= kOwnText) {
         // the cycled lines (1234) show the text of their value, like MENU.TXT's
-        const size_t i = size_t(e.text - kOwnText + (e.action == kActionVolume ? 0 : e.value));
+        const bool labelled = e.action == kActionVolume || e.action == kActionChoice;
+        const size_t i = size_t(e.text - kOwnText + (labelled ? 0 : e.value));
         std::string s = i < std::size(kOwnTexts) ? kOwnTexts[i] : "";
         if (e.action == kActionVolume) s += " " + std::to_string(e.value);
+        if (e.action == kActionChoice) {
+            char buf[32] = "";
+            const int t = e.text - kOwnText;
+            if (t == kTxResolution) {
+                const auto r = res_list_[size_t(std::clamp(e.value, 0, int(res_list_.size()) - 1))];
+                if (r.first == 0) std::snprintf(buf, sizeof buf, "NATIVE");
+                else std::snprintf(buf, sizeof buf, "%dX%d", r.first, r.second);
+            } else if (t == kTxDistance) {
+                const float d = kViewSteps[std::clamp(e.value, 0, int(std::size(kViewSteps)) - 1)];
+                if (d == 0) std::snprintf(buf, sizeof buf, "MAX");
+                else std::snprintf(buf, sizeof buf, "%gX", double(d));
+            } else if (t == kTxFpsLimit) {
+                const int n = kFpsSteps[std::clamp(e.value, 0, int(std::size(kFpsSteps)) - 1)];
+                if (n == 0) std::snprintf(buf, sizeof buf, "OFF");
+                else std::snprintf(buf, sizeof buf, "%d", n);
+            }
+            s += std::string(" ") + buf;
+        }
         return s;
     }
     const int t = e.text + e.value;
@@ -645,6 +744,92 @@ void Menu::set_music_midi(bool midi) { pages[kSoundPage][kMusicSourceLine].value
 
 void Menu::set_volumes(const std::array<int, 4>& v) {
     for (size_t i = 0; i < v.size(); ++i) pages[kSoundPage][i].value = std::clamp(v[i], 0, kVolumeMax);
+}
+
+VideoSettings Menu::video() const {
+    const auto p = [&](int line) -> const Entry& { return const_cast<Menu*>(this)->video_line(line); };
+    VideoSettings v;
+    v.fullscreen = p(kFullscreenLine).value != 0;
+    v.widescreen = p(kWidescreenLine).value != 0;
+    const auto r = res_list_[size_t(std::clamp(p(kResolutionLine).value, 0, int(res_list_.size()) - 1))];
+    v.width = r.first;
+    v.height = r.second;
+    v.view_distance = kViewSteps[std::clamp(p(kDistanceLine).value, 0, int(std::size(kViewSteps)) - 1)];
+    v.vsync = p(kVsyncLine).value != 0;
+    v.frame_limit = kFpsSteps[std::clamp(p(kFpsLine).value, 0, int(std::size(kFpsSteps)) - 1)];
+    v.lod = p(kFarModelsLine).value != 0;
+    v.mipmaps = p(kMipmapsLine).value != 0;
+    return v;
+}
+
+void Menu::set_video(const VideoSettings& v) {
+    const auto p = [&](int line) -> Entry& { return video_line(line); };
+    p(kFullscreenLine).value = v.fullscreen ? 1 : 0;
+    p(kWidescreenLine).value = v.widescreen ? 1 : 0;
+    set_resolutions(v.widescreen, v.width, v.height);
+    // the nearest step (0, no limit, is the last one)
+    int d = int(std::size(kViewSteps)) - 1;
+    if (v.view_distance > 0) {
+        d = 0;
+        for (int i = 1; i + 1 < int(std::size(kViewSteps)); ++i)
+            if (std::fabs(kViewSteps[i] - v.view_distance) < std::fabs(kViewSteps[d] - v.view_distance)) d = i;
+    }
+    p(kDistanceLine).value = d;
+    p(kVsyncLine).value = v.vsync ? 1 : 0;
+    int f = 0;
+    for (int i = 0; i < int(std::size(kFpsSteps)); ++i)
+        if (std::abs(kFpsSteps[i] - v.frame_limit) < std::abs(kFpsSteps[f] - v.frame_limit)) f = i;
+    p(kFpsLine).value = f;
+    p(kFarModelsLine).value = v.lod ? 1 : 0;
+    p(kMipmapsLine).value = v.mipmaps ? 1 : 0;
+}
+
+void Menu::set_resolutions(bool widescreen, int w, int h) {
+    // the RES line's sizes for this screen shape; a size of the command line that is in none
+    // of them joins them
+    res_list_ = video_resolutions(widescreen);
+    auto find = [&](int fw, int fh) {
+        for (size_t i = 0; i < res_list_.size(); ++i)
+            if (res_list_[i].first == fw && res_list_[i].second == fh) return int(i);
+        return -1;
+    };
+    int at = find(w, h);
+    if (at < 0 && w > 0 && h > 0) {
+        const bool wide_size = w * 3 > h * 4 + h / 8;  // more than a little wider than 4:3
+        if (widescreen || !wide_size || (w == 320 && h == 200)) {
+            res_list_.push_back({w, h});
+            std::stable_sort(res_list_.begin() + 1, res_list_.end(), [](const auto& a, const auto& b) {
+                const long long pa = 1LL * a.first * a.second, pb = 1LL * b.first * b.second;
+                return pa != pb ? pa < pb : a.first < b.first;
+            });
+            at = find(w, h);
+        } else {
+            // widescreen went off on a wide size: the 4:3 size with the nearest height
+            at = 0;
+            for (size_t i = 1; i < res_list_.size(); ++i)
+                if (at == 0 || std::abs(res_list_[i].second - h) < std::abs(res_list_[size_t(at)].second - h))
+                    at = int(i);
+        }
+    }
+    auto& e = video_line(kResolutionLine);
+    e.max = int(res_list_.size()) - 1;
+    e.value = std::max(at, 0);
+}
+
+void Menu::cycle(int sel, int step) {
+    // our pages' cycled lines: like menu_cycle_option, both ways round
+    if (flipping_ != 0) return;
+    Entry& e = pages[size_t(page)][size_t(sel)];
+    e.value += step;
+    if (e.value > e.max) e.value = 0;
+    if (e.value < 0) e.value = e.max;
+    if (page == kVideoPage && sel == kWidescreenLine) {
+        // the sizes to choose from change with the shape (the size stays when it can)
+        const auto r = res_list_[size_t(std::clamp(video_line(kResolutionLine).value, 0, int(res_list_.size()) - 1))];
+        set_resolutions(e.value != 0, r.first, r.second);
+    }
+    flipping_ = 1;
+    sounds.push_back(2);
 }
 
 void Menu::draw_text(const std::string& s) {
@@ -1071,7 +1256,7 @@ void Menu::activate() {
                     // the whole championship won: the last car, all tracks, AFTERBURNER
                     cars_unlocked = 1;
                     tracks_unlocked = 9;
-                    pages[1][1].max = 3;
+                    option_entry(1).max = 3;
                 }
                 page = 0;
                 built_page_ = -1;
@@ -1182,8 +1367,13 @@ void Menu::activate() {
     case 4: push(1); break;   // options
     case 21: push(6); break;  // view records
     case kActionSound: push(kSoundPage); break;  // ours: the volumes
+    case kActionVideo: push(kVideoPage); break;  // ours: the picture
+    case kActionAdvanced: push(kVideoPage + 1); break;
     case kActionVolume:
         change_volume(sel, 1);
+        break;
+    case kActionChoice:
+        cycle(sel, 1);
         break;
     case 31:                  // a track's records
         init_state(6);
@@ -1191,6 +1381,10 @@ void Menu::activate() {
         break;
     case 1234:
         // menu_cycle_option
+        if (page >= kSoundPage) {
+            cycle(sel, 1);  // ours (the same, and the VIDEO page's widescreen line changes the sizes)
+            break;
+        }
         if (flipping_ == 0) {
             Entry& e = pages[size_t(page)][size_t(sel)];
             if (e.max < ++e.value) e.value = 0;
@@ -1235,6 +1429,7 @@ void Menu::handle_keys(const MenuKeys& k) {
                 quit = true;
                 return;
             }
+            if (page == kVideoPage) video_apply = true;
             page = page_stack.back();
             page_stack.pop_back();
             sounds.push_back(0);
@@ -1318,6 +1513,11 @@ void Menu::handle_keys(const MenuKeys& k) {
             last_key_ = key;
             const Entry& e = entries[size_t(sel)];
             if (key == 4 ? e.value > 0 : e.value < e.max) change_volume(sel, key == 4 ? -1 : 1);
+        } else if (page >= kSoundPage && sel >= 0 && size_t(sel) < entries.size() &&
+                   (entries[size_t(sel)].action == 1234 || entries[size_t(sel)].action == kActionChoice)) {
+            // ours: our pages' other lines step either way
+            last_key_ = key;
+            cycle(sel, key == 4 ? -1 : 1);
         }
     } else if (mode == 2 || mode == 3) {
         const bool left = key == 4;

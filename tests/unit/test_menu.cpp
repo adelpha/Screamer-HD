@@ -3,6 +3,7 @@
 #include "core/gamedata.h"
 #include "core/menu.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <filesystem>
@@ -66,7 +67,7 @@ TEST_CASE("menu: main page letters, options and the normal game flow") {
         }
     CHECK(letters == 55);  // spaces are blocks too (an empty frame)
     CHECK(m.brightness == 1.0f);
-    // Options: HI DETAIL cycles to LOW DETAIL
+    // Options > Video: HI DETAIL cycles to LOW DETAIL
     scr::MenuKeys down;
     down.down = true;
     for (int i = 0; i < 4; ++i) {
@@ -79,12 +80,27 @@ TEST_CASE("menu: main page letters, options and the normal game flow") {
     run(m, 1, enter);
     CHECK(m.page == 1);
     run(m, 60);
+    for (int i = 0; i < 2; ++i) {
+        run(m, 1, down);
+        run(m, 1);
+    }
+    run(m, 1, enter);
+    CHECK(m.page == scr::Menu::kVideoPage);
+    run(m, 60);
+    for (int i = 0; i < 4; ++i) {
+        run(m, 1, down);
+        run(m, 1);
+    }
     run(m, 1, enter);
     run(m, 30);
-    CHECK(m.pages[1][0].value == 0);  // LOW DETAIL
+    CHECK(m.pages[scr::Menu::kVideoPage][scr::Menu::kDetailLine].value == 0);  // LOW DETAIL
+    CHECK(m.save_choice().get(0x00c) == 0);
     // Back to the main page and into a normal game: name, track, car, race
     scr::MenuKeys esc;
     esc.esc = true;
+    run(m, 1, esc);
+    CHECK(m.video_apply);  // (main applies the VIDEO page when it is left)
+    run(m, 1);
     run(m, 1, esc);
     CHECK(m.page == 0);
     scr::MenuKeys up;
@@ -221,7 +237,7 @@ TEST_CASE("menu: CHOICE.DAT keeps our volumes after the original's bytes") {
     c.music_midi = 1;
     c.set(0x14, 2);
     REQUIRE(c.save(path.string()));
-    CHECK(std::filesystem::file_size(path) == 0x460 + 4 + 4 + 20);
+    CHECK(std::filesystem::file_size(path) == 0x460 + 4 + 4 + 14 * 4);  // 4 volumes, music, 9 VIDEO settings
     scr::ChoiceFile d;
     REQUIRE(d.load(path.string()));
     CHECK((d.volume == std::array<int32_t, 4>{3, 0, 7, 10}));
@@ -270,7 +286,7 @@ TEST_CASE("menu: OPTIONS > SOUND sets the four volumes and the music source") {
     for (int i = 0; i < 4; ++i) press([](scr::MenuKeys& k) { k.down = true; });
     press([](scr::MenuKeys& k) { k.enter = true; });  // OPTIONS
     REQUIRE(m.page == 1);
-    // DETAIL, DIFFICULTY, LAPS, SOUND (in place of SPEECH and MUSIC), VIEW RECORDS
+    // DIFFICULTY, LAPS, VIDEO (with the DETAIL), SOUND (in place of SPEECH and MUSIC), VIEW RECORDS
     CHECK(m.pages[1].size() == 5);
     for (int i = 0; i < 3; ++i) press([](scr::MenuKeys& k) { k.down = true; });
     press([](scr::MenuKeys& k) { k.enter = true; });  // SOUND
@@ -344,6 +360,92 @@ TEST_CASE("menu: the demo is asked for once per 30 idle seconds") {
     CHECK(!m.want_demo);
     run(m, 1100);
     CHECK(m.want_demo);
+}
+
+TEST_CASE("menu: VIDEO resolutions follow the widescreen line") {
+    const auto narrow = scr::video_resolutions(false);
+    const auto wide = scr::video_resolutions(true);
+    REQUIRE(!narrow.empty());
+    CHECK((narrow[0] == std::pair<int, int>{0, 0}));  // NATIVE first
+    for (size_t i = 1; i < narrow.size(); ++i)  // 4:3, and the original's 320x200 (and 640x400), also shown 4:3
+        CHECK((narrow[i].first * 3 == narrow[i].second * 4 || narrow[i].first * 5 == narrow[i].second * 8));
+    CHECK((std::find(narrow.begin(), narrow.end(), std::pair<int, int>{320, 200}) != narrow.end()));
+    CHECK((std::find(wide.begin(), wide.end(), std::pair<int, int>{7680, 4320}) != wide.end()));
+    CHECK((std::find(narrow.begin(), narrow.end(), std::pair<int, int>{1920, 1080}) == narrow.end()));
+    CHECK(wide.size() > narrow.size());
+}
+
+TEST_CASE("menu: OPTIONS > VIDEO and its settings in CHOICE.DAT") {
+    if (!scr::find_game_dir()) SKIP("original game data not present");
+    auto a = load_menu();
+    REQUIRE(a.has_value());
+    scr::Menu m(*a);
+    scr::VideoSettings v;
+    v.widescreen = true;
+    v.width = 2560;
+    v.height = 1440;
+    v.view_distance = 0;  // no limit
+    v.frame_limit = 144;
+    m.set_video(v);
+    CHECK(m.video() == v);
+    m.show_title();
+    run(m, 100);
+    auto press = [&](auto set) {
+        scr::MenuKeys k;
+        set(k);
+        run(m, 1, k);
+        run(m, 30);
+    };
+    for (int i = 0; i < 4; ++i) press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.enter = true; });  // OPTIONS
+    for (int i = 0; i < 2; ++i) press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.enter = true; });  // VIDEO
+    REQUIRE(m.page == scr::Menu::kVideoPage);
+    run(m, 60);
+    press([](scr::MenuKeys& k) { k.enter = true; });  // FULLSCREEN ON
+    CHECK(m.video().fullscreen);
+    press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.right = true; });  // WIDESCREEN OFF: 2560x1440 is no 4:3 size
+    CHECK(!m.video().widescreen);
+    CHECK(m.video().width * 3 == m.video().height * 4);
+    CHECK(m.video().height == 1440);  // the 4:3 size nearest in height (1920x1440)
+    press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.left = true; });  // the next size down
+    CHECK(m.video().height == 1200);
+    press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.right = true; });  // DISTANCE MAX wraps to 1X
+    CHECK(m.video().view_distance == 1.0f);
+    // the ADVANCED page
+    for (int i = 0; i < 2; ++i) press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.enter = true; });
+    REQUIRE(m.page == scr::Menu::kVideoPage + 1);
+    run(m, 60);
+    press([](scr::MenuKeys& k) { k.enter = true; });  // VSYNC OFF
+    CHECK(!m.video().vsync);
+    press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.right = true; });  // FPS LIMIT 165
+    CHECK(m.video().frame_limit == 165);
+    press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.enter = true; });  // FAR MODELS LOW
+    CHECK(m.video().lod);
+    press([](scr::MenuKeys& k) { k.esc = true; });
+    CHECK(m.page == scr::Menu::kVideoPage);
+    CHECK(!m.video_apply);  // (only leaving VIDEO itself applies)
+    press([](scr::MenuKeys& k) { k.esc = true; });
+    CHECK(m.page == 1);
+    CHECK(m.video_apply);
+
+    // saved after the original's bytes, and read back
+    const std::string path = (std::filesystem::temp_directory_path() / "screamer_video_choice.dat").string();
+    scr::ChoiceFile c = m.save_choice();
+    REQUIRE(c.save(path));
+    scr::ChoiceFile d;
+    REQUIRE(d.load(path));
+    CHECK(d.video == m.video());
+    std::filesystem::remove(path);
+    scr::Menu n(*a);
+    n.load_choice(d);
+    CHECK(n.video() == m.video());
 }
 
 TEST_CASE("menu: NETWORK GAME says it is not supported") {
