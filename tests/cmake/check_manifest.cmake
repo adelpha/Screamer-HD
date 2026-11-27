@@ -21,6 +21,12 @@ foreach(line IN LISTS lines)
   set(expected "${CMAKE_MATCH_1}")
   set(rel "${CMAKE_MATCH_2}")
   if(NOT EXISTS "${DATA_DIR}/${rel}")
+    # The CD image is optional: CD music can also come from a MUSIC folder of
+    # ripped tracks, or the MIDI music is used. Checked only when present.
+    if(rel MATCHES "^SCREAM\\.(bin|cue)$")
+      message("absent   ${rel} (optional CD image)")
+      continue()
+    endif()
     message("MISSING  ${rel}")
     math(EXPR failures "${failures} + 1")
     continue()
