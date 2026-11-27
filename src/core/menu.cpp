@@ -1709,10 +1709,22 @@ void Menu::draw(Framebuffer& fb, Renderer& renderer) {
     renderer.begin(a_.scene, cam_, fb, 0);
     if (backdrop_) {
         // the backdrop (nearest-scaled when the framebuffer is not its size)
+        // (each source column worked out once; each row that repeats the one above it copied)
         const PcxImage& bg = *backdrop_;
+        thread_local std::vector<int> column;
+        column.resize(size_t(fb.width()));
+        for (int x = 0; x < fb.width(); ++x) column[size_t(x)] = int(int64_t(x) * bg.width / fb.width());
+        int last_src = -1;
         for (int y = 0; y < fb.height(); ++y) {
-            const uint8_t* row = bg.pixels.data() + size_t(y * bg.height / fb.height()) * size_t(bg.width);
-            for (int x = 0; x < fb.width(); ++x) fb.at(x, y) = row[x * bg.width / fb.width()];
+            const int sy = int(int64_t(y) * bg.height / fb.height());
+            uint8_t* out = &fb.at(0, y);
+            if (sy == last_src) {
+                std::memcpy(out, &fb.at(0, y - 1), size_t(fb.width()));
+                continue;
+            }
+            last_src = sy;
+            const uint8_t* row = bg.pixels.data() + size_t(sy) * size_t(bg.width);
+            for (int x = 0; x < fb.width(); ++x) out[x] = row[column[size_t(x)]];
         }
         // frontend_draw_frame: the MIRRO / UPDOW cheats flip the backdrop too
         if (race_options & 0x10)
