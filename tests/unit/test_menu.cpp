@@ -474,3 +474,30 @@ TEST_CASE("menu: NETWORK GAME says it is not supported") {
     CHECK(!m.notice_shown());
     CHECK(m.page == 0);
 }
+
+TEST_CASE("menu: lines longer than 15 letters stay centred") {
+    if (!scr::find_game_dir()) SKIP("original game data not present");
+    auto a = load_menu();
+    REQUIRE(a.has_value());
+    scr::Menu m(*a);
+    scr::VideoSettings v;
+    v.widescreen = true;
+    v.width = 1680;
+    v.height = 1050;  // "1680X1050 (16:10)", 17 letters
+    m.set_video(v);
+    m.page_stack = {0, 1};
+    m.page = scr::Menu::kVideoPage;
+    m.show_title();
+    m.page = scr::Menu::kVideoPage;
+    run(m, 100);
+    int letters = 0, lo = 0, hi = 0;
+    for (const auto& it : m.items)
+        if (it.ch != -1) {
+            ++letters;
+            lo = std::min(lo, it.x1);
+            hi = std::max(hi, it.x1);
+        }
+    CHECK(letters > 60);
+    CHECK(lo >= -8 * 0x280);  // (17 letters 0x280 apart about the middle, x = 0)
+    CHECK(hi <= 8 * 0x280);
+}
