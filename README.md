@@ -1,4 +1,4 @@
-# Screamer Recomp
+# Screamer HD
 
 A native Windows version of **Screamer**, the 1995 DOS arcade racer by Graffiti / Virgin
 Interactive, rebuilt from a full reverse engineering of the original program. It runs the
@@ -90,13 +90,13 @@ game always steps at its own fixed rate.
 
 ## Installing
 
-1. **Download** `Screamer-1.0-win64.zip` from the release page and unzip it anywhere, for
-   example `C:\Games\ScreamerRecomp`.
+1. **Download** `ScreamerHD-1.0-win64.zip` from the release page and unzip it anywhere, for
+   example `C:\Games\ScreamerHD`.
 2. **Copy your Screamer files** into the `SCREAMER` folder inside it, so that it looks like
    this:
 
    ```
-   ScreamerRecomp\
+   ScreamerHD\
      screamer.exe
      SDL3.dll
      opl3.dll
@@ -126,11 +126,12 @@ game always steps at its own fixed rate.
    be found, a message says where they go.
 
 Nothing is written into the game's folder: settings, controls and replays go to
-`%APPDATA%\ScreamerRecomp\` (see [Saved files](#saved-files)). The first time, your original
+`%APPDATA%\ScreamerHD\` (see [Saved files](#saved-files)). Saves from test builds made before
+the name Screamer HD (`%APPDATA%\ScreamerRecomp`) are copied over once. The first time, your original
 `CONFIG\CHOICE.DAT` (settings, records, unlocked cars and tracks) and `CONFIG\CONTROLS.CFG`
 (keys) are taken over from the game's folder.
 
-To uninstall, delete the folder and `%APPDATA%\ScreamerRecomp`.
+To uninstall, delete the folder and `%APPDATA%\ScreamerHD`.
 
 ## Default controls
 
@@ -337,7 +338,7 @@ MID and HI load the high-detail track.
 
 ### Saved files
 
-Everything is kept in `%APPDATA%\ScreamerRecomp\`:
+Everything is kept in `%APPDATA%\ScreamerHD\`:
 
 | File | Contents |
 |---|---|
@@ -450,7 +451,7 @@ settings for that run.
   timings).
 - **Black screen or display trouble**: try `--renderer opengl` or `--renderer vulkan`, or
   `--windowed`.
-- **Start over**: delete `%APPDATA%\ScreamerRecomp\CHOICE.DAT` (settings) and/or
+- **Start over**: delete `%APPDATA%\ScreamerHD\CHOICE.DAT` (settings) and/or
   `CONTROLS.INI` (bindings).
 - **Log output**: start `screamer.exe` from a command prompt; it prints its log there.
 
@@ -487,7 +488,7 @@ docs/            documentation
 
 ## Disclaimer
 
-Screamer Recomp is an **unofficial fan project**. It is not affiliated with, authorised or
+Screamer HD is an **unofficial fan project**. It is not affiliated with, authorised or
 endorsed by Graffiti, Virgin Interactive, their successors, HMI (Human Machine Interfaces) or
 any other rights holder.
 
