@@ -1038,6 +1038,63 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     int out_w = 0, out_h = 0;
     SDL_GetRenderOutputSize(renderer, &out_w, &out_h);
     const bool larger = !opt.headless && out_w > 0 && (fb.width() > out_w || fb.height() > out_h);
+    // Widescreen menus: the backdrop, blurred and darker, stretched over the whole window
+    // behind the 4:3 menu (in place of black bars)
+    SDL_Texture* bars_tex = nullptr;
+    const scr::PcxImage* bars_of = nullptr;
+    auto make_bars = [&](const scr::PcxImage& bg) {
+        if (bars_tex) SDL_DestroyTexture(bars_tex);
+        bars_tex = nullptr;
+        constexpr int kW = 64, kH = 40;
+        if (bg.width <= 0 || bg.pixels.empty()) return;
+        const int bh = int(bg.pixels.size() / size_t(bg.width));
+        const scr::Palette pal = bg.palette();
+        // averaged down, then blurred some more (the window's filter does the rest)
+        std::vector<float> rgb(size_t(kW * kH * 3));
+        for (int y = 0; y < kH; ++y)
+            for (int x = 0; x < kW; ++x) {
+                const int x0 = x * bg.width / kW, x1 = std::max(x0 + 1, (x + 1) * bg.width / kW);
+                const int y0 = y * bh / kH, y1 = std::max(y0 + 1, (y + 1) * bh / kH);
+                float r = 0, g = 0, b = 0;
+                for (int sy = y0; sy < y1; ++sy)
+                    for (int sx = x0; sx < x1; ++sx) {
+                        const auto& c = pal[bg.pixels[size_t(sy) * size_t(bg.width) + size_t(sx)]];
+                        r += c.r;
+                        g += c.g;
+                        b += c.b;
+                    }
+                const float n = float((x1 - x0) * (y1 - y0));
+                float* o = &rgb[size_t(y * kW + x) * 3];
+                o[0] = r / n;
+                o[1] = g / n;
+                o[2] = b / n;
+            }
+        for (int pass = 0; pass < 3; ++pass) {
+            std::vector<float> t(rgb.size());
+            for (int y = 0; y < kH; ++y)
+                for (int x = 0; x < kW; ++x)
+                    for (int ch = 0; ch < 3; ++ch) {
+                        float s = 0;
+                        for (int dy = -1; dy <= 1; ++dy)
+                            for (int dx = -1; dx <= 1; ++dx) {
+                                const int sx = std::clamp(x + dx, 0, kW - 1), sy = std::clamp(y + dy, 0, kH - 1);
+                                s += rgb[size_t(sy * kW + sx) * 3 + size_t(ch)];
+                            }
+                        t[size_t(y * kW + x) * 3 + size_t(ch)] = s / 9.0f;
+                    }
+            rgb.swap(t);
+        }
+        std::vector<uint8_t> px(size_t(kW * kH * 4));
+        for (size_t i = 0; i < size_t(kW * kH); ++i) {
+            for (size_t ch = 0; ch < 3; ++ch) px[i * 4 + ch] = uint8_t(std::clamp(rgb[i * 3 + ch] * 0.75f, 0.0f, 255.0f));
+            px[i * 4 + 3] = 255;
+        }
+        bars_tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, kW, kH);
+        if (!bars_tex) return;
+        SDL_UpdateTexture(bars_tex, nullptr, px.data(), kW * 4);
+        SDL_SetTextureScaleMode(bars_tex, SDL_SCALEMODE_LINEAR);
+        SDL_SetTextureBlendMode(bars_tex, SDL_BLENDMODE_NONE);
+    };
     SDL_Texture* tex = nullptr;
     SDL_Palette* tex_palette = nullptr;
     std::array<SDL_Color, 256> tex_colors{};
@@ -2036,9 +2093,11 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     save_menu();
                     if (mv.vsync != opt.vsync && !opt.headless) SDL_SetRenderVSync(renderer, mv.vsync ? 1 : 0);
                     scr::VideoSettings now = video_from(opt);
-                    const bool new_picture = mv.fullscreen != now.fullscreen || mv.widescreen != now.widescreen ||
-                                             mv.width != now.width || mv.height != now.height;
-                    // the rest when Esc leaves the page: the menu again on the new picture
+                    const bool new_picture = mv.fullscreen != now.fullscreen || mv.width != now.width || mv.height != now.height;
+                    // the rest when Esc leaves the page: the menu again on the new picture.
+                    // (Widescreen alone needs none: the menu's picture stays 4:3 either way, and
+                    // only the bars beside it change.)
+                    now.widescreen = mv.widescreen;
                     now.view_distance = mv.view_distance;
                     now.vsync = mv.vsync;
                     now.frame_limit = mv.frame_limit;
@@ -2152,7 +2211,20 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         SDL_GetRenderOutputSize(renderer, &ow, &oh);
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderClear(renderer);
-        const SDL_FRect dst = present_rect(ow, oh, opt.aspect, fb.width(), fb.height());
+        // (a menu made before WIDESCREEN went on keeps its 4:3 shape: its pixels need not be square)
+        const SDL_FRect dst = present_rect(ow, oh, menu && !fb.wide && opt.aspect == "wide" ? "4:3" : opt.aspect, fb.width(), fb.height());
+        if (menu && opt.aspect == "wide" && (dst.w + 1.0f < float(ow) || dst.h + 1.0f < float(oh))) {
+            if (menu->backdrop() != bars_of) {
+                bars_of = menu->backdrop();
+                if (bars_of) make_bars(*bars_of);
+            }
+            if (bars_tex && bars_of) {
+                // (fading with the menu)
+                const auto m = uint8_t(std::clamp(menu->brightness, 0.0f, 1.0f) * 255.0f);
+                SDL_SetTextureColorMod(bars_tex, m, m, m);
+                SDL_RenderTexture(renderer, bars_tex, nullptr, nullptr);
+            }
+        }
         // a picture larger than the window (OPTIONS > VIDEO lets the render size pass the
         // screen's) is filtered down; otherwise its pixels stay sharp
         if (!tex_palette && !opt.headless) SDL_SetTextureScaleMode(tex, dst.w < float(fb.width()) ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
@@ -2218,6 +2290,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     race_audio.stop();
     mixer.set_music(nullptr);
     SDL_DestroyTexture(tex);
+    if (bars_tex) SDL_DestroyTexture(bars_tex);
     if (tex_palette) SDL_DestroyPalette(tex_palette);
     return exit_code;
 }

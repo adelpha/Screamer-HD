@@ -194,6 +194,7 @@ public:
     // One frame of frontend_draw_frame (keys, camera, page) at frame time dt.
     void update(const MenuKeys& keys, float dt);
     void draw(Framebuffer& fb, Renderer& renderer);
+    const PcxImage* backdrop() const { return backdrop_; }  // the page's backdrop (ours: widescreen's side bars)
 
     // Sound effects requested this frame (indices into MENU.DTR's SOUND_FX: menu1..menu9).
     std::vector<int> sounds;
