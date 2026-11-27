@@ -138,7 +138,8 @@ void print_usage() {
     std::printf(
         "screamer %s\n"
         "Usage: screamer [options]\n"
-        "  --data DIR           original game directory (default: $SCREAMER_DATA or build-time path)\n"
+        "  --data DIR           original game directory (default: $SCREAMER_DATA, the build's path in\n"
+        "                       developer builds, a SCREAMER folder next to screamer.exe, screamer.exe's folder)\n"
         "  --headless           no visible window, software renderer, dummy audio\n"
         "  --hidden             like --headless, but with the real video driver and renderer (the graphics card) on a\n"
         "                       window that is never shown; for checking and timing what a real run does\n"
