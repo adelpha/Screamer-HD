@@ -7,8 +7,8 @@ drives exactly like the original. Car physics, collisions, CPU cars and input ti
 reproduced bit for bit, so the original's replay files play back identically.
 
 > **No game data is included.** You need your own copy of Screamer (the DOS CD, or the GOG
-> or Steam release). This project contains only new code; it is an unofficial fan project and
-> is not affiliated with or endorsed by the owners of Screamer.
+> or Steam release). This is an unofficial fan project, not affiliated with or endorsed by the
+> owners of Screamer. No licence is granted; see the [disclaimer](#disclaimer).
 
 Version **1.0** · Windows 10/11 (64-bit) · built on [SDL3](https://libsdl.org)
 
@@ -34,7 +34,8 @@ Version **1.0** · Windows 10/11 (64-bit) · built on [SDL3](https://libsdl.org)
 - [Untested and known limitations](#untested-and-known-limitations)
 - [Troubleshooting](#troubleshooting)
 - [Building from source](#building-from-source)
-- [Credits and licences](#credits-and-licences)
+- [Disclaimer](#disclaimer)
+- [Credits and third-party licences](#credits-and-third-party-licences)
 
 ---
 
@@ -484,10 +485,28 @@ reference/       symbol map and hashes of the original (never the original files
 docs/            documentation
 ```
 
-## Credits and licences
+## Disclaimer
 
-- **Screamer** (1995) was developed by Graffiti and published by Virgin Interactive. All
-  rights to the game and its data belong to their owners. This project includes none of it.
+Screamer Recomp is an **unofficial fan project**. It is not affiliated with, authorised or
+endorsed by Graffiti, Virgin Interactive, their successors, HMI (Human Machine Interfaces) or
+any other rights holder.
+
+- **Screamer**, its name, program and data (graphics, tracks, cars, sound, music, text) are
+  the property of their owners: Graffiti / Virgin Interactive and their successors. The MIDI
+  music driver reproduced here is the work of HMI and remains theirs.
+- **No game data is included** in this repository or in the release downloads. You need your
+  own legally obtained copy of Screamer to play.
+- Parts of this program are a reconstruction of the original program's behaviour, made for
+  preservation and so that owners of the game can play it on modern systems.
+- **No licence is granted.** All rights are reserved; this code is not offered under an open
+  source licence. The third-party components below keep their own licences.
+- The software is provided **as is**, without warranty of any kind. Use it at your own risk.
+
+If you are a rights holder and have concerns, please contact the repository owner.
+
+## Credits and third-party licences
+
+- **Screamer** (1995) was developed by Graffiti and published by Virgin Interactive.
 - [SDL3](https://github.com/libsdl-org/SDL), zlib licence: window, graphics, audio and input.
   Licence in `LICENSES\SDL3.txt`.
 - [Nuked-OPL3-fast](https://github.com/tgies/Nuked-OPL3-fast) by Nuke.YKT and contributors,
