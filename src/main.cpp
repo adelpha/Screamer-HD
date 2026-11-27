@@ -1,4 +1,4 @@
-// Screamer recompilation: SDL3 frontend.
+// Screamer HD: SDL3 frontend.
 //
 // Until the original game logic is reconstructed this shows the title screen from
 // the user's game files (--scene title), a track from a fixed camera (--scene track)
@@ -2570,8 +2570,8 @@ int main(int argc, char** argv) {
     else SDL_Log("game data: not found (pass --data or set SCREAMER_DATA)");
     if (!game_dir && !opt.headless && opt.scene.empty()) {
         // A plain start without the game: say where it goes rather than show the test pattern.
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Screamer: game files not found",
-            "Screamer needs the files of your own copy of the original game (DOS, GOG or Steam).\n\n"
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Screamer HD: game files not found",
+            "Screamer HD needs the files of your own copy of the original game (DOS, GOG or Steam).\n\n"
             "Copy the game's folder (the one with the GFX and DATA folders in it) into a folder\n"
             "named SCREAMER next to screamer.exe, or put screamer.exe and its DLLs into the\n"
             "game's folder, or start screamer.exe with --data \"C:\\path\\to\\Screamer\".\n\n"
@@ -2606,7 +2606,17 @@ int main(int argc, char** argv) {
         shared.choice_path = opt.save_dir + "/CHOICE.DAT";
         shared.replay_dir = opt.save_dir + "/REPLAYS/";
     } else if (!opt.headless) {
-        if (char* pref = SDL_GetPrefPath("", "ScreamerRecomp")) {
+        if (char* pref = SDL_GetPrefPath("", "ScreamerHD")) {
+            // The saves of the builds before the name Screamer HD (%APPDATA%\ScreamerRecomp)
+            // come over once, if there are none here yet.
+            std::error_code ec;
+            const std::filesystem::path here(pref);
+            const std::filesystem::path old = here.parent_path().parent_path() / "ScreamerRecomp";
+            if (!std::filesystem::exists(here / "CHOICE.DAT", ec) && std::filesystem::is_directory(old, ec)) {
+                std::filesystem::copy(old, here, std::filesystem::copy_options::recursive |
+                                                     std::filesystem::copy_options::skip_existing, ec);
+                SDL_Log("saves: copied from %s%s", old.string().c_str(), ec ? " (not all)" : "");
+            }
             shared.choice_path = std::string(pref) + "CHOICE.DAT";
             shared.replay_dir = std::string(pref) + "REPLAYS/";
             SDL_free(pref);
@@ -2653,7 +2663,7 @@ int main(int argc, char** argv) {
     SDL_WindowFlags wflags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (opt.fullscreen) wflags |= SDL_WINDOW_FULLSCREEN;
     if (opt.hidden) wflags |= SDL_WINDOW_HIDDEN | SDL_WINDOW_NOT_FOCUSABLE;
-    SDL_Window* window = SDL_CreateWindow("Screamer", opt.width, opt.height, wflags);
+    SDL_Window* window = SDL_CreateWindow("Screamer HD", opt.width, opt.height, wflags);
     if (!window) { SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "window: %s", SDL_GetError()); return 1; }
     SDL_Renderer* renderer = SDL_CreateRenderer(window, opt.renderer.empty() ? nullptr : opt.renderer.c_str());
     if (!renderer) { SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "renderer: %s", SDL_GetError()); return 1; }

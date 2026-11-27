@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Build the release package: artifacts\release\Screamer-<version>-win64.zip.
+  Build the release package: artifacts\release\ScreamerHD-<version>-win64.zip.
 .DESCRIPTION
   Builds the "dist" preset (C/C++ runtime linked in, no console window, no build-machine game
   path), runs the whole test suite on exactly those binaries (headless; the original game's
@@ -21,7 +21,7 @@ $root = Split-Path -Parent $PSScriptRoot
 
 Push-Location $root
 try {
-    $m = Select-String -Path (Join-Path $root 'CMakeLists.txt') -Pattern 'project\(ScreamerRecomp VERSION ([0-9.]+)'
+    $m = Select-String -Path (Join-Path $root 'CMakeLists.txt') -Pattern 'project\(ScreamerHD VERSION ([0-9.]+)'
     if (-not $m) { throw 'version not found in CMakeLists.txt' }
     $version = $m.Matches[0].Groups[1].Value
     $short = $version -replace '\.0$', ''   # 1.0.0 -> 1.0
@@ -51,7 +51,7 @@ try {
     if (-not $sub) { throw 'screamer.exe is not a Windows-subsystem program' }
 
     # Stage
-    $name = "Screamer-$short-win64"
+    $name = "ScreamerHD-$short-win64"
     $out = Join-Path $root 'artifacts\release'
     $stage = Join-Path $out $name
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
