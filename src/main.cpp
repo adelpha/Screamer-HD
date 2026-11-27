@@ -2216,7 +2216,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     menu->video_apply = false;
                 }
                 for (int sfx : menu->sounds) mixer.play(sfx);
-                menu->draw(fb, renderer3d);
+                // (only a picture that will be shown: a slow picture at a large size must not
+                // keep the steps from catching up, or nothing would be shown at all)
+                if (!skip_draw) menu->draw(fb, renderer3d);
                 if (menu->quit) {
                     running = false;
                     save_menu();
