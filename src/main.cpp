@@ -1371,7 +1371,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
     auto mouse_to_fb = [&](float wx, float wy, float& fx, float& fy) {
         int ww = 1, wh = 1, ow = 1, oh = 1;
         if (window) SDL_GetWindowSize(window, &ww, &wh);
-        if (renderer) SDL_GetRenderOutputSize(renderer, &ow, &oh);
+        presenter().output_size(ow, oh);
         const float px = wx * float(ow) / float(std::max(ww, 1)), py = wy * float(oh) / float(std::max(wh, 1));
         const SDL_FRect dst = present_rect(ow, oh, opt.aspect, fb.width(), fb.height());
         fx = (px - dst.x) / std::max(dst.w, 1.0f) * float(fb.width());
