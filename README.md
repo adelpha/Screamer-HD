@@ -34,7 +34,7 @@ Version **1.0** · Windows 10/11 (64-bit) · built on [SDL3](https://libsdl.org)
 - [Untested and known limitations](#untested-and-known-limitations)
 - [Troubleshooting](#troubleshooting)
 - [Building from source](#building-from-source)
-- [FAQ](#FAQ)
+- [FAQ](#faq)
 - [Disclaimer](#disclaimer)
 - [Credits and third-party licences](#credits-and-third-party-licences)
 
@@ -489,26 +489,26 @@ docs/            documentation
 
 ## FAQ
 
-**Q: Why are there visible seams and hairline cracks all over the place?**
+**Q: Why are there still visible seams and gaps?**
 
-A: Graffiti didn't exactly line things up precisely, and they often cut out
+A: Graffiti didn't always line things up precisely, and they often cut out
 polygons entirely when they thought they were insignificant to the final presentation. These 
 cracks are also present in the original game, but at the 320x200 and 640x400 resolutions 
 available they were essentially invisible.
 
 **Q: Why do the car wheels have no upper portions?**
 
-A: Graffiti were trying to keep the fill rate as low as possible to keep performance up
-on 1995 hardware. They were pretty ruthless with their trimming. It also prevented the 
-upper parts of the wheels from clipping through the car body when the car leans. Just 
-another shortcut, basically.
+A: Likely because Graffiti were trying to keep the fill rate as low as possible to keep 
+performance up on 1995 hardware. They were pretty ruthless with their trimming. It also 
+prevented the upper parts of the wheels from clipping through the car body when the car 
+leans. Just another shortcut, basically.
 
 **Q: Why when using extended draw distances are buildings and other track objects seemingly 
 appearing incomplete?**
 
 A: Again, fill rate. At the native (very short) draw distance those would never be drawn so the 
-player wouldn't see them, and the low resolutions helped disguise any visual anomolies. I 
-recommend using 1.5x to 2x view distance to minimise the undesirable effects while maintining a 
+player wouldn't see them, and the low resolutions helped disguise any visual anomalies. I 
+recommend using 1.5x to 2x view distance to minimise the undesirable effects while maintaining a 
 reasonable range of vision, but you can go nuts if you want.
 
 **Q: Why are there lots of holes in the geometry off the track?**
@@ -518,10 +518,10 @@ how the game was built. Fixing it would require remodelling the tracks.
 
 **Q: Why only software renderer?**
 
-A: I was intriugud by how far performance could be pushed with a software rendering solution.
+A: I was intrigued by how far performance could be pushed with a software rendering solution.
 The answer is: pretty far on modern hardware! I also wanted to focus on it being stable and 
 feature-complete before moving onto changing its visuals significantly. Having said that, the 
-next version will ship with a hardware renderer.
+next version is planned to ship with a hardware renderer.
 
 **Q: Was the original software renderer that bad?**
 
