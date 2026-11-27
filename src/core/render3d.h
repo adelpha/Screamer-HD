@@ -134,6 +134,42 @@ constexpr int material_frame(int frames, int32_t animation, int32_t anim_counter
 
 class WorkerPool;
 
+// The hardware renderer: with a SceneSink set, finish() hands it the frame's triangles (screen
+// space, as the pixel filler would get them) instead of filling pixels. The batches come in
+// drawing order; within a batch the triangles are in drawing order too.
+struct SceneBatch {
+    enum Kind : uint8_t {
+        Normal,    // depth-tested and written
+        Painter,   // a car: its polygons cover each other in their order whatever their depths
+                   // (tested against the rest of the scene), its depths written afterwards
+        BiasTest,  // Pose::bias_test_only: the bias decides what is drawn, the real depth is written
+        Deferred,  // translucent and darkening polygons, far to near: tested, no depth written
+    };
+    Kind kind;
+    const detail::Tri* tris;
+    size_t tri_count;
+    const detail::Fill* fills;  // Tri::fill indexes these
+};
+struct SceneFrame {
+    const Track* track;
+    const Camera* cam;
+    int width, height;  // the picture's (Framebuffer)
+    bool wide;
+    float unit_x;       // Framebuffer::unit_x
+    uint8_t sky;        // the sky colour where the track has no background panorama
+    bool sky_tilt;      // the panorama turns with the camera's roll
+    bool fade;          // the view-distance fade (see detail::FillContext)
+    float fade_iz, fade_start, fade_range;
+    bool mipmaps;
+    float mip_sharpness;
+    std::vector<SceneBatch> batches;
+};
+class SceneSink {
+public:
+    virtual ~SceneSink() = default;
+    virtual void draw_scene(const SceneFrame& frame) = 0;
+};
+
 // Objects and parts whose bounding sphere lies wholly outside the view are skipped. The draw
 // calls only note what to draw; flush_geometry() (or finish()) then transforms, clips and
 // projects everything on all CPU cores, and finish() fills the pixels, each core taking bands
@@ -188,6 +224,10 @@ public:
     // Skipped frames (a game step that is not shown): begin .. finish do nothing.
     void set_skip(bool skip) { skip_ = skip; }  // the fill threads, for other per-pixel work
     void set_anim_counter(int32_t counter) { anim_counter_ = counter; }  // SimClock::anim_counter()
+    // Where finish() sends the frame instead of filling the Framebuffer (null: fill it here).
+    // The Framebuffer passed to begin() then only gives the picture's size and shape.
+    void set_sink(SceneSink* sink) { sink_ = sink; }
+    SceneSink* sink() const { return sink_; }
 
     // Clears, draws the background panorama and every placement of the track.
     // Equivalent to begin() + draw_placements() + finish().
@@ -313,6 +353,7 @@ private:
     float fade_iz_ = 0;            // 1 / (128 + fade_depth): pixels with a smaller 1/z are in the fade
     float fade_start_ = 0, fade_range_ = 1;
     int32_t anim_counter_ = 0;
+    SceneSink* sink_ = nullptr;
 };
 
 } // namespace scr

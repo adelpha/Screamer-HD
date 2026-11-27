@@ -237,7 +237,7 @@ TEST_CASE("menu: CHOICE.DAT keeps our volumes after the original's bytes") {
     c.music_midi = 1;
     c.set(0x14, 2);
     REQUIRE(c.save(path.string()));
-    CHECK(std::filesystem::file_size(path) == 0x460 + 4 + 4 + 15 * 4);  // 4 volumes, music, 10 VIDEO settings
+    CHECK(std::filesystem::file_size(path) == 0x460 + 4 + 4 + 16 * 4);  // 4 volumes, music, 11 VIDEO settings
     scr::ChoiceFile d;
     REQUIRE(d.load(path.string()));
     CHECK((d.volume == std::array<int32_t, 4>{3, 0, 7, 10}));
@@ -416,8 +416,13 @@ TEST_CASE("menu: OPTIONS > VIDEO and its settings in CHOICE.DAT") {
     press([](scr::MenuKeys& k) { k.down = true; });
     press([](scr::MenuKeys& k) { k.right = true; });  // DISTANCE MAX wraps to 1X
     CHECK(m.video().view_distance == 1.0f);
+    press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.down = true; });
+    CHECK(!m.video().hardware);
+    press([](scr::MenuKeys& k) { k.enter = true; });  // RENDER HARDWARE
+    CHECK(m.video().hardware);
     // the ADVANCED page
-    for (int i = 0; i < 2; ++i) press([](scr::MenuKeys& k) { k.down = true; });
+    press([](scr::MenuKeys& k) { k.down = true; });
     press([](scr::MenuKeys& k) { k.enter = true; });
     REQUIRE(m.page == scr::Menu::kVideoPage + 1);
     run(m, 60);

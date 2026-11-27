@@ -65,6 +65,7 @@ target_compile_definitions(screamer_core PUBLIC
 # (attach_parent_console) and pipes as given.
 add_executable(screamer main.cpp input.cpp debug_report.cpp
   video/gl_api.cpp
+  video/gl_scene.cpp
   video/presenter_gl.cpp
   video/presenter_sdl.cpp
 )

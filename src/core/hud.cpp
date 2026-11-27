@@ -130,6 +130,9 @@ void HudSurface::pixel(int x, int y, uint8_t c) {
     const int y0 = ys_[size_t(y)], y1 = std::min(fb_.height(), std::max(y0 + 1, ys_[size_t(y) + 1]));
     if (x0 >= x1) return;
     for (int py = y0; py < y1; ++py) std::memset(&fb_.at(x0, py), c, size_t(x1 - x0));
+    if (uint8_t* const cover = fb_.cover())
+        for (int py = y0; py < y1; ++py)
+            std::memset(cover + size_t(py) * size_t(fb_.width()) + size_t(x0), Framebuffer::kCovered, size_t(x1 - x0));
 }
 
 void HudSurface::line(int x0, int y0, int x1, int y1, uint8_t c) {
@@ -237,7 +240,19 @@ void HudSurface::darken(int x, int y, int w, int h, const std::array<uint8_t, 25
     for (int py = ya; py < yb; ++py) {
         uint8_t* const row = &fb_.at(xa, py);
         const int n = xb - xa;
+        if (uint8_t* const cover = fb_.cover()) {
+            darken_layer(row, cover + size_t(py) * size_t(fb_.width()) + size_t(xa), n, t);
+            continue;
+        }
         for (int i = 0; i < n; ++i) row[i] = t[row[i]];
+    }
+}
+
+void HudSurface::darken_layer(uint8_t* row, uint8_t* cover, int n, const std::array<uint8_t, 256>& t) {
+    // (layer mode: our own pixels through the table, the 3D view under the others one step darker)
+    for (int i = 0; i < n; ++i) {
+        if (cover[i] == Framebuffer::kCovered) row[i] = t[row[i]];
+        else if (cover[i] < Framebuffer::kCovered - 1) ++cover[i];
     }
 }
 
@@ -245,6 +260,10 @@ void HudSurface::darken_all(const std::array<uint8_t, 256>& table) {
     const std::array<uint8_t, 256> t = table;
     for (int y = 0; y < fb_.height(); ++y) {
         uint8_t* const row = &fb_.at(0, y);
+        if (uint8_t* const cover = fb_.cover()) {
+            darken_layer(row, cover + size_t(y) * size_t(fb_.width()), fb_.width(), t);
+            continue;
+        }
         for (int x = 0; x < fb_.width(); ++x) row[x] = t[row[x]];
     }
 }

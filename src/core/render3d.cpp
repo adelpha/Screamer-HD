@@ -146,12 +146,12 @@ void Renderer::begin(const Track& track, const Camera& cam, Framebuffer& fb, uin
     geometry_done_ = false;
     job_count_ = 0;
     if (!pool_) pool_ = std::make_unique<WorkerPool>();
-    depth_.resize(size_t(fb.width()) * size_t(fb.height()));
+    if (!sink_) depth_.resize(size_t(fb.width()) * size_t(fb.height()));
     const int w = fb.width(), h = fb.height();
     // (the background covers every pixel when there is one; the sky colour otherwise)
     bg_columns_.clear();
     if (track.background) background_columns(*track.background, cam, fb, bg_columns_);
-    if (!clear_at_finish) {
+    if (!clear_at_finish && !sink_) {
         const int bands = std::max(1, std::min(h, pool_->threads() * 2));
         pool_->run(bands, [&](int b) { clear_rows(h * b / bands, h * (b + 1) / bands); });
     }
@@ -582,6 +582,37 @@ RenderStats Renderer::finish() {
         draw_polygon(g, g.deferred_verts.data() + d.first, d.count, d.mat, d.color, d.animation, d.reflection, d.depth_bias, 0);
     g.deferred.clear();
     g.deferred_verts.clear();
+    if (sink_) {
+        // the hardware renderer fills the pixels
+        SceneFrame f{};
+        f.track = track_;
+        f.cam = cam_;
+        f.width = fb_->width();
+        f.height = fb_->height();
+        f.wide = fb_->wide;
+        f.unit_x = fb_->unit_x();
+        f.sky = sky_;
+        f.sky_tilt = sky_tilt_;
+        f.fade = fade_;
+        f.fade_iz = fade_iz_;
+        f.fade_start = fade_start_;
+        f.fade_range = fade_range_;
+        f.mipmaps = mipmaps_;
+        f.mip_sharpness = mip_sharpness_;
+        for (size_t k = 0; k < job_count_; ++k) {
+            const Geo& o = job_geo_[k];
+            if (o.tris.empty()) continue;
+            const SceneBatch::Kind kind = o.painter ? SceneBatch::Painter : o.bias_test_only ? SceneBatch::BiasTest : SceneBatch::Normal;
+            f.batches.push_back({kind, o.tris.data(), o.tris.size(), o.fills.data()});
+        }
+        if (!g.tris.empty()) f.batches.push_back({SceneBatch::Deferred, g.tris.data(), g.tris.size(), g.fills.data()});
+        sink_->draw_scene(f);
+        g.tris.clear();
+        g.tri_rows.clear();
+        g.fills.clear();
+        job_count_ = 0;
+        return g.stats;
+    }
     // Fill the pixels: bands of rows, several per thread so that the busy parts of the
     // screen are shared out.
     if (!pool_) pool_ = std::make_unique<WorkerPool>();

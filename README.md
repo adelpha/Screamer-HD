@@ -381,7 +381,8 @@ All sound is mixed in software at 44.1 kHz stereo and played through SDL3.
 The menus are the original's 3D menus, rebuilt. New pages:
 
 - **OPTIONS > SOUND**: ANNOUNCER, ENGINE, EFFECTS, MUSIC volumes; CD MUSIC / MIDI MUSIC.
-- **OPTIONS > VIDEO**: FULLSCREEN, WIDESCREEN, RES, DISTANCE, DETAIL; ADVANCED: VSYNC,
+- **OPTIONS > VIDEO**: FULLSCREEN, WIDESCREEN, RES, DISTANCE, DETAIL, RENDER (SOFTWARE/HARDWARE:
+  the 3D view drawn by the CPU or on the graphics card with OpenGL); ADVANCED: VSYNC,
   FPS LIMIT, FAR MODELS (FULL/LOW), MIPMAPS, API (DIRECT3D/OPENGL: how the picture reaches
   the screen; switching makes the window again).
 - **OPTIONS > CONTROLS**: KEYBOARD, CONTROLLER, RUMBLE, PAD, DEFAULTS.
@@ -424,6 +425,7 @@ settings for that run.
 | `--detail high\|low` | High- or low-detail track files. |
 | `--level N` | Opponent level 0-4 (default 1). |
 | `--renderer NAME` | SDL renderer: `direct3d11`, `direct3d12`, `vulkan`, `opengl`, `software`, `gpu`. |
+| `--renderer3d software\|hardware` | The 3D view drawn by the CPU (default) or on the graphics card with OpenGL (OPTIONS > VIDEO > RENDER). |
 | `--video-api sdl\|opengl` | The picture through SDL's renderer (default) or the game's own OpenGL 3.3 context (OPTIONS > VIDEO > ADVANCED > API). |
 | `--threads N` | Threads drawing the 3D view (default: all CPU threads). |
 | `--mute` | No sound at all. |

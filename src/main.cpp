@@ -96,6 +96,7 @@ struct Options {
     int width = 0, height = 0;      // output size; 0 = default
     std::string renderer;           // SDL renderer name, empty = default
     scr::video::Api video_api = scr::video::Api::Sdl;  // --video-api: SDL's 2D renderer or our OpenGL context
+    bool hardware = false;          // --renderer3d hardware: the 3D view drawn on the graphics card (OpenGL)
     std::string aspect = "4:3";     // 4:3 | stretch | square | wide
     bool fb_set = false;            // --render-size was given
     bool smooth_turn = true;        // --smooth-turn: the camera's angles as they are, not in 2048ths of a turn
@@ -207,6 +208,10 @@ void print_usage() {
         "  --vsync on|off       wait for the screen's refresh (default on, or as OPTIONS > VIDEO)\n"
         "  --frame-limit N      at most N pictures a second (default 0: no limit)\n"
         "  --renderer NAME      SDL renderer (direct3d11, direct3d12, vulkan, opengl, software, gpu)\n"
+        "  --renderer3d software|hardware  the 3D view drawn here (default) or on the graphics card\n"
+        "                       with OpenGL (implies --video-api opengl)\n"
+        "  --video-api sdl|opengl  how the picture reaches the screen: SDL's renderer (default) or an\n"
+        "                       OpenGL 3.3 context of our own (needs a real video driver: --hidden, not --headless)\n"
         "  --aspect MODE        4:3 (default), stretch, square, or wide: widescreen. The picture fills a\n"
         "                       window of any shape with square pixels; races show more to the sides,\n"
         "                       the HUD keeps to the edges, menus stay 4:3 in the middle. Without\n"
@@ -359,6 +364,14 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--capture-every") o.capture_every = std::strtoull(next("--capture-every"), nullptr, 10);
         else if (a == "--capture-dir") o.capture_dir = next("--capture-dir");
         else if (a == "--renderer") o.renderer = next("--renderer");
+        else if (a == "--renderer3d") {
+            const std::string v = next("--renderer3d");
+            if (v != "software" && v != "hardware") {
+                std::fprintf(stderr, "--renderer3d: software or hardware, not %s\n", v.c_str());
+                return false;
+            }
+            o.hardware = v == "hardware";
+        }
         else if (a == "--video-api") {
             const std::string v = next("--video-api");
             if (!scr::video::parse_api(v, o.video_api)) {
@@ -461,6 +474,7 @@ scr::VideoSettings video_from(const Options& o) {
     v.lod = o.lod;
     v.mipmaps = o.mipmaps;
     v.opengl = o.video_api == scr::video::Api::OpenGL;
+    v.hardware = o.hardware;
     return v;
 }
 
@@ -484,6 +498,9 @@ void apply_video(Options& o, const scr::VideoSettings& v, bool force) {
     if (take("--lod")) o.lod = v.lod;
     if (take("--mipmaps")) o.mipmaps = v.mipmaps;
     if (take("--video-api")) o.video_api = v.opengl ? scr::video::Api::OpenGL : scr::video::Api::Sdl;
+    if (take("--renderer3d")) o.hardware = v.hardware;
+    // (the hardware renderer draws with OpenGL)
+    if (o.hardware) o.video_api = scr::video::Api::OpenGL;
 }
 
 // The window for the run's VIDEO settings: fullscreen or not, and in a window, the size of the
@@ -1223,6 +1240,16 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
         next.wide = w;
         fb = std::move(next);
         SDL_Log("menu picture: %dx%d", fb.width(), fb.height());
+    };
+
+    // The picture as drawn (render size): the Framebuffer, or with the hardware renderer the
+    // scene and the HUD over it, from the graphics card.
+    auto picture_surface = [&]() -> scr::SurfacePtr {
+        if (fb.layered()) {
+            presenter().upload(fb, renderer3d.pool());
+            if (scr::SurfacePtr s = presenter().read_picture()) return s;
+        }
+        return scr::framebuffer_to_surface(fb);
     };
 
     uint64_t frame = 0;
@@ -1989,6 +2016,11 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
                     view_cam.far_depth = 43808.0f * opt.view_distance;
                     view_cam.fade_depth = view_cam.far_depth * 0.75f;
                 }
+                // the hardware renderer: the 3D view on the graphics card, the HUD over it here
+                scr::SceneSink* const hw_sink = opt.hardware ? presenter().scene_sink() : nullptr;
+                fb.set_layered(hw_sink != nullptr);
+                if (hw_sink) fb.clear_layer();
+                renderer3d.set_sink(hw_sink);
                 renderer3d.begin(*track, view_cam, fb, 0, true);
                 renderer3d.draw_placements();
                 for (size_t oi = 0; oi < obstacles.list.size(); ++oi) {
@@ -2221,9 +2253,13 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
                 renderer3d.flush_geometry();
                 mark(scr::prof::Geometry);
                 renderer3d.finish();
+                renderer3d.set_sink(nullptr);
                 mark(scr::prof::Fill);
                 // MIRRO / UPDOW: race_frame flips the 3D picture (not the HUD) after drawing it
-                if (opt.race_options & 0x30) {
+                if (fb.layered()) {
+                    fb.scene_flip_x = (opt.race_options & 0x10) != 0;
+                    fb.scene_flip_y = (opt.race_options & 0x20) != 0;
+                } else if (opt.race_options & 0x30) {
                     const int fw = fb.width(), fh = fb.height();
                     if (opt.race_options & 0x10)
                         for (int y = 0; y < fh; ++y) std::reverse(&fb.at(0, y), &fb.at(0, y) + fw);
@@ -2240,6 +2276,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
                     // attract_mode_overlay, and attract_mode_fade_out's palette
                     attract.draw(fb);
                     const float b = attract.brightness();
+                    if (fb.layered()) fb.scene_brightness = b;
                     if (b < 1.0f)
                         for (scr::Rgb& c : fb.palette()) {
                             c.r = uint8_t(float(c.r) * b);
@@ -2496,16 +2533,26 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
                     apply_group_volumes();
                     save_menu();
                 }
-                if (const scr::VideoSettings mv = menu->video(); !(mv == menu_video) || menu->video_apply) {
+                if (scr::VideoSettings mv = menu->video(); !(mv == menu_video) || menu->video_apply) {
                     // OPTIONS > VIDEO: saved and used straight away (distance, detail, far models
                     // and mipmaps are for the races)
+                    scr::VideoSettings now = video_from(opt);
+                    // (the hardware renderer draws with OpenGL: choosing it chooses OpenGL, and
+                    // Direct3D the software renderer)
+                    if (mv.hardware != now.hardware && mv.hardware && !mv.opengl) {
+                        mv.opengl = true;
+                        menu->set_video(mv);
+                    } else if (mv.opengl != now.opengl && !mv.opengl && mv.hardware) {
+                        mv.hardware = false;
+                        menu->set_video(mv);
+                    }
                     menu_video = mv;
                     shared.saved_video = mv;
                     save_menu();
                     if (mv.vsync != opt.vsync && !opt.headless) presenter().set_vsync(mv.vsync);
-                    scr::VideoSettings now = video_from(opt);
                     const bool new_api = mv.opengl != now.opengl;
                     now.opengl = mv.opengl;
+                    now.hardware = mv.hardware;
                     const bool new_picture = mv.fullscreen != now.fullscreen || mv.width != now.width || mv.height != now.height;
                     now.widescreen = mv.widescreen;
                     now.view_distance = mv.view_distance;
@@ -2619,7 +2666,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
                 mixer.mix(recorded.data() + at, n, 44100);
             }
             if ((step || opt.tween_test) && opt.capture_every && frame >= opt.capture_from && frame % opt.capture_every == 0) {
-                scr::SurfacePtr s = scr::framebuffer_to_surface(fb);
+                scr::SurfacePtr s = picture_surface();
                 char name[64];
                 std::snprintf(name, sizeof name, "/fb_%06llu%s.png", static_cast<unsigned long long>(frame), step ? "" : "_t");
                 save_or_log(s.get(), opt.capture_dir + name);
@@ -2640,7 +2687,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
             std::strftime(name, sizeof name, "screamer_%Y%m%d_%H%M%S", &tm);
             std::string path = dir + name + ".png";
             for (int i = 2; std::filesystem::exists(path); ++i) path = dir + name + "_" + std::to_string(i) + ".png";
-            scr::SurfacePtr shot = scr::framebuffer_to_surface(fb);
+            scr::SurfacePtr shot = picture_surface();
             if (save_or_log(shot.get(), path)) {
                 // where it was taken, to look at the same view again (--scene track --camera)
                 if (std::FILE* f = std::fopen((path.substr(0, path.size() - 4) + ".txt").c_str(), "w")) {
@@ -2691,7 +2738,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
                 if (!s || !save_or_log(s.get(), opt.screenshot)) exit_code = 1;
             }
             if (!opt.dump_fb.empty()) {
-                scr::SurfacePtr s = scr::framebuffer_to_surface(fb);
+                scr::SurfacePtr s = picture_surface();
                 if (!save_or_log(s.get(), opt.dump_fb)) exit_code = 1;
             }
             running = false;
@@ -2746,6 +2793,7 @@ int main(int argc, char** argv) {
 #endif
     Options opt;
     if (!parse_args(argc, argv, opt)) return 2;
+    if (opt.hardware) opt.video_api = scr::video::Api::OpenGL;  // (the hardware renderer draws with OpenGL)
     install_debug_report(opt.headless);  // headless runs (tests): assertions to stderr, no dialog
 
     if (opt.headless) {

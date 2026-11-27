@@ -58,9 +58,26 @@ public:
     // (not wide: the width's 320th, whatever the picture's shape, e.g. 1280x960 for RES NATIVE)
     float unit_x() const { return wide ? float(height_) / 240.0f : float(width_) / 320.0f; }
 
+    // Layer mode (the hardware renderer): the 3D view is drawn elsewhere (on the graphics card)
+    // and this picture only holds what goes over it, the HUD and the like (HudSurface). Each
+    // pixel's cover byte says what shows there: kCovered, this picture's pixel; otherwise the
+    // 3D view, darkened that many times (HudSurface::darken over it; each step x0.75).
+    static constexpr uint8_t kCovered = 255;
+    void set_layered(bool on);
+    bool layered() const { return !cover_.empty(); }
+    uint8_t* cover() { return cover_.empty() ? nullptr : cover_.data(); }
+    const uint8_t* cover() const { return cover_.empty() ? nullptr : cover_.data(); }
+    // Nothing over the 3D view (pixels 0, cover 0).
+    void clear_layer();
+    // How the 3D view under a layered picture is shown: dimmed (the attract mode's fade) and
+    // mirrored (the MIRRO / UPDOW cheats flip the 3D picture, not the HUD).
+    float scene_brightness = 1.0f;
+    bool scene_flip_x = false, scene_flip_y = false;
+
 private:
     int width_, height_;
     std::vector<uint8_t> pixels_;
+    std::vector<uint8_t> cover_;
     Palette palette_{};
 };
 
