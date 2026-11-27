@@ -32,3 +32,21 @@ target_include_directories(nuked_opl3 SYSTEM PUBLIC ${nuked_opl3_SOURCE_DIR})
 if(MSVC)
   target_compile_options(nuked_opl3 PRIVATE /W0)
 endif()
+
+# Decoders for CD music ripped to files (the MUSIC folder): dr_mp3, dr_flac and dr_wav from
+# dr_libs, and stb_vorbis from stb. Single-file libraries, public domain or MIT-0/MIT; only fetched
+# here, and compiled into the game by audio_decoders (src/CMakeLists.txt).
+FetchContent_Declare(
+  dr_libs
+  GIT_REPOSITORY https://github.com/mackron/dr_libs.git
+  GIT_TAG        dfbebc36e7a17a0f9511798c1bd77d96f0e74413
+  SOURCE_SUBDIR  no-cmake  # its CMakeLists.txt builds its tests; only the headers are wanted
+  SYSTEM
+)
+FetchContent_Declare(
+  stb
+  GIT_REPOSITORY https://github.com/nothings/stb.git
+  GIT_TAG        6b5799bae8a1fe3792691ef4b72ae26434c3e799
+  SYSTEM
+)
+FetchContent_MakeAvailable(dr_libs stb)

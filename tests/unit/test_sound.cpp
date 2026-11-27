@@ -204,6 +204,122 @@ TEST_CASE("sound: cue sheets of the CD image") {
     std::filesystem::remove_all(dir);
 }
 
+namespace {
+
+// A 16-bit PCM WAV of `frames` frames, every sample `value`.
+void write_wav(const std::filesystem::path& p, int rate, int channels, int frames, int16_t value) {
+    std::ofstream f(p, std::ios::binary);
+    const auto u32 = [&](uint32_t v) { f.write(reinterpret_cast<const char*>(&v), 4); };
+    const auto u16 = [&](uint16_t v) { f.write(reinterpret_cast<const char*>(&v), 2); };
+    const uint32_t bytes = uint32_t(frames * channels * 2);
+    f.write("RIFF", 4);
+    u32(36 + bytes);
+    f.write("WAVEfmt ", 8);
+    u32(16);
+    u16(1);
+    u16(uint16_t(channels));
+    u32(uint32_t(rate));
+    u32(uint32_t(rate * channels * 2));
+    u16(uint16_t(channels * 2));
+    u16(16);
+    f.write("data", 4);
+    u32(bytes);
+    for (int i = 0; i < frames * channels; ++i) u16(uint16_t(value));
+}
+
+} // namespace
+
+TEST_CASE("sound: ripped CD tracks in a MUSIC folder") {
+    // the naming scheme
+    CHECK(scr::music_file_track("02 - Title.flac") == 2);
+    CHECK(scr::music_file_track("02. Title.mp3") == 2);
+    CHECK(scr::music_file_track("2.ogg") == 2);
+    CHECK(scr::music_file_track("Track02.mp3") == 2);
+    CHECK(scr::music_file_track("track08.cdda.wav") == 8);
+    CHECK(scr::music_file_track("Screamer - Track 3.flac") == 3);
+    CHECK(scr::music_file_track("Screamer - 05 - Title.mp3") == 5);
+    CHECK(scr::music_file_track("Screamer (1995) - 06 - Title.mp3") == 6);
+    CHECK(scr::music_file_track("04 Level 3.mp3") == 4);
+    CHECK(scr::music_file_track("Title.mp3") == 0);
+    CHECK(scr::music_file_track("1995.mp3") == 0);
+    CHECK(scr::music_file_track("mp3player.mp3") == 0);
+
+    const auto dir = std::filesystem::temp_directory_path() / "scr_music_test";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir / "Music");
+    CHECK(scr::find_music_files((dir / "none").string()).empty());
+    // Files numbered by CD track (from 2); FLAC beats MP3 for the same track; other files and
+    // unnumbered ones are left out.
+    write_wav(dir / "Music" / "Track02.wav", 22050, 1, 2000, 16384);
+    write_wav(dir / "Music" / "03 - B.flac", 44100, 2, 10, 0);
+    write_wav(dir / "Music" / "03 - B.mp3", 44100, 2, 10, 0);
+    write_wav(dir / "Music" / "04.txt", 44100, 2, 10, 0);
+    write_wav(dir / "Music" / "cover.wav", 44100, 2, 10, 0);
+    auto files = scr::find_music_files(dir.string());
+    REQUIRE(files.size() == 2);
+    CHECK(files[2].filename() == "Track02.wav");
+    CHECK(files[3].filename() == "03 - B.flac");
+    // Numbered from 1 (the data track left out): moved up to the CD's numbers.
+    std::filesystem::rename(dir / "Music" / "Track02.wav", dir / "Music" / "Track01.wav");
+    std::filesystem::rename(dir / "Music" / "03 - B.flac", dir / "Music" / "02 - B.flac");
+    std::filesystem::remove(dir / "Music" / "03 - B.mp3");
+    files = scr::find_music_files(dir.string());
+    REQUIRE(files.size() == 2);
+    CHECK(files[2].filename() == "Track01.wav");
+    CHECK(files[3].filename() == "02 - B.flac");
+
+    // A mono 22 kHz WAV: on both sides, resampled, looping.
+    {
+        scr::AudioFilePlayer p(files[2]);
+        REQUIRE(p.ok());
+        CHECK(p.rate() == 22050);
+        std::vector<float> buf(2 * 10000, 0.0f);
+        p.mix(buf.data(), 10000, 44100, 1.0f);  // 5000 source frames: looped twice and a half
+        CHECK(std::abs(buf[2] - 0.5f) < 1e-4f);
+        CHECK(std::abs(buf[3] - 0.5f) < 1e-4f);
+        CHECK(std::abs(buf[2 * 9999] - 0.5f) < 1e-4f);
+        CHECK(p.ok());
+    }
+    {
+        scr::AudioFilePlayer once(files[2], false);
+        std::vector<float> buf(2 * 10000, 0.0f);
+        once.mix(buf.data(), 10000, 44100, 1.0f);
+        CHECK(!once.ok());  // played to the end
+        CHECK(buf[2 * 9999] == 0.0f);
+    }
+    // Not a FLAC file after all: no player.
+    CHECK(!scr::AudioFilePlayer(files[3]).ok());
+
+    // With a CD image too: the folder's tracks win, the image fills in the rest.
+    {
+        std::ofstream cue(dir / "SCREAM.cue");
+        cue << "FILE \"SCREAM.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n"
+               "  TRACK 02 AUDIO\n    INDEX 01 00:00:10\n  TRACK 03 AUDIO\n    INDEX 01 00:00:20\n"
+               "  TRACK 04 AUDIO\n    INDEX 01 00:00:30\n";
+        std::ofstream bin(dir / "SCREAM.bin", std::ios::binary);
+        std::vector<char> data(2352 * 40, 0);
+        bin.write(data.data(), std::streamsize(data.size()));
+    }
+    scr::CdAudio cd;
+    REQUIRE(cd.open(dir.string()));
+    REQUIRE(cd.image.has_value());
+    CHECK(cd.first_track() == 2);
+    CHECK(cd.last_track() == 4);
+    CHECK(dynamic_cast<scr::AudioFilePlayer*>(cd.play(2).get()) != nullptr);
+    CHECK(dynamic_cast<scr::CdAudioPlayer*>(cd.play(3).get()) != nullptr);  // (its file is broken)
+    CHECK(dynamic_cast<scr::CdAudioPlayer*>(cd.play(4).get()) != nullptr);
+    CHECK(cd.play(5) == nullptr);
+    // The folder alone.
+    std::filesystem::remove(dir / "SCREAM.cue");
+    REQUIRE(cd.open(dir.string()));
+    CHECK(!cd.image);
+    CHECK(cd.first_track() == 2);
+    CHECK(cd.last_track() == 3);
+    CHECK(cd.play(3) == nullptr);
+    std::filesystem::remove_all(dir);
+    CHECK(!cd.open(dir.string()));
+}
+
 TEST_CASE("sound: the game's sample tables") {
     auto dir = scr::find_game_dir();
     if (!dir) SKIP("original game data not present");
