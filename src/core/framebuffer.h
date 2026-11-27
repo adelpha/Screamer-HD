@@ -55,7 +55,8 @@ public:
     // 2D graphics keep their proportions (HudSurface).
     bool wide = false;
     // Pixels per column of the original's 320 in the 3D view.
-    float unit_x() const { return float(height_) / (wide ? 240.0f : 200.0f); }
+    // (not wide: the width's 320th, whatever the picture's shape, e.g. 1280x960 for RES NATIVE)
+    float unit_x() const { return wide ? float(height_) / 240.0f : float(width_) / 320.0f; }
 
 private:
     int width_, height_;

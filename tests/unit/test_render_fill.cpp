@@ -265,7 +265,8 @@ TEST_CASE("render fill: the same picture from every build of the filler, any thr
     o.path = scr::Renderer::FillPath::Sse2;
     o.threads = 2;
     CHECK(fnv(draw(track, 320, 200, o)) == 0xcf58f962385b6c11ull);
-    CHECK(fnv(draw(track, 333, 211, o)) == 0x38021cc07407a6faull);
+    // (333x211: since its columns are the width's 320ths, not the height's 200ths)
+    CHECK(fnv(draw(track, 333, 211, o)) == 0x982b991866f96060ull);
     CHECK(fnv(a) == 0xe1cf4952b8026133ull);
 #endif
 }
