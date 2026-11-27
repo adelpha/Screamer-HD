@@ -494,7 +494,6 @@ struct Shared {
     std::array<int, 4> volumes{scr::kVolumeMax, scr::kVolumeMax, scr::kVolumeMax, scr::kVolumeMax};
     bool music_midi = false;            // and its CD MUSIC / MIDI MUSIC line
     scr::VideoSettings saved_video;     // OPTIONS > VIDEO as saved in CHOICE.DAT (not what the command line gave)
-    bool video_restart = false;         // the VIDEO page changed the picture: the menu again, where it was
     bool back_to_menu = false;          // the race asks to return to the menu
     bool attract_done = false;          // the intro demo is over (a key, or the credits ended)
     bool to_demo = false;               // the menu was left alone: the intro demo again
@@ -953,16 +952,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
             menu->page = 0;
             menu->page_stack.clear();
         }
-        if (shared.video_restart) {
-            // OPTIONS > VIDEO changed the picture: the title on it, the page where it was
-            // (as Esc from the other modes does)
-            shared.video_restart = false;
-            const auto stack = menu->page_stack;
-            const int at = menu->page;
-            menu->show_title();
-            menu->page_stack = stack;
-            menu->page = at;
-        } else if (!shared.outcomes.empty() && shared.race) {
+        if (!shared.outcomes.empty() && shared.race) {
             for (const auto& o : shared.outcomes) {
                 std::error_code ec;
                 const bool saved = !o.replay.empty() && std::filesystem::exists(o.replay, ec);
@@ -1034,10 +1024,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     // graphics card looks the colours up); renderers that cannot get it converted to RGBA,
     // and so does SDL's software renderer (headless runs), which scales RGBA much faster.
     if (opt.upload.empty() && std::strcmp(SDL_GetRendererName(renderer), "software") == 0) opt.upload = "rgba";
-    // (and so does a picture larger than the window: it is filtered down, which takes colours)
-    int out_w = 0, out_h = 0;
-    SDL_GetRenderOutputSize(renderer, &out_w, &out_h);
-    const bool larger = !opt.headless && out_w > 0 && (fb.width() > out_w || fb.height() > out_h);
+
     // Widescreen menus: the backdrop, blurred and darker, stretched over the whole window
     // behind the 4:3 menu (in place of black bars)
     SDL_Texture* bars_tex = nullptr;
@@ -1099,21 +1086,57 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     SDL_Palette* tex_palette = nullptr;
     std::array<SDL_Color, 256> tex_colors{};
     bool tex_colors_set = false;
-    if (opt.upload != "rgba" && !(opt.upload.empty() && larger)) {
-        tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_INDEX8, SDL_TEXTUREACCESS_STREAMING, fb.width(), fb.height());
-        if (tex) tex_palette = SDL_CreatePalette(256);
-        if (!tex_palette || !SDL_SetTexturePalette(tex, tex_palette) || !SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_NONE)) {
-            if (tex) SDL_DestroyTexture(tex);
-            if (tex_palette) SDL_DestroyPalette(tex_palette);
-            tex = nullptr;
-            tex_palette = nullptr;
+    auto make_texture = [&]() {
+        if (tex) SDL_DestroyTexture(tex);
+        if (tex_palette) SDL_DestroyPalette(tex_palette);
+        tex = nullptr;
+        tex_palette = nullptr;
+        tex_colors_set = false;
+        // (and so does a picture larger than the window: it is filtered down, which takes colours)
+        int out_w = 0, out_h = 0;
+        SDL_GetRenderOutputSize(renderer, &out_w, &out_h);
+        const bool larger = !opt.headless && out_w > 0 && (fb.width() > out_w || fb.height() > out_h);
+        if (opt.upload != "rgba" && !(opt.upload.empty() && larger)) {
+            tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_INDEX8, SDL_TEXTUREACCESS_STREAMING, fb.width(), fb.height());
+            if (tex) tex_palette = SDL_CreatePalette(256);
+            if (!tex_palette || !SDL_SetTexturePalette(tex, tex_palette) || !SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_NONE)) {
+                if (tex) SDL_DestroyTexture(tex);
+                if (tex_palette) SDL_DestroyPalette(tex_palette);
+                tex = nullptr;
+                tex_palette = nullptr;
+            }
         }
-    }
-    if (!tex) {
-        tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, fb.width(), fb.height());
-        SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_NONE);  // (every pixel is opaque)
-    }
-    SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
+        if (!tex) {
+            tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, fb.width(), fb.height());
+            SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_NONE);  // (every pixel is opaque)
+        }
+        SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
+    };
+    make_texture();
+    // OPTIONS > VIDEO in the menu, live: the menu's picture made again at the new size (from
+    // the window's pixels for NATIVE and widescreen), and its texture
+    auto resize_menu_picture = [&]() {
+        const bool w = opt.aspect == "wide";
+        if (!opt.fb_set && (w || opt.native_res)) {
+            int ww = opt.width, wh = opt.height;
+            if (!opt.headless) SDL_GetWindowSizeInPixels(window, &ww, &wh);
+            if (ww > 0 && wh > 0) {
+                if (!w) {
+                    wh = std::min(wh, int(std::lround(double(ww) * 3.0 / 4.0)));
+                    ww = int(std::lround(double(wh) * 4.0 / 3.0));
+                }
+                opt.fb_width = ww;
+                opt.fb_height = wh;
+            }
+        }
+        const int mw = w ? std::min(opt.fb_width, int(std::lround(double(opt.fb_height) * 4.0 / 3.0))) : opt.fb_width;
+        if (mw == fb.width() && opt.fb_height == fb.height() && fb.wide == w) return;
+        scr::Framebuffer next(mw, opt.fb_height);
+        next.wide = w;
+        fb = std::move(next);
+        make_texture();
+        SDL_Log("menu picture: %dx%d", fb.width(), fb.height());
+    };
 
     uint64_t frame = 0;
     float end_timer = 0;
@@ -1218,6 +1241,10 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         while (SDL_PollEvent(&ev)) {
             switch (ev.type) {
             case SDL_EVENT_QUIT: running = false; break;
+            case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+                // a menu drawn at the window's size (RES NATIVE, widescreen) follows it
+                if (menu && !opt.fb_set) resize_menu_picture();
+                break;
             case SDL_EVENT_KEY_DOWN:
                 if (track && !menu && !ev.key.repeat && ev.key.key == SDLK_F9) {
                     // F9 / Shift+F9: the next / previous view distance (ours)
@@ -2086,32 +2113,29 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                     save_menu();
                 }
                 if (const scr::VideoSettings mv = menu->video(); !(mv == menu_video) || menu->video_apply) {
-                    // OPTIONS > VIDEO: saved straight away; what needs no new picture is used
-                    // straight away too (vsync, the frame limit, and the rest is for the races)
+                    // OPTIONS > VIDEO: saved and used straight away (distance, detail, far models
+                    // and mipmaps are for the races)
                     menu_video = mv;
                     shared.saved_video = mv;
                     save_menu();
                     if (mv.vsync != opt.vsync && !opt.headless) SDL_SetRenderVSync(renderer, mv.vsync ? 1 : 0);
                     scr::VideoSettings now = video_from(opt);
                     const bool new_picture = mv.fullscreen != now.fullscreen || mv.width != now.width || mv.height != now.height;
-                    // the rest when Esc leaves the page: the menu again on the new picture.
-                    // (Widescreen alone needs none: the menu's picture stays 4:3 either way, and
-                    // only the bars beside it change.)
                     now.widescreen = mv.widescreen;
                     now.view_distance = mv.view_distance;
                     now.vsync = mv.vsync;
                     now.frame_limit = mv.frame_limit;
                     now.lod = mv.lod;
                     now.mipmaps = mv.mipmaps;
-                    if (menu->video_apply && new_picture) now = mv;
+                    if (new_picture) now = mv;
                     apply_video(opt, now, true);
-                    if (menu->video_apply && new_picture) {
+                    if (new_picture) {
+                        // fullscreen and RES: the window and the picture at once
                         SDL_Log("video: %s, %s, %s", mv.fullscreen ? "fullscreen" : "window", mv.widescreen ? "widescreen" : "4:3",
                                 mv.width ? (std::to_string(mv.width) + "x" + std::to_string(mv.height)).c_str() : "native");
                         if (!opt.headless) apply_window(window, opt);
-                        shared.video_restart = true;
-                        running = false;
                     }
+                    resize_menu_picture();
                     menu->video_apply = false;
                 }
                 for (int sfx : menu->sounds) mixer.play(sfx);
@@ -2435,11 +2459,7 @@ int main(int argc, char** argv) {
             opt.scene = "attract";
             continue;
         }
-        if (shared.video_restart) {
-            // OPTIONS > VIDEO changed the picture: the menu again on the new one
-            opt.scene = "menu";
-            continue;
-        }
+
         if (shared.play_replay) {
             // the race just run, again from its inputs, then PLAY AGAIN?
             opt.replay_file = shared.outcomes.back().replay;
