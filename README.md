@@ -491,7 +491,7 @@ docs/            documentation
 
 Q: Why are there visible seams and hairline cracks all over the place?
 
-A: The original developers didn't exactly line things up precisely, and they often cut out
+A: Graffiti didn't exactly line things up precisely, and they often cut out
 polygons entirely when they thought they were insignificant to the final presentation. These 
 cracks are also present in the original game, but at the 320x200 and 640x400 resolutions 
 available they were essentially invisible.
@@ -522,6 +522,11 @@ A: I was intriugud by how far performance could be pushed with a software render
 The answer is: pretty far on modern hardware! I also wanted to focus on it being stable and 
 feature-complete before moving onto changing its visuals significantly. Having said that, the 
 next version will ship with a hardware renderer.
+
+Q: Was the original software renderer that bad?
+
+A: Absolutely not. It was a highly optimised piece of x86 assembly, about as good as you could
+write for machines at the time. Graffiti did a great job with it, but time has moved on.
 
 ## Disclaimer
 
