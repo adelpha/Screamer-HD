@@ -5,6 +5,7 @@ set(TEST_OUT_DIR ${CMAKE_BINARY_DIR}/test-output)
 add_executable(unit_tests
   unit/test_main.cpp
   ../src/debug_report.cpp
+  ../src/input.cpp
   unit/test_framebuffer.cpp
   unit/test_image.cpp
   unit/test_gamedata.cpp
@@ -20,6 +21,7 @@ add_executable(unit_tests
   unit/test_fm_synth.cpp
   unit/test_menu.cpp
   unit/test_replay.cpp
+  unit/test_controls.cpp
 )
 target_include_directories(unit_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(unit_tests PRIVATE screamer_core)
@@ -60,6 +62,17 @@ add_render_test(testpattern_window_widescreen
 add_test(NAME smoke.headless_run COMMAND screamer --headless --scene testpattern --frames 10)
 set_tests_properties(smoke.headless_run PROPERTIES LABELS "smoke" PASS_REGULAR_EXPRESSION "frames=10")
 
+# --- The main menu's way out on a pad (needs the game data): Back quits at once, B held 2 s on a
+# pad without Back quits after 100 frames, a tap of B does nothing ---
+if(EXISTS ${SCREAMER_DATA_DIR}/GFX/MENU.DAT)
+  add_test(NAME smoke.menu_pad_back COMMAND screamer --headless --scene menu --frames 400 --menu-keys 200:padback)
+  set_tests_properties(smoke.menu_pad_back PROPERTIES LABELS "smoke" PASS_REGULAR_EXPRESSION "frames=201")
+  add_test(NAME smoke.menu_pad_hold_b COMMAND screamer --headless --scene menu --frames 400 --menu-keys 200-330:padb)
+  set_tests_properties(smoke.menu_pad_hold_b PROPERTIES LABELS "smoke" PASS_REGULAR_EXPRESSION "frames=301")
+  add_test(NAME smoke.menu_pad_tap_b COMMAND screamer --headless --scene menu --frames 400 --menu-keys 200-205:padb)
+  set_tests_properties(smoke.menu_pad_tap_b PROPERTIES LABELS "smoke" PASS_REGULAR_EXPRESSION "frames=400")
+endif()
+
 # --- Car physics against recordings of the original (tools/dosbox/record-race.ps1) ---
 # The recordings stay in artifacts/traces (git-ignored); a test exists only when its recording
 # does. Allowed differences: bumps from CPU cars (not ported yet) and +-1 ground height on slopes.
@@ -73,6 +86,16 @@ foreach(trace accel:1 steer:0 wall:0 skid:0 fast:2)
   if(EXISTS ${file} AND EXISTS ${SCREAMER_DATA_DIR}/GFX/MAP1H.DAT)
     add_test(NAME physics.${name}
       COMMAND tracecmp ${file} ${SCREAMER_DATA_DIR}/GFX/MAP1H.DAT MAP1 --exact --max-diff ${allowed})
+    set_tests_properties(physics.${name} PROPERTIES LABELS "physics")
+  endif()
+endforeach()
+# The control setups (trace version 5, with the bindings): a joystick's analog axes, the same
+# axes read as keys, a manual gearbox's gear keys. Recorded on MAP2 (the track CHOICE.DAT had).
+foreach(name analog digital gears)
+  set(file ${CMAKE_SOURCE_DIR}/artifacts/traces/${name}.trace)
+  if(EXISTS ${file} AND EXISTS ${SCREAMER_DATA_DIR}/GFX/MAP2H.DAT)
+    add_test(NAME physics.${name}
+      COMMAND tracecmp ${file} ${SCREAMER_DATA_DIR}/GFX/MAP2H.DAT MAP2 --exact)
     set_tests_properties(physics.${name} PROPERTIES LABELS "physics")
   endif()
 endforeach()

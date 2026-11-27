@@ -30,17 +30,41 @@ struct Record {
     int pow_row;
     uint32_t flags;
     int accel, brake, left, right;
+    int gear_up = 0, gear_down = 0;  // version 5
     std::vector<uint8_t> car;
 };
+scr::ControlSetup g_setup;  // version 5: g_control_bindings at the start (else the keyboard's)
+
+// The recorded controls and setup as our CarInput.
+scr::CarInput input_of(const Record& r) {
+    scr::CarInput in;
+    in.setup = g_setup;
+    in.accel = r.accel;
+    in.brake = r.brake;
+    in.steer = r.left;
+    in.steer_right = r.right;
+    in.gear_up = r.gear_up;
+    in.gear_down = r.gear_down;
+    return in;
+}
 
 std::vector<Record> load_trace(const char* path) {
     std::ifstream f(path, std::ios::binary);
     std::vector<uint8_t> d((std::istreambuf_iterator<char>(f)), {});
     std::vector<Record> out;
     if (d.size() < 16 || std::memcmp(d.data(), "SCRTRACE", 8) != 0) return out;
-    uint32_t rs;
+    uint32_t rs, version;
+    std::memcpy(&version, d.data() + 8, 4);
     std::memcpy(&rs, d.data() + 12, 4);
-    for (size_t o = 16; o + rs <= d.size(); o += rs) {
+    size_t o = 16, head = 28;
+    if (version == 5) {
+        // the bindings (6 x 0x1c) after the header; records carry the gear inputs too
+        if (d.size() < o + 0xa8) return out;
+        std::memcpy(g_setup.b.data(), d.data() + o, 0xa8);
+        o += 0xa8;
+        head = 36;
+    }
+    for (; o + rs <= d.size(); o += rs) {
         Record r;
         std::memcpy(&r.frame_time, d.data() + o, 4);
         std::memcpy(&r.pow_row, d.data() + o + 4, 4);
@@ -49,7 +73,11 @@ std::vector<Record> load_trace(const char* path) {
         std::memcpy(&r.brake, d.data() + o + 16, 4);
         std::memcpy(&r.left, d.data() + o + 20, 4);
         std::memcpy(&r.right, d.data() + o + 24, 4);
-        r.car.assign(d.begin() + std::ptrdiff_t(o + 28), d.begin() + std::ptrdiff_t(o + rs));
+        if (head == 36) {
+            std::memcpy(&r.gear_up, d.data() + o + 28, 4);
+            std::memcpy(&r.gear_down, d.data() + o + 32, 4);
+        }
+        r.car.assign(d.begin() + std::ptrdiff_t(o + head), d.begin() + std::ptrdiff_t(o + rs));
         out.push_back(std::move(r));
     }
     return out;
@@ -174,11 +202,7 @@ int main(int argc, char** argv) {
             const Record& r = replay_trace ? trace[k + 1] : r0;
             race.load_state(r0.car.data(), r0.car.data() + kCar, n_cpu);
             race.player.camera_car_mode = !replay_trace;  // replays: the trackside camera
-            scr::CarInput in;
-            in.accel = r.accel;
-            in.brake = r.brake;
-            in.steer_left = r.left;
-            in.steer_right = r.right;
+            scr::CarInput in = input_of(r);
             in.race_started = (r0.flags & 1) != 0;
             in.cpu_cars_go = (r0.flags & 5) != 0;
             in.coasting = (r0.flags & 0x4000) != 0;
@@ -186,12 +210,7 @@ int main(int argc, char** argv) {
             int row = r.pow_row;
             if (!rpl.frames.empty() && rpl_skip + k < rpl.frames.size()) {
                 const scr::ReplayFrame& f = rpl.frames[rpl_skip + k];
-                in.accel = f.accel;
-                in.brake = f.brake;
-                in.steer_left = f.steer_left;
-                in.steer_right = f.steer_right;
-                in.gear_up = f.gear_up != 0;
-                in.gear_down = f.gear_down != 0;
+                rpl.read_frame(f, in);
                 ft = f.frame_time;
                 row = int(1.0 / double(ft));
                 race.raw_frame_time = f.raw_time;
@@ -273,11 +292,7 @@ int main(int argc, char** argv) {
         const Record& r = trace[k];
         scr::Car car;
         car.load_player_car(r.car.data());
-        scr::CarInput in;
-        in.accel = r.accel;
-        in.brake = r.brake;
-        in.steer_left = r.left;
-        in.steer_right = r.right;
+        scr::CarInput in = input_of(r);
         in.race_started = (r.flags & 1) != 0;
         in.coasting = (r.flags & 0x4000) != 0;
         car.update(*track, in, r.frame_time, r.pow_row);

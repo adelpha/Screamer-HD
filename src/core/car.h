@@ -17,6 +17,7 @@
 // Sounds are cues for RaceAudio; obstacles are in core/obstacles.
 // Network catch-up (speed_factor at 0x300) stays 1.
 
+#include "core/controls.h"
 #include "core/track.h"
 
 #include <array>
@@ -24,17 +25,18 @@
 
 namespace scr {
 
-// The controls as the game reads them (g_input_*): analog 0..1023, digital keys give 1023.
+// The controls as the game reads them: g_input_* (analog -1023..1023, keys and buttons 1023)
+// and the control setup the physics also looks at (core/controls.h: the bindings' directions
+// and devices). The defaults are the original's keyboard setup.
 struct CarInput {
     int accel = 0;        // g_input_accel
     int brake = 0;        // g_input_brake
-    int steer_left = 0;   // g_input_steer        (keyboard mode: two keys)
-    int steer_right = 0;  // 0x119888
-    int steer = 0;        // analog steering -1023 (left) .. 1023 (right); used when analog
-    bool analog_steer = false;  // 0x119814 == 0 (joystick) instead of 1 (keyboard)
-    bool analog_brake = false;  // brake pedal on an axis: no ramp
-    bool gear_up = false;       // manual gearbox only
-    bool gear_down = false;
+    int steer = 0;        // g_input_steer: the left key, or the axis (-1023 left .. 1023 right)
+    int steer_right = 0;  // 0x119888: the right key (keyboard steering only)
+    int gear_up = 0;      // g_input_gear (manual gearbox only)
+    int gear_down = 0;    // 0x119890
+    ControlSetup setup;   // g_control_bindings
+    bool mirror = false;  // g_race_options & 0x10 (MIRRO): the steering turned round
     bool race_started = true;   // g_race_flags & 1: before the start only the revs move
     bool cpu_cars_go = true;    // g_race_flags & 5: the CPU cars drive
     // g_race_flags & 0x4000: out of time or past the finish: no throttle, no gear changes,

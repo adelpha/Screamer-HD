@@ -3,6 +3,7 @@ add_library(screamer_core STATIC
   core/animations.cpp
   core/archive.cpp
   core/car.cpp
+  core/controls.cpp
   core/dtr.cpp
   core/framebuffer.cpp
   core/hud.cpp
@@ -44,7 +45,7 @@ target_compile_definitions(screamer_core PUBLIC
 )
 
 # The game executable (console subsystem for now so headless runs can log to stdout).
-add_executable(screamer main.cpp debug_report.cpp)
+add_executable(screamer main.cpp input.cpp debug_report.cpp)
 target_link_libraries(screamer PRIVATE screamer_core)
 
 # Image comparison tool used by the test harness and the DOSBox reference scripts.

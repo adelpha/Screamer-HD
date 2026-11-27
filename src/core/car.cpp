@@ -180,16 +180,18 @@ void Car::engine_gearbox(CarInput& in) {
     // DOSBox runs the x87) and rounded to float only where the original stores a float.
     const double maxrpm = setup.maxrpm;
     const double dt = dt_;
-    if (in.coasting) in.brake = 512;  // (DAT_00119804, the brake axis' sign, << 9)
+    if (in.coasting) in.brake = ControlSetup::sign(in.setup.b[kActBrake].dir) << 9;  // (DAT_00119804's sign << 9)
     if (in.coasting || !in.race_started) {
         engine_rpm = lerp(engine_rpm, float(double(throttle) * maxrpm), in.coasting ? 0x3d : 0x4b);
         if (double(speed) < dt * 500.0) gear = 0;
         return;
     }
     if (setup.shiftmode == 0) {
-        if (in.gear_up) {
+        // a gear input counts with its binding's direction (0x119858, 0x119874); held, it
+        // changes one gear (the latch opens when neither is pressed)
+        if (ControlSetup::sign(in.gear_up) == in.setup.b[kActGearUp].dir && in.gear_up != 0) {
             if (gear < setup.n_shifts && !gear_latch) { ++gear; gear_latch = true; }
-        } else if (in.gear_down) {
+        } else if (ControlSetup::sign(in.gear_down) == in.setup.b[kActGearDown].dir && in.gear_down != 0) {
             if (gear > 0 && !gear_latch) { --gear; gear_latch = true; }
         } else {
             gear_latch = false;
@@ -205,7 +207,8 @@ void Car::engine_gearbox(CarInput& in) {
     if (gear != 0) {
         const double ratio = setup.sh_rap[size_t(gear - 1)];
         speed_limit = float(double(setup.maxspd) - (1.0 + std::sin(double(pitch)) * 4.0) * 1000.0);
-        if (double(setup.grip) * 6000.0 < double(engine_rpm) && speed < 2000.0f && in.accel >= 0xc9) {
+        if (double(setup.grip) * 6000.0 < double(engine_rpm) && speed < 2000.0f &&
+            ControlSetup::sign(in.accel) == in.setup.b[kActAccel].dir && std::abs(in.accel) >= 0xc9) {
             // Wheelspin at the start: the revs drop instead of following speed.
             set_state(5);
             engine_rpm = float(double(engine_rpm) - dt * 500.0);
@@ -252,7 +255,7 @@ void Car::engine_gearbox(CarInput& in) {
 
 void Car::update_throttle(const CarInput& in) {
     if (0.0f <= throttle && skid == 0.0f && crash_state == 0 && braking == 0.0f && spin_state == 0 && !in.coasting &&
-        in.accel > 0) {
+        ControlSetup::sign(in.accel) == in.setup.b[kActAccel].dir) {
         throttle = float(std::abs(in.accel)) / 1023.0f;
     } else {
         throttle = 0.0f;
@@ -260,9 +263,9 @@ void Car::update_throttle(const CarInput& in) {
 }
 
 void Car::update_brake(const CarInput& in) {
-    if (in.brake > 0) {
-        // An analog pedal sets the brake directly; a key ramps it up to 1.
-        brake = in.analog_brake ? float(std::abs(in.brake)) / 1023.0f : lerp(brake, 1.0f, 0x52);
+    if (ControlSetup::sign(in.brake) == in.setup.b[kActBrake].dir && in.brake != 0) {
+        // A pedal (a joystick axis) sets the brake directly; anything else ramps it up to 1.
+        brake = in.setup.brake_pedal() ? float(std::abs(in.brake)) / 1023.0f : lerp(brake, 1.0f, 0x52);
     } else {
         brake = 0.0f;
     }
@@ -282,14 +285,20 @@ void Car::update_brake(const CarInput& in) {
 void Car::update_steering(const CarInput& in) {
     const int k = crash_state == 5 ? 0x58 : (braking == 0.0f && skid == 0.0f && spin_state == 0) ? 0x50 : 0x55;
     steer_max = float((1.0 - safe_sqrt(double(speed) / double(setup.maxspd))) * 0.2967059910297394 + 0.01745329238474369);
-    const float mirror = 1.0f;  // g_race_options & 0x10 (MIRRO cheat) gives -1
-    if (in.analog_steer) {
-        const float target = -(float(in.steer) * 0.0009765625f * steer_max) * mirror;
+    const float mirror = in.mirror ? -1.0f : 1.0f;  // g_race_options & 0x10 (MIRRO cheat)
+    float target = -(float(in.steer) * 0.0009765625f * steer_max) * mirror;
+    const int mode = in.setup.steer_mode();  // 0x119814 (compared unsigned)
+    if (mode == 0) {
+        // a joystick: the axis is the angle (snapped while the tyres grip)
         steer = (k == 0x50) ? target : lerp(steer, target, k);
-    } else {
-        float target = -(float(in.steer_left) * 0.0009765625f * steer_max) * mirror;
+    } else if (mode == 1) {
+        // two keys, ramped
         target = float(double(in.steer_right) * 0.0009765625 * double(steer_max) * double(mirror) + double(target));
         steer = lerp(steer, -target, k);
+        if (std::fabs(double(steer)) < 1e-05) steer = 0.0f;
+    } else if (mode == 2) {
+        // a joystick axis read as keys: the value ramped (no steer right)
+        steer = lerp(steer, target, k);
         if (std::fabs(double(steer)) < 1e-05) steer = 0.0f;
     }
     if (bumpy_front) {

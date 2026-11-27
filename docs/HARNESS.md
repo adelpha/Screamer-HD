@@ -59,8 +59,8 @@ no manual steps.
 | `--record FILE` | `--scene drive`: save the race as a `.RPL` when the run ends (playing it back with `--replay` must end at the same spot). |
 | `--save-dir DIR` | Keep `CHOICE.DAT`, ghosts and `REPLAYS/` in DIR instead of the user's pref path (headless runs save nothing without it). |
 | `--flat` | Draw faces with each material's average colour instead of textures. |
-| `--scene drive` | Drive a car on the track with the ported physics and the chase camera: arrow keys (up accelerate, down brake, left/right steer) or a gamepad (triggers, left stick). `--car-index N` picks the car from `CARS_DATA`, `--start X,Z` the start position, `--hold accel,left` holds controls in every frame for headless runs; the last frame logs the car's state. With CPU cars (tracks with racing lines, e.g. `--track MAP1`) the race starts with the countdown and shows the HUD; F1-F4 switch the view (bumper, cockpit, chase, far chase; `--view N` starts in one), M cycles the radar size. B (or the gamepad's right shoulder button) held looks back: the camera faces the other way, and in the chase views goes to the other side of the car (the picture only; `--hold rear` for headless runs). F8 (in a race) is photo mode: the race freezes and goes quiet, the HUD hides and a free camera flies about (WASD, Q/E or Space/C up/down, mouse or arrows to look, Shift faster, Ctrl slower; F8 or Esc to return; `--hold freecam` enters it at frame 150 flying forward). F12 (in any scene) saves the frame as drawn, at the render size, to Pictures/Screamer/screamer_DATE_TIME.png. |
-| `--scene menu` | The front end (the default when the game files are found): main menu, options, then NORMAL GAME goes name, track and car selection into a race and back. `--menu-keys 200:enter,300:down` presses keys at given frames for headless runs. In a race from the menu, Esc or the end of the race asks PLAY AGAIN?; P opens the car-stereo panel: previous/next switch the CD track or MIDI tune at once (MUSICn.HMP shows as track n+1), eject plays the track from the other source (CD <-> MIDI, saved as OPTIONS > SOUND's CD MUSIC / MIDI MUSIC), MODE picks one of OPTIONS > SOUND's four volumes (AN, EN, FX, MU) and VOL -/+ step it as that page does (saved). The music plays on while it is up. `--hold pause` opens it at frame 150 in headless runs; `--hold pausevol` also presses previous, VOL - on AN, MODE, VOL - on EN and eject (add `--record-audio` so there is music). |
+| `--scene drive` | Drive a car on the track with the ported physics and the chase camera, with the controls of OPTIONS > CONTROLS (`src/input.h`; defaults: Up accelerate, Space or Down brake, Left/Right steer, Page Up/Down gears; a gamepad's triggers, left stick or D-pad, Y/X gears; see the README). `--car-index N` picks the car from `CARS_DATA`, `--start X,Z` the start position, `--hold accel,left` holds controls in every frame for headless runs (`accel`, `brake`, `left`, `right`, `gearup`, `geardown`); headless runs use the default bindings and save none; the last frame logs the car's state. With CPU cars (tracks with racing lines, e.g. `--track MAP1`) the race starts with the countdown and shows the HUD; F1-F4 switch the view (bumper, cockpit, chase, far chase; `--view N` starts in one), M cycles the radar size. B (or the gamepad's right shoulder button) held looks back: the camera faces the other way, and in the chase views goes to the other side of the car (the picture only; `--hold rear` for headless runs). F8 (in a race) is photo mode: the race freezes and goes quiet, the HUD hides and a free camera flies about (WASD, Q/E or Space/C up/down, mouse or arrows to look, Shift faster, Ctrl slower; F8 or Esc to return; `--hold freecam` enters it at frame 150 flying forward). F12 (in any scene) saves the frame as drawn, at the render size, to Pictures/Screamer/screamer_DATE_TIME.png. |
+| `--scene menu` | The front end (the default when the game files are found): main menu, options, then NORMAL GAME goes name, track and car selection into a race and back. `--menu-keys 200:enter,300:down` presses keys at given frames for headless runs (`200-300:key` holds one over those frames; `padback` is a pad's Back, `padb` B on a pad without Back: held 2 s on the main page it quits, the ring in the corner showing from 0.2 s). In a race from the menu, Esc or the end of the race asks PLAY AGAIN?; P opens the car-stereo panel: previous/next switch the CD track or MIDI tune at once (MUSICn.HMP shows as track n+1), eject plays the track from the other source (CD <-> MIDI, saved as OPTIONS > SOUND's CD MUSIC / MIDI MUSIC), MODE picks one of OPTIONS > SOUND's four volumes (AN, EN, FX, MU) and VOL -/+ step it as that page does (saved). The music plays on while it is up. `--hold pause` opens it at frame 150 in headless runs; `--hold pausevol` also presses previous, VOL - on AN, MODE, VOL - on EN and eject (add `--record-audio` so there is music). |
 | `--game-mode N` | `--scene drive` in a special mode: 4 time attack, 0x20 cone carnage, 0x40 slalom (alone, their obstacles). |
 | `--detail high\|low` | Track files: `GFX/MAPnH.DAT` (default; what the game loads) or `MAPnL.DAT`. |
 | `--car NAME[,X,Y,Z,YAW[,ANIM]]` | Add a car object (`AUTO00`..`AUTO06`) with its shadow; repeatable. `ANIM` is the object's animation word in hex (`8000` = second paint scheme). Without a position the car stands in front of the camera. |
@@ -153,7 +153,7 @@ config (user's own DOSBox config is ignored), mounts `SCREAMER/` as C: and the C
 * **Debugger**: `-Debugger` uses `dosbox_with_debugger.exe` (Alt+Pause breaks in).
 * `-Cycles 'fixed 60000'` gives more repeatable timing than `max`. Audio is off unless `-Sound`.
 
-* **Recording the original's car physics**: `tools/dosbox/record-race.ps1 -Out artifacts/traces/x.trace
+  .\tools\dosbox\record-race.ps1 -Out artifacts\traces\gears.trace
   -Frames 450 -Script '170:accel,60:accel+left,40:brake' [-Skip N]` starts a new game (MAP1, default
   name) headless, then patches a small hook over the game loop's `CALL race_frame`: every frame it
   writes the scripted controls over `g_input_*` and copies the frame time, damping-table row, race
@@ -163,6 +163,24 @@ config (user's own DOSBox config is ignored), mounts `SCREAMER/` as C: and the C
   the recorded state, runs our `Car::update` and lists the fields that differ from the next record.
   With `RECORD_OPPONENTS=1` in the environment the recording also holds `g_opponents` (about 65
   frames fit); `tracecmp ... --data DATA/MAP1.DAT` then steps the whole race (player and CPU cars).
+  Player-only recordings (trace version 5) keep the control setup (`g_control_bindings`) and the
+  gear inputs too, so the analog paths can be checked: `-Setup analog` (accel and brake on one
+  joystick axis, accel the negative way, the brake a pedal, the steering a joystick axis) or
+  `-Setup digital` (the same axes read as keys) switches the bindings before recording (and off,
+  so `controls_update` leaves the scripted values alone; no joystick is read), `-Manual` gives the
+  car a manual gearbox, and the script takes values as well as keys: `'150:accel=-700+steer=300,
+  40:brake=600,10:accel+gearup'` (`accel=`, `brake=`, `steer=`, `right=`, `gearup`, `geardown`).
+  `artifacts/traces/analog.trace`, `digital.trace` and `gears.trace` are the `physics.analog`,
+  `physics.digital` and `physics.gears` tests, recorded with:
+
+  ```powershell
+  .\tools\dosbox\record-race.ps1 -Out artifacts\traces\analog.trace -Setup analog -Skip 200 -Frames 400 -Script '200:accel=-1023,80:accel=-1023,60:accel=-600+steer=300,40:accel=-800+steer=-700,30:accel=500+steer=150,40:brake=400,30:brake=-300+steer=-1023,50:accel=-1023+steer=1023,30:brake=1023+steer=-200,40:accel=-900'
+  .\tools\dosbox\record-race.ps1 -Out artifacts\traces\digital.trace -Setup digital -Skip 200 -Frames 400 -Script '200:accel=-1023,80:accel=-1023,60:accel=-1023+steer=700,60:accel=-1023+steer=-300,40:brake=800,40:accel=-1023+steer=-1023,40:brake=300+steer=200,80:accel=-400+steer=450'
+  .\tools\dosbox\record-race.ps1 -Out artifacts\traces\gears.trace -Manual -Skip 190 -Frames 420 -Script '190:accel,20:accel,5:accel+gearup,60:accel,5:accel+gearup,1:accel,5:accel+gearup,60:accel,3:accel+geardown,40:accel,10:accel+gearup+geardown,20:accel,4:geardown,37:brake,150:accel'
+  ```
+  They start after the countdown (`-Skip`) on the track the game's `CHOICE.DAT` had (MAP2 here;
+  the default `-Autotype` takes the menu's last track), so the tests compare them with MAP2.
+  
 
 Comparing our output with the original:
 
