@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ScreamerRecomp VERSION 0.1.0 LANGUAGES C CXX)
+project(ScreamerRecomp VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,6 +11,14 @@ option(SCREAMER_BUILD_TESTS "Build the test suite" ON)
 
 # Where the user's original game files live (never committed).
 set(SCREAMER_DATA_DIR "${CMAKE_SOURCE_DIR}/SCREAMER" CACHE PATH "Path to the original Screamer install")
+
+# Release packages (tools\package.ps1, preset "dist"): the C/C++ runtime linked into each
+# binary (no Visual C++ redistributable needed), the game as a Windows-subsystem program (no
+# console window), and no build machine's game path compiled in.
+option(SCREAMER_DIST "Build for a release package" OFF)
+if(SCREAMER_DIST AND MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 include(cmake/Dependencies.cmake)
 

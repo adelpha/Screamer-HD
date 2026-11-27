@@ -2533,6 +2533,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
 }
 
 int main(int argc, char** argv) {
+#ifdef SCREAMER_GUI_SUBSYSTEM
+    attach_parent_console();  // (release packages: no console window of their own)
+#endif
     Options opt;
     if (!parse_args(argc, argv, opt)) return 2;
     install_debug_report(opt.headless);  // headless runs (tests): assertions to stderr, no dialog
@@ -2555,6 +2558,18 @@ int main(int argc, char** argv) {
     const auto game_dir = scr::find_game_dir(opt.data_dir);
     if (game_dir) SDL_Log("game data: %s", game_dir->c_str());
     else SDL_Log("game data: not found (pass --data or set SCREAMER_DATA)");
+    if (!game_dir && !opt.headless && opt.scene.empty()) {
+        // A plain start without the game: say where it goes rather than show the test pattern.
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Screamer: game files not found",
+            "Screamer needs the files of your own copy of the original game (DOS, GOG or Steam).\n\n"
+            "Copy the game's folder (the one with the GFX and DATA folders in it) into a folder\n"
+            "named SCREAMER next to screamer.exe, or put screamer.exe and its DLLs into the\n"
+            "game's folder, or start screamer.exe with --data \"C:\\path\\to\\Screamer\".\n\n"
+            "See README.md for details.",
+            nullptr);
+        SDL_Quit();
+        return 1;
+    }
 
     // Without --scene the game starts with the intro demo, then the menu (game_main:
     // attract_mode_run, frontend_run), when the game files are there.

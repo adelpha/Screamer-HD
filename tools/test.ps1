@@ -7,7 +7,7 @@
   .\tools\test.ps1 -Filter testpattern  # ctest -R regex
 #>
 param(
-    [ValidateSet('debug', 'release')] [string] $Preset = 'debug',
+    [ValidateSet('debug', 'release', 'dist')] [string] $Preset = 'debug',
     [string] $Label,
     [string] $Filter,
     [switch] $NoBuild
