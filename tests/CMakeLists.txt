@@ -14,6 +14,7 @@ add_executable(unit_tests
   unit/test_pcx.cpp
   unit/test_sim_clock.cpp
   unit/test_track.cpp
+  unit/test_track_edit.cpp
   unit/test_render_fill.cpp
   unit/test_car.cpp
   unit/test_hud.cpp
