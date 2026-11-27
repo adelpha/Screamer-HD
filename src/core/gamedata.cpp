@@ -40,7 +40,10 @@ std::optional<std::string> find_game_dir(const std::string& explicit_path) {
     if (!explicit_path.empty()) candidates.push_back(explicit_path);
     if (const char* env = SDL_getenv("SCREAMER_DATA"); env && *env) candidates.emplace_back(env);
     candidates.emplace_back(SCREAMER_DEFAULT_DATA_DIR);
-    if (const char* base = SDL_GetBasePath()) candidates.push_back(std::string(base) + "SCREAMER");
+    if (const char* base = SDL_GetBasePath()) {
+        candidates.push_back(std::string(base) + "SCREAMER");  // a SCREAMER folder next to the program
+        candidates.emplace_back(base);                          // the program in the game's own folder
+    }
 
     for (const auto& c : candidates) {
         if (looks_like_game_dir(c)) return fs::path(c).lexically_normal().string();

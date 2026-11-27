@@ -8,11 +8,15 @@
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(
-    [ValidateSet('debug', 'release')] [string] $Preset = 'debug',
+    [ValidateSet('debug', 'release', 'dist')] [string] $Preset = 'debug',
     [Parameter(ValueFromRemainingArguments = $true)] [string[]] $GameArgs
 )
 $root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root "build\$Preset\bin\screamer.exe"
 if (-not (Test-Path $exe)) { throw "Not built: run tools\build.ps1 -Preset $Preset" }
 Push-Location $root
-try { & $exe @GameArgs; exit $LASTEXITCODE } finally { Pop-Location }
+try {
+    # dist: a Windows-subsystem program, which PowerShell only waits for when its output is piped
+    if ($Preset -eq 'dist') { & $exe @GameArgs 2>&1 | Out-Host } else { & $exe @GameArgs }
+    exit $LASTEXITCODE
+} finally { Pop-Location }

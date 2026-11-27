@@ -10,7 +10,8 @@
 namespace scr {
 
 // Resolution order: explicit path (e.g. --data), $SCREAMER_DATA, compiled-in
-// default (CMake SCREAMER_DATA_DIR). Returns the first directory that looks
+// default (CMake SCREAMER_DATA_DIR; none in release packages), a SCREAMER folder next
+// to the program, the program's own folder. Returns the first directory that looks
 // like a Screamer install (contains GFX/ and DATA/), or nullopt.
 std::optional<std::string> find_game_dir(const std::string& explicit_path = {});
 

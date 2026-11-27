@@ -138,7 +138,8 @@ void print_usage() {
     std::printf(
         "screamer %s\n"
         "Usage: screamer [options]\n"
-        "  --data DIR           original game directory (default: $SCREAMER_DATA or build-time path)\n"
+        "  --data DIR           original game directory (default: $SCREAMER_DATA, the build's path in\n"
+        "                       developer builds, a SCREAMER folder next to screamer.exe, screamer.exe's folder)\n"
         "  --headless           no visible window, software renderer, dummy audio\n"
         "  --hidden             like --headless, but with the real video driver and renderer (the graphics card) on a\n"
         "                       window that is never shown; for checking and timing what a real run does\n"
@@ -150,6 +151,9 @@ void print_usage() {
         "  --mipmaps on|off     draw squeezed (distant) textures from averaged smaller versions: steadier, softer\n"
         "                       (default on; F10 switches in a race). --mip-sharpness X: 1 sharper .. 2 softer (1.4)\n"
         "  --weld-joints off    road pieces where the track file puts them (their lines step at every joint)\n"
+        "  --face-lists off     draw every face that faces the eye, not only those in the part's draw order\n"
+        "  --folded-faces off   test faces that are not flat by their one normal, as the original (holes)\n"
+        "  --view-distance X    times the original's far clip (1..8, 0: no limit; default 2, or as OPTIONS > VIDEO)\n"
         "  --level N            the CPU cars' level, 0-4 (default 1; 3: the championship's BULLET league)\n"
         "  --sky-tilt off       the sky stays level when the camera rolls, as before\n"
         "  --ground-obstacles off  cones, barriers and signs where the original draws them, half below the\n"
@@ -169,6 +173,9 @@ void print_usage() {
         "  --save-dir DIR       keep CHOICE.DAT and the replays in DIR (default: the pref path; none headless)\n"
         "  --race-options N     the cheats' g_race_options: 1/2 other obstacles, 4 clock stopped, 0x10 mirror, 0x20 upside down\n"
         "  --car-index N        --scene drive: car from CARS_DATA (0..12, default 0)\n"
+        "  --view N             --scene drive: starting view 0..3 (F1..F4, default 2)\n"
+        "  --game-mode N        --scene drive: 1 normal, 4 time attack, 0x20 cone carnage, 0x40 slalom\n"
+        "  --positions FILE     --scene drive: write the player's and CPU cars' positions every frame\n"
         "  --start X,Z          --scene drive: start position (default: the intro demo's grid)\n"
         "  --hold KEYS          --scene drive: controls held every frame, e.g. accel,left (headless runs); finish ends\n"
         "                       the race at frame 700, promptno answers PLAY AGAIN? with no\n"
@@ -185,6 +192,8 @@ void print_usage() {
         "  --dump-fb FILE       save the native 320x200 framebuffer after the last frame\n"
         "  --capture-every N    save the framebuffer every N frames\n"
         "  --capture-dir DIR    directory for --capture-every output (default artifacts/capture)\n"
+        "  --capture-from N     --capture-every starts at frame N\n"
+        "  --tween-test         headless: one tick a loop, so every other picture is drawn between game steps\n"
         "  --size WxH           window / output size\n"
         "  --fullscreen         borderless fullscreen (--windowed: in a window; default: as OPTIONS > VIDEO)\n"
         "  --vsync on|off       wait for the screen's refresh (default on, or as OPTIONS > VIDEO)\n"
@@ -205,6 +214,7 @@ void print_usage() {
         "                       default: OPTIONS > SOUND's CD MUSIC (auto) / MIDI MUSIC\n"
         "  --record-audio FILE  write the sound of the run to a 44.1 kHz .wav (also headless)\n"
         "  --audio-filter MODE  linear (default) or nearest (the original driver's crunchier resampling)\n"
+        "  --audio-log          log every sound that starts\n"
         "  --version, --help\n",
         SCREAMER_VERSION);
 }
@@ -2533,6 +2543,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
 }
 
 int main(int argc, char** argv) {
+#ifdef SCREAMER_GUI_SUBSYSTEM
+    attach_parent_console();  // (release packages: no console window of their own)
+#endif
     Options opt;
     if (!parse_args(argc, argv, opt)) return 2;
     install_debug_report(opt.headless);  // headless runs (tests): assertions to stderr, no dialog
@@ -2555,6 +2568,18 @@ int main(int argc, char** argv) {
     const auto game_dir = scr::find_game_dir(opt.data_dir);
     if (game_dir) SDL_Log("game data: %s", game_dir->c_str());
     else SDL_Log("game data: not found (pass --data or set SCREAMER_DATA)");
+    if (!game_dir && !opt.headless && opt.scene.empty()) {
+        // A plain start without the game: say where it goes rather than show the test pattern.
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Screamer: game files not found",
+            "Screamer needs the files of your own copy of the original game (DOS, GOG or Steam).\n\n"
+            "Copy the game's folder (the one with the GFX and DATA folders in it) into a folder\n"
+            "named SCREAMER next to screamer.exe, or put screamer.exe and its DLLs into the\n"
+            "game's folder, or start screamer.exe with --data \"C:\\path\\to\\Screamer\".\n\n"
+            "See README.md for details.",
+            nullptr);
+        SDL_Quit();
+        return 1;
+    }
 
     // Without --scene the game starts with the intro demo, then the menu (game_main:
     // attract_mode_run, frontend_run), when the game files are there.

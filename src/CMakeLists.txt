@@ -39,14 +39,25 @@ else()
 endif()
 target_include_directories(screamer_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(screamer_core PUBLIC SDL3::SDL3 nuked_opl3)
+if(SCREAMER_DIST)
+  set(SCREAMER_EMBEDDED_DATA_DIR "")  # a package looks next to itself, not on the build machine
+else()
+  set(SCREAMER_EMBEDDED_DATA_DIR "${SCREAMER_DATA_DIR}")
+endif()
 target_compile_definitions(screamer_core PUBLIC
-  SCREAMER_DEFAULT_DATA_DIR="${SCREAMER_DATA_DIR}"
+  SCREAMER_DEFAULT_DATA_DIR="${SCREAMER_EMBEDDED_DATA_DIR}"
   SCREAMER_VERSION="${PROJECT_VERSION}"
 )
 
-# The game executable (console subsystem for now so headless runs can log to stdout).
+# The game executable: console subsystem, so headless runs log to stdout; in release packages
+# (SCREAMER_DIST) a Windows-subsystem program, which takes its parent's console for logs
+# (attach_parent_console) and pipes as given.
 add_executable(screamer main.cpp input.cpp debug_report.cpp)
 target_link_libraries(screamer PRIVATE screamer_core)
+if(SCREAMER_DIST AND WIN32)
+  set_target_properties(screamer PROPERTIES WIN32_EXECUTABLE ON)
+  target_compile_definitions(screamer PRIVATE SCREAMER_GUI_SUBSYSTEM=1)
+endif()
 
 # Image comparison tool used by the test harness and the DOSBox reference scripts.
 add_executable(imgcmp tools/imgcmp.cpp debug_report.cpp)

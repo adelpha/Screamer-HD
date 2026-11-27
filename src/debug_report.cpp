@@ -81,3 +81,29 @@ void install_debug_report(bool no_dialogs) {
 #else
 void install_debug_report(bool) {}
 #endif
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <cstdio>
+
+void attach_parent_console() {
+    auto missing = [](DWORD which) {
+        const HANDLE h = GetStdHandle(which);
+        return h == nullptr || h == INVALID_HANDLE_VALUE;
+    };
+    const bool out = missing(STD_OUTPUT_HANDLE), err = missing(STD_ERROR_HANDLE);
+    if (!out && !err) return;  // pipes or files given: they stay
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) return;
+    std::FILE* f = nullptr;
+    if (out) freopen_s(&f, "CONOUT$", "w", stdout);
+    if (err) freopen_s(&f, "CONOUT$", "w", stderr);
+}
+#else
+void attach_parent_console() {}
+#endif

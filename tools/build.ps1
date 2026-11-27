@@ -7,7 +7,7 @@
   .\tools\build.ps1 -Clean
 #>
 param(
-    [ValidateSet('debug', 'release')] [string] $Preset = 'debug',
+    [ValidateSet('debug', 'release', 'dist')] [string] $Preset = 'debug',
     [switch] $Clean,
     [string] $Target
 )
