@@ -1083,6 +1083,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         SDL_SetTextureBlendMode(bars_tex, SDL_BLENDMODE_NONE);
     };
     SDL_Texture* tex = nullptr;
+    std::vector<SDL_Texture*> halves;  // the picture halved, for showing it much smaller (see below)
     SDL_Palette* tex_palette = nullptr;
     std::array<SDL_Color, 256> tex_colors{};
     bool tex_colors_set = false;
@@ -1095,7 +1096,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         // (and so does a picture larger than the window: it is filtered down, which takes colours)
         int out_w = 0, out_h = 0;
         SDL_GetRenderOutputSize(renderer, &out_w, &out_h);
-        const bool larger = !opt.headless && out_w > 0 && (fb.width() > out_w || fb.height() > out_h);
+        const bool larger = (!opt.headless || opt.hidden) && out_w > 0 && (fb.width() > out_w || fb.height() > out_h);
         if (opt.upload != "rgba" && !(opt.upload.empty() && larger)) {
             tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_INDEX8, SDL_TEXTUREACCESS_STREAMING, fb.width(), fb.height());
             if (tex) tex_palette = SDL_CreatePalette(256);
@@ -2233,10 +2234,41 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
 
         int ow, oh;
         SDL_GetRenderOutputSize(renderer, &ow, &oh);
-        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-        SDL_RenderClear(renderer);
         // (a menu made before WIDESCREEN went on keeps its 4:3 shape: its pixels need not be square)
         const SDL_FRect dst = present_rect(ow, oh, menu && !fb.wide && opt.aspect == "wide" ? "4:3" : opt.aspect, fb.width(), fb.height());
+        // A picture at least twice the size it is shown at (a render size above the screen's) is
+        // halved on the graphics card until it is less than that: each pass of the linear filter
+        // at exactly half the size averages 2x2 pixels, so every pixel counts (a box filter, as
+        // supersampling wants); the last step is the linear filter's.
+        SDL_Texture* shown = tex;
+        if (!tex_palette && (!opt.headless || opt.hidden)) {
+            int cw = fb.width(), ch = fb.height();
+            for (size_t level = 0; cw >= 2 * int(dst.w) && ch >= 2 * int(dst.h) && cw >= 2 && ch >= 2; ++level) {
+                const int nw = cw / 2, nh = ch / 2;
+                if (halves.size() <= level) halves.push_back(nullptr);
+                SDL_Texture*& t = halves[level];
+                float tw = 0, th = 0;
+                if (t) SDL_GetTextureSize(t, &tw, &th);
+                if (!t || int(tw) != nw || int(th) != nh) {
+                    if (t) SDL_DestroyTexture(t);
+                    t = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_TARGET, nw, nh);
+                    if (!t) break;
+                    SDL_SetTextureBlendMode(t, SDL_BLENDMODE_NONE);
+                }
+                SDL_SetTextureScaleMode(shown, SDL_SCALEMODE_LINEAR);
+                if (!SDL_SetRenderTarget(renderer, t)) break;
+                // (source: the whole even-sized part, so 2x2 blocks line up)
+                const SDL_FRect src{0, 0, float(nw * 2), float(nh * 2)};
+                SDL_RenderTexture(renderer, shown, &src, nullptr);
+                shown = t;
+                cw = nw;
+                ch = nh;
+            }
+            SDL_SetRenderTarget(renderer, nullptr);
+            SDL_SetTextureScaleMode(shown, dst.w < float(cw) ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
+        }
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        SDL_RenderClear(renderer);
         if (menu && opt.aspect == "wide" && (dst.w + 1.0f < float(ow) || dst.h + 1.0f < float(oh))) {
             if (menu->backdrop() != bars_of) {
                 bars_of = menu->backdrop();
@@ -2249,10 +2281,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                 SDL_RenderTexture(renderer, bars_tex, nullptr, nullptr);
             }
         }
-        // a picture larger than the window (OPTIONS > VIDEO lets the render size pass the
-        // screen's) is filtered down; otherwise its pixels stay sharp
-        if (!tex_palette && !opt.headless) SDL_SetTextureScaleMode(tex, dst.w < float(fb.width()) ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
-        SDL_RenderTexture(renderer, tex, nullptr, &dst);
+        SDL_RenderTexture(renderer, shown, nullptr, &dst);
 
         const bool last_frame = opt.frames && frame >= opt.frames;
         if (last_frame && player) {
@@ -2315,6 +2344,10 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     mixer.set_music(nullptr);
     SDL_DestroyTexture(tex);
     if (bars_tex) SDL_DestroyTexture(bars_tex);
+    for (SDL_Texture* t : halves)
+        if (t) SDL_DestroyTexture(t);
+    for (SDL_Texture* t : halves)
+        if (t) SDL_DestroyTexture(t);
     if (tex_palette) SDL_DestroyPalette(tex_palette);
     return exit_code;
 }
