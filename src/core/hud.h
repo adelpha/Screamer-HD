@@ -130,12 +130,16 @@ struct HudState {
 
 // The P-key panel (pause_menu): a car stereo (CDFRONTL.PKC) over the frozen race, with the
 // CD's track numbers, one highlighted button (play, eject, previous, next, volume -, volume +,
-// mode) and, on the volume buttons, a bar for the volume the mode selects (CD, FX, MU).
+// mode) and, on the volume buttons, a bar for the volume the mode selects. The original's
+// modes are CD, FX and MU (MIDI music) on 0..0x7fff; ours are OPTIONS > SOUND's four volumes
+// (AN announcer, EN engine, FX effects, MU music; 0..10), and the track numbers are the MIDI
+// tunes' too (MUSICn.HMP is CD track n + 1); EJECT switches between the CD and the MIDI tunes.
 struct CdPanel {
     int button = 0;          // 0..6
     bool pressed = false;    // the button is being held / was just used
-    int mode = 0;            // 0 CD, 1 FX (effects), 2 MU (MIDI music)
-    int volume[3] = {0x6000, 0x6000, 0x6000};
+    int mode = 0;            // the volume shown: 0 AN, 1 EN, 2 FX, 3 MU
+    int volume[4] = {10, 10, 10, 10};
+    int volume_max = 10;
     int first_track = 2, last_track = 8, track = 3;
     bool blink = false;      // the current track flashes
 };
