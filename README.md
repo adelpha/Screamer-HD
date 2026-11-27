@@ -63,7 +63,7 @@ Version **1.0** · Windows 10/11 (64-bit) · built on [SDL3](https://libsdl.org)
   look.
 - **Fast multi-core software renderer** with SSE2 and AVX2 builds of its pixel filler.
 - **Sound**: the original's sound effects and announcer, CD music played straight from the CD
-  image, or the original's MIDI music through an emulated OPL3 (Sound Blaster 16) chip and a
+  image or from the CD's tracks ripped to MP3/FLAC/OGG/WAV, or the original's MIDI music through an emulated OPL3 (Sound Blaster 16) chip and a
   port of HMI's own MIDI driver. Separate volumes for announcer, engine, effects and music.
 - **Controllers**: gamepads, wheels, pedals and joysticks, hot-plugging, rumble, analog or
   digital axes, and a rebinding screen for keyboard and controller. Your old `CONTROLS.CFG`
@@ -81,7 +81,7 @@ Version **1.0** · Windows 10/11 (64-bit) · built on [SDL3](https://libsdl.org)
 | Cores | 2 or more recommended | The 3D view is drawn on every CPU thread. The game logic itself is tiny. |
 | Graphics | Any GPU with Direct3D 11, Vulkan or OpenGL | The 3D scene is drawn by the CPU; the GPU only scales and shows the finished picture. At 4K and above a fast CPU matters more than the GPU. |
 | Sound | Any sound device | Optional (`--mute`). |
-| Disk | About 10 MB for the program | Plus your Screamer install, and its CD image if you want CD music. |
+| Disk | About 10 MB for the program | Plus your Screamer install, and its CD image or ripped music tracks if you want CD music. |
 | Game | **Your own copy of Screamer** | DOS CD (full install), GOG or Steam. |
 
 As a rough guide, 1080p at 60+ fps works on any recent quad-core CPU; 4K at high refresh rates
@@ -107,13 +107,31 @@ game always steps at its own fixed rate.
        CONFIG\
        REPLAYS\    (optional: your old replays and records)
        SCREAM.cue  (optional: CD music, with SCREAM.bin)
+       MUSIC\      (optional: CD music as MP3/FLAC/OGG/WAV files, see below)
        ...
    ```
 
    Where to find them:
    - **DOS CD**: the folder you installed the game to (usually `C:\SCREAMER`). Do a full
      install so that `GFX` and `DATA` are on the hard disk. For CD music, also make an image
-     of the CD as `SCREAM.cue` + `SCREAM.bin` (cue/bin, raw 2352-byte sectors).
+     of the CD as `SCREAM.cue` + `SCREAM.bin` (cue/bin, raw 2352-byte sectors), or rip its
+     music tracks to files in a `MUSIC` folder (next point).
+   - **CD music as audio files**: if you have ripped the CD's music to MP3, FLAC, Ogg Vorbis or
+     WAV files (with any CD ripper), put them in a folder called `MUSIC` inside the game folder,
+     named by their CD track number:
+
+     ```
+     SCREAMER\
+       MUSIC\
+         02.flac  03.flac  04.flac  05.flac  06.flac  07.flac  08.flac
+     ```
+
+     The usual names rippers give work as they are: `02 - Title.mp3`, `Track02.flac`,
+     `track02.cdda.wav`, `Screamer - 02 - Title.ogg`. The CD's track 1 is the game's data, so
+     the music is tracks 2 to 8; a rip that numbered the music from 1 (`01` to `07`) is
+     recognised and moved up by one. Any sample rate, mono or stereo. A track in the `MUSIC`
+     folder is played instead of the same track of a CD image, so you can also replace single
+     tracks; tracks it does not have still come from the image if there is one.
    - **GOG / Steam**: the game's install folder. Their CD image (`SCREAM.DAT` and
      `SCREAM.gog`) is used for the CD music automatically.
 
@@ -282,13 +300,18 @@ All sound is mixed in software at 44.1 kHz stereo and played through SDL3.
 - **The announcer**: countdown, wrong way, taking the lead, lapping, bends ahead and the rest.
 - **CD music**: the original's soundtrack is CD audio. It is played straight from the CD image
   (`SCREAM.cue`/`.bin`, or `SCREAM.DAT`/`.gog` as GOG and Steam ship it), the same tracks the
-  game picks for the menu, the intro and each track.
+  game picks for the menu, the intro and each track. Instead of an image, the CD's tracks can
+  be MP3, FLAC, Ogg Vorbis or WAV files in a `MUSIC` folder in the game folder, named by CD
+  track number (`02.flac` to `08.flac`, see [Installing](#installing)); a track found there is
+  played in place of the image's. The menu plays track 4, the intro track 3, and the six
+  tracks 3, 5, 6, 3, 5, 6.
 - **MIDI music**: the original's MIDI versions (for players without the CD) from
   `DATA\MUSIC.DAT`, played on an emulated Yamaha OPL3 (the Sound Blaster 16's FM chip,
   [Nuked-OPL3](https://github.com/tgies/Nuked-OPL3-fast)) driven by a register-for-register
   port of HMI's original OPL3 MIDI driver, so it sounds as the DOS game did on a Sound Blaster.
 - OPTIONS > SOUND: separate **ANNOUNCER, ENGINE (yours), EFFECTS and MUSIC** volumes (0-10),
-  and **CD MUSIC / MIDI MUSIC**. Without a CD image the MIDI music plays automatically.
+  and **CD MUSIC / MIDI MUSIC**. Without a CD image or `MUSIC` folder the MIDI music plays
+  automatically.
 - The P panel in a race works in both modes: track buttons, the volumes, and EJECT switches
   between CD and MIDI music.
 
@@ -377,7 +400,7 @@ settings for that run.
 | `--volumes A,E,F,M` | Announcer, engine, effects, music volumes 0-10. |
 | `--sfx-volume N`, `--music-volume N` | Overall effects / CD music volume 0-100. |
 | `--no-music`, `--no-speech` | No music / no announcer. |
-| `--music-source cd\|midi\|auto` | CD audio, MIDI on the OPL3, or CD when the image is there. |
+| `--music-source cd\|midi\|auto` | CD audio (image or `MUSIC` folder), MIDI on the OPL3, or CD when there is CD audio. |
 | `--audio-filter linear\|nearest` | Smooth or original-style resampling of the effects. |
 | `--replay FILE` | Play back a `.RPL` replay (with `--track` for its track). |
 | `--save-dir DIR` | Keep settings and replays in DIR instead of `%APPDATA%`. |
@@ -445,8 +468,10 @@ settings for that run.
 
 - **"Game files not found"**: the folder given (or `SCREAMER` next to `screamer.exe`) must
   contain `GFX` and `DATA` directly, not in a subfolder.
-- **No music**: the CD music needs the CD image next to the game files. Switch OPTIONS > SOUND
-  to MIDI MUSIC to use the built-in MIDI music instead.
+- **No music**: the CD music needs the CD image next to the game files, or the ripped tracks
+  in a `MUSIC` folder there, named by CD track number (`02` to `08`). The log (see below) says
+  how many ripped tracks were found. Switch OPTIONS > SOUND to MIDI MUSIC to use the built-in
+  MIDI music instead.
 - **Slow at high resolutions**: lower RES or DISTANCE in OPTIONS > VIDEO, or turn widescreen
   off. Check that the game uses AVX2 (`screamer.exe --perf` from a command prompt prints
   timings).
@@ -558,3 +583,8 @@ If you are a rights holder and have concerns, please contact the repository owne
   GNU LGPL 2.1: the OPL3 emulation, shipped as its own `opl3.dll`, which you may replace with
   your own build. Its licence and the exact source used are in `LICENSES\` and
   `third_party\Nuked-OPL3-fast\` in the release.
+- [dr_libs](https://github.com/mackron/dr_libs) (dr_mp3, dr_flac, dr_wav) by David Reid, public
+  domain or MIT-0: MP3, FLAC and WAV decoding for the `MUSIC` folder. Licence in
+  `LICENSES\dr_libs.txt`.
+- [stb_vorbis](https://github.com/nothings/stb) by Sean Barrett, public domain or MIT: Ogg
+  Vorbis decoding for the `MUSIC` folder. Licence in `LICENSES\stb_vorbis.txt`.

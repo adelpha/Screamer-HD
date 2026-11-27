@@ -1,3 +1,12 @@
+# The audio decoders for ripped CD music (third-party single-file libraries; warnings off).
+add_library(audio_decoders STATIC core/audio_decoders.c)
+target_include_directories(audio_decoders SYSTEM PUBLIC ${dr_libs_SOURCE_DIR} ${stb_SOURCE_DIR})
+if(MSVC)
+  target_compile_options(audio_decoders PRIVATE /W0)
+else()
+  target_compile_options(audio_decoders PRIVATE -w)
+endif()
+
 # Engine-side code that is independent of the window/frontend. Unit tests link this.
 add_library(screamer_core STATIC
   core/animations.cpp
@@ -39,6 +48,7 @@ else()
 endif()
 target_include_directories(screamer_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(screamer_core PUBLIC SDL3::SDL3 nuked_opl3)
+target_link_libraries(screamer_core PRIVATE audio_decoders)
 if(SCREAMER_DIST)
   set(SCREAMER_EMBEDDED_DATA_DIR "")  # a package looks next to itself, not on the build machine
 else()

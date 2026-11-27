@@ -63,6 +63,9 @@ try {
     $oplLicence = Get-ChildItem $opl -File | Where-Object { $_.Name -match '^(LICENSE|COPYING)' } | Select-Object -First 1
     if (-not $oplLicence) { throw "no licence file in $opl" }
     Copy-Item $oplLicence.FullName "$stage\LICENSES\Nuked-OPL3-fast.txt"
+    # the decoders of the MUSIC folder's ripped tracks (public domain or MIT-0 / MIT, built in)
+    Copy-Item (Join-Path $deps 'dr_libs-src\LICENSE') "$stage\LICENSES\dr_libs.txt"
+    Copy-Item (Join-Path $deps 'stb-src\LICENSE') "$stage\LICENSES\stb_vorbis.txt"
     # LGPL-2.1: the source of the opl3.dll we ship, beside it
     foreach ($f in 'opl3.c', 'opl3.h') { Copy-Item (Join-Path $opl $f) "$stage\third_party\Nuked-OPL3-fast" }
     Copy-Item $oplLicence.FullName "$stage\third_party\Nuked-OPL3-fast\$($oplLicence.Name)"
@@ -76,7 +79,9 @@ You may replace opl3.dll with your own build of the same source.
     @"
 Put the files of your own copy of Screamer (1995, DOS / GOG / Steam) in this folder:
 the game's folder with GFX, DATA and CONFIG in it, and for CD music its CD image
-(SCREAM.cue + SCREAM.bin, or SCREAM.DAT + SCREAM.gog as GOG and Steam ship it).
+(SCREAM.cue + SCREAM.bin, or SCREAM.DAT + SCREAM.gog as GOG and Steam ship it)
+or the CD's music tracks ripped to MP3/FLAC/OGG/WAV in a MUSIC folder here
+(named by CD track number, e.g. MUSIC\02.flac ... MUSIC\08.flac).
 
 So that this folder holds GFX\, DATA\, ... directly (not SCREAMER\Screamer\GFX).
 See README.md.
@@ -84,6 +89,7 @@ See README.md.
 
     # Only what we put there
     $expected = @('screamer.exe', 'SDL3.dll', 'opl3.dll', 'README.md', 'LICENSES\SDL3.txt', 'LICENSES\Nuked-OPL3-fast.txt',
+                  'LICENSES\dr_libs.txt', 'LICENSES\stb_vorbis.txt',
                   'SCREAMER\PUT_YOUR_SCREAMER_FILES_HERE.txt', 'third_party\Nuked-OPL3-fast\opl3.c',
                   'third_party\Nuked-OPL3-fast\opl3.h', 'third_party\Nuked-OPL3-fast\README.txt',
                   "third_party\Nuked-OPL3-fast\$($oplLicence.Name)")

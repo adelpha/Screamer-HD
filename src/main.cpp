@@ -703,7 +703,7 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     scr::SoundBank sound_bank;
     scr::Mixer mixer;
     scr::RaceAudio race_audio;
-    scr::CdImage cd;
+    scr::CdAudio cd;  // the CD image and/or the ripped tracks of the MUSIC folder
     int cd_track = 0;  // the CD track playing (0: MIDI or none)
     int midi_song = 0;  // the MIDI tune playing (MUSICn.HMP; 0: CD or none)
     SDL_AudioStream* audio_stream = nullptr;
@@ -729,13 +729,15 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
         midi_song = 0;
         if (source != "midi") {
             if (!cd_open) {
-                auto cue = scr::find_cd_cue(*game_dir);
-                cd_open = cue && cd.open(*cue);
-                if (!cd_open) SDL_Log("no CD music (no CD image: SCREAM.cue/.bin or SCREAM.DAT/.gog)");
+                cd_open = cd.open(*game_dir);
+                if (!cd_open)
+                    SDL_Log("no CD music (no CD image: SCREAM.cue/.bin or SCREAM.DAT/.gog; no MUSIC folder)");
+                else if (!cd.files.empty())
+                    SDL_Log("CD music: %d ripped track(s) in the MUSIC folder%s", int(cd.files.size()),
+                            cd.image ? ", the rest from the CD image" : "");
             }
             if (cd_open) {
-                auto music = std::make_shared<scr::CdAudioPlayer>(cd, track_no);
-                if (music->ok()) {
+                if (auto music = cd.play(track_no)) {
                     mixer.set_music(music);
                     return track_no;
                 }
@@ -1200,9 +1202,9 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     // the panel's track numbers: the CD's audio tracks, or for the MIDI tunes MUSICn.HMP as CD
     // track n + 1 (the tunes are the CD's tracks 2.. in MIDI)
     auto panel_tracks = [&]() {
-        if (cd_track && cd.tracks.size() > 1) {
-            panel.first_track = cd.tracks[1].number;
-            panel.last_track = cd.tracks.back().number;
+        if (cd_track && cd.first_track()) {
+            panel.first_track = cd.first_track();
+            panel.last_track = cd.last_track();
             panel.track = cd_track;
         } else if (midi_song && game_dir) {
             int last = midi_song;
@@ -1217,13 +1219,10 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
     // a track of the panel's, from the CD or as the MIDI tune with that number: true when it plays
     auto play_panel_track = [&](int t, bool from_cd) {
         if (from_cd) {
-            if (!cd_open && game_dir) {
-                auto cue = scr::find_cd_cue(*game_dir);
-                cd_open = cue && cd.open(*cue);
-            }
+            if (!cd_open && game_dir) cd_open = cd.open(*game_dir);
             if (!cd_open) return false;
-            auto music = std::make_shared<scr::CdAudioPlayer>(cd, t);
-            if (!music->ok()) return false;
+            auto music = cd.play(t);
+            if (!music) return false;
             mixer.set_music(music);
             cd_track = t;
             midi_song = 0;
@@ -1549,8 +1548,10 @@ int run_scene(Options& opt, SDL_Window* window, SDL_Renderer* renderer, const st
                         }
                     } else if (panel.button == 2 || panel.button == 3) {
                         // previous / next track, CD or MIDI, playing at once
-                        const int t = std::clamp(panel.track + (panel.button == 3 ? 1 : -1), panel.first_track, panel.last_track);
-                        if (t != panel.track && (cd_track || midi_song)) play_panel_track(t, cd_track != 0);
+                        // (past a track that will not play, such as one missing from the MUSIC folder)
+                        const int dir = panel.button == 3 ? 1 : -1;
+                        for (int t = panel.track + dir; t >= panel.first_track && t <= panel.last_track; t += dir)
+                            if (!(cd_track || midi_song) || play_panel_track(t, cd_track != 0)) break;
                     } else if (panel.button == 4 || panel.button == 5) {
                         // a step of the volume the mode shows, as OPTIONS > SOUND (saved)
                         int& v = shared.volumes[size_t(std::clamp(panel.mode, 0, 3))];
