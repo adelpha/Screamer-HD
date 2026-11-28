@@ -514,6 +514,7 @@ void apply_video(Options& o, const scr::VideoSettings& v, bool force) {
 // than the display, which Windows leaves a window. The windowed size and place come back after.
 void set_fullscreen(SDL_Window* window, bool on, bool opengl) {
     static SDL_Rect windowed{0, 0, 0, 0};
+    static bool was_maximized = false;
     static bool covering = false;  // our OpenGL fullscreen is on
     if (!opengl && !covering) {
         SDL_SetWindowFullscreen(window, on);
@@ -522,6 +523,13 @@ void set_fullscreen(SDL_Window* window, bool on, bool opengl) {
     SDL_SetWindowFullscreen(window, false);
     if (on && opengl) {
         if (!covering) {
+            // (a maximised window is restored first: Windows keeps its size and place otherwise,
+            // and the title bar's strip stays uncovered)
+            was_maximized = (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0;
+            if (was_maximized) {
+                SDL_RestoreWindow(window);
+                SDL_SyncWindow(window);
+            }
             SDL_GetWindowPosition(window, &windowed.x, &windowed.y);
             SDL_GetWindowSize(window, &windowed.w, &windowed.h);
         }
@@ -542,6 +550,7 @@ void set_fullscreen(SDL_Window* window, bool on, bool opengl) {
             SDL_SetWindowSize(window, windowed.w, windowed.h);
             SDL_SetWindowPosition(window, windowed.x, windowed.y);
         }
+        if (was_maximized && !on) SDL_MaximizeWindow(window);
         covering = false;
     }
     if (on) SDL_SetWindowFullscreen(window, true);  // (Direct3D after OpenGL)
