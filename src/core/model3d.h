@@ -133,6 +133,8 @@ struct Model {
     // quads around the road).
     bool flat = false;
     int flat_y = 0;
+    // The lowest and highest vertex (with the parts' offsets; their turns left out).
+    int min_y = 0, max_y = 0;
     // Some face is a strip (Face::strip): a piece of road with painted lines, wherever the
     // track file lists it (stretches of road are also among the scenery, MMP slot 1).
     bool has_strips = false;

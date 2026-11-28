@@ -64,6 +64,8 @@ struct Fill {
     const MipTexture* mip;  // the smaller versions to draw from where the texture is squeezed, or null
     uint8_t painter;        // a car's polygon: writes its depths negated (see Renderer::Geo::painter)
     uint8_t part;           // and which of the car's parts it is in (1..15 in drawing order, +16 a card, +32 a wheel)
+    uint8_t dclass;         // an object the original draws early (1..4: Model::draw_class): its depths tagged
+    uint8_t ground;         // the road or ground: it covers class objects by their tagged (further) depth
     uint8_t bias_test_only; // depth_bias only decides whether a pixel is drawn; the depth written is the real one
     float depth_bias;       // in units of d = 128 - z
     float edge_slack;       // pixels the polygon reaches past its edges
