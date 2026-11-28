@@ -11,7 +11,6 @@
 #include <thread>
 #include <cmath>
 #include <cstring>
-#include <functional>
 #include <map>
 #include <vector>
 
@@ -39,7 +38,7 @@ struct Vertex {
 };
 static_assert(sizeof(Vertex) == 80);
 
-enum Flags : int16_t { kClampUv = 1, kSealBehind = 2, kTexels = 4, kTrueDepth = 8, kClassFill = 16 };
+enum Flags : int16_t { kClampUv = 1, kSealBehind = 2, kTexels = 4, kTrueDepth = 8 };
 
 constexpr const char* kSceneVs = R"(#version 330 core
 layout(location = 0) in vec2 a_pos;
@@ -172,7 +171,7 @@ float depth_value(float tz) {
 void main() {
     int group = v_fill.x, layer = v_fill.y, mode = v_fill.z, flags = v_fill.w;
     vec2 size = v_fill2.xy;
-    float bias = v_fill2.z + ((flags & 16) != 0 ? 0.0 : u_bias_add);  // (a class object's: its class distance is in it)
+    float bias = v_fill2.z + u_bias_add;
     // texel coordinates and their change across the screen (before any branching)
     vec2 uv = v_uvz / v_iz;
     vec2 uvn = uv / v_layer;
@@ -701,7 +700,6 @@ struct GlScene::Impl {
         int16_t flags = 0;
         if (fl.clamp_uv) flags |= kClampUv;
         if (fl.seal_behind) flags |= kSealBehind;
-        if (fl.dclass) flags |= kClassFill;
         if (fl.use_texels && group >= 0) flags |= kTexels;
         if (group < 0 && (mode == int(detail::FillMode::Textured) || mode == int(detail::FillMode::Transparent) ||
                           mode == int(detail::FillMode::Translucent))) {
@@ -904,67 +902,36 @@ void GlScene::draw_scene(const SceneFrame& f) {
     glEnable(GL_BLEND);
     glBlendFunc(GL_ONE, GL_SRC1_COLOR);
     if (d.samples) glEnable(GL_SAMPLE_ALPHA_TO_COVERAGE);
-    // The class objects' pixels (Renderer::placement_group, the filler's class tags) carry their
-    // class in the stencil's bits 1..3 and are stored as if their class distance further away:
-    // the road and ground drawn later cover them by that depth (and clear the class); anything
-    // else is compared with them as if just as far away itself, and keeps it. Bits 0, 5..7: a
-    // car's parts and the obstacles' bias test (see below).
-    static constexpr float kClassDistance[5] = {0.0f, 6000.0f, 3200.0f, 24000.0f, 800.0f};
-    glEnable(GL_STENCIL_TEST);
-    glStencilMask(0x00);
-    glStencilFunc(GL_ALWAYS, 0, 0x00);
-    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-    // draw(), once for the pixels of each class (and once for the rest), with the stencil test
-    // given by ref / mask (the class bits added) and the class's distance as extra depth bias
-    const auto by_class = [&](GLint ref, GLuint mask, float bias_add, const std::function<void()>& draw_fn) {
-        for (int c = 0; c <= 4; ++c) {
-            glStencilFunc(GL_EQUAL, ref | (c << 1), mask | 0x0e);
-            gl::Uniform1f(d.u_bias_add, bias_add - kClassDistance[c]);
-            draw_fn();
-        }
-        gl::Uniform1f(d.u_bias_add, 0.0f);
-    };
-    // consecutive Normal batches of one group in one draw
+    // consecutive Normal batches in one draw
     for (size_t bi = 0; bi < f.batches.size();) {
-        const SceneBatch& b0 = f.batches[bi];
-        const SceneBatch::Kind kind = b0.kind;
+        const SceneBatch::Kind kind = f.batches[bi].kind;
         const size_t first = ranges[bi].first;
         size_t count = ranges[bi].second;
         size_t next = bi + 1;
         if (kind == SceneBatch::Normal)
-            while (next < f.batches.size() && f.batches[next].kind == SceneBatch::Normal && f.batches[next].cls == b0.cls &&
-                   f.batches[next].ground == b0.ground)
-                count += ranges[next++].second;
+            while (next < f.batches.size() && f.batches[next].kind == SceneBatch::Normal) count += ranges[next++].second;
         bi = next;
         if (!count) continue;
         const auto draw = [&]() { glDrawArrays(GL_TRIANGLES, GLint(first), GLsizei(count)); };
         switch (kind) {
         case SceneBatch::Normal:
             glDepthMask(GL_TRUE);
-            if (b0.cls || b0.ground) {
-                // class objects mark their class, the road and ground clear it
-                glStencilMask(0x0e);
-                glStencilFunc(GL_ALWAYS, b0.cls << 1, 0x00);
-                glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-                draw();
-                glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-                glStencilMask(0x00);
-            } else {
-                by_class(0, 0x00, 0.0f, draw);
-            }
+            draw();
             break;
         case SceneBatch::Painter: {
             // A car, part by part as the software renderer draws it (Renderer::set_car_slack):
             // a part's faces in their order over each other; over the car's earlier parts by
             // depth with the slack, or whatever the depth where either is a wheel; over the
             // rest of the scene by depth. The stencil holds 0x80 for the car's pixels, 0x40
-            // for a wheel's, 0x20 for a card's, 0x01 for the part being drawn; the part's real
-            // depths are written last (the last face's, as the filler leaves them).
-            glStencilMask(0xe1);
+            // for a wheel's, 0x01 for the part being drawn; the part's depths are written
+            // last (the last face's, as the filler leaves them).
+            glEnable(GL_STENCIL_TEST);
+            glClearStencil(0);
+            glStencilMask(0xff);
             glClear(GL_STENCIL_BUFFER_BIT);
             for (const PartRun& r : part_runs[bi - 1]) {
                 const bool wheel = (r.part & 32) != 0;
-                const bool card = (r.part & 16) != 0;
+                const bool card = (r.part & 16) != 0;  // (stencil 0x20: a card's pixel)
                 const auto part_draw = [&]() { glDrawArrays(GL_TRIANGLES, GLint(r.first), GLsizei(r.count)); };
                 glDepthMask(GL_FALSE);
                 glStencilMask(0x01);
@@ -987,34 +954,34 @@ void GlScene::draw_scene(const SceneFrame& f) {
                     part_draw();
                     gl::Uniform1f(d.u_bias_add, 0.0f);
                 }
-                // over the rest of the scene: by depth (class objects' pixels as their class)
-                by_class(0x01, 0x80, 0.0f, part_draw);
-                // the part's real depths where it was drawn, and those pixels the car's (no class)
+                // over the rest of the scene: by depth
+                glStencilFunc(GL_EQUAL, 0x01, 0x80);
+                part_draw();
+                // the part's depths where it was drawn, and those pixels the car's
                 glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
                 glDepthMask(GL_TRUE);
                 glDepthFunc(GL_ALWAYS);
-                glStencilMask(0xef);
+                glStencilMask(0xe1);
                 glStencilFunc(GL_NOTEQUAL, 0x80 | (wheel ? 0x40 : 0) | (card ? 0x20 : 0), 0x01);  // (bit 0 set; written with it clear)
                 part_draw();
                 glDepthFunc(GL_GEQUAL);
                 glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
             }
-            glStencilMask(0xe1);
+            glStencilMask(0xff);
             glClear(GL_STENCIL_BUFFER_BIT);
-            glStencilMask(0x00);
-            glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+            glDisable(GL_STENCIL_TEST);
             glDepthMask(GL_TRUE);
             break;
         }
         case SceneBatch::BiasTest:
-            // drawn where the biased depth passes (marked in the stencil's bit 0), then the real
-            // depth written there (and the class cleared)
-            glStencilMask(0x01);
+            // drawn where the biased depth passes (marked in the stencil), then the real depth
+            // written there
+            glEnable(GL_STENCIL_TEST);
+            glStencilFunc(GL_ALWAYS, 1, 0xff);
             glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
             glDepthMask(GL_FALSE);
-            by_class(0x01, 0x00, 0.0f, draw);
-            glStencilMask(0x0f);
-            glStencilFunc(GL_EQUAL, 1, 0x01);
+            draw();
+            glStencilFunc(GL_EQUAL, 1, 0xff);
             glStencilOp(GL_KEEP, GL_ZERO, GL_ZERO);
             glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
             glDepthMask(GL_TRUE);
@@ -1024,17 +991,15 @@ void GlScene::draw_scene(const SceneFrame& f) {
             gl::Uniform1i(d.u_true_depth, 0);
             glDepthFunc(GL_GEQUAL);
             glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-            glStencilMask(0x00);
-            glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+            glDisable(GL_STENCIL_TEST);
             break;
         case SceneBatch::Deferred:
             glDepthMask(GL_FALSE);
-            by_class(0, 0x00, 0.0f, draw);
+            draw();
             glDepthMask(GL_TRUE);
             break;
         }
     }
-    glDisable(GL_STENCIL_TEST);
     glDisable(GL_BLEND);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);

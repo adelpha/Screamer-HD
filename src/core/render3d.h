@@ -29,7 +29,6 @@ struct Camera {
     float x = 0, y = 0, z = 0;
     float yaw = 0, pitch = 0, roll = 0;  // game angle units (0..2048)
     bool fine_sky = false;                // the panorama follows the yaw exactly (ours), not by whole columns
-    bool free = false;                    // photo mode's free camera: anywhere, not where the game puts it
     float focal = 128.0f;                 // at 200 lines; scaled with the output height
     float center_y = 130.0f;              // projection centre row at 200 lines (g_render_camera:
                                           // x 160, y 130 for the 320x200 race view)
@@ -150,10 +149,6 @@ struct SceneBatch {
     const detail::Tri* tris;
     size_t tri_count;
     const detail::Fill* fills;  // Tri::fill indexes these
-    // (Normal) placements of one group (Renderer::placement_group): class objects of class cls
-    // (1..4), the road and ground (ground), or the rest (neither)
-    uint8_t cls = 0;
-    bool ground = false;
 };
 struct SceneFrame {
     const Track* track;
@@ -283,7 +278,6 @@ private:
         int32_t animation, reflection;
         float depth;
         float depth_bias;
-        uint8_t cls, ground;  // the job's group (Geo::cls, Geo::ground)
     };
     // Clips, projects and queues the polygon's triangles. open_edges: bit i set where the edge
     // from corner i to the next gets the model's edge slack (seal_edges); 0xff: every edge of
@@ -311,8 +305,6 @@ private:
         // a negative depth); finish() puts them right when the car is done.
         bool painter = false;
         uint8_t part = 0;             // (painter) the car's part being drawn (Fill::part)
-        uint8_t cls = 0;              // the job's placements are class objects of this class (Fill::dclass)
-        bool ground = false;          // the job's placements are road and ground (Fill::ground)
         bool bias_test_only = false;  // Pose::bias_test_only of the model being drawn
         std::vector<size_t> part_order;
         std::vector<uint16_t> face_seq;  // the faces of the part being drawn, in order
@@ -325,14 +317,7 @@ private:
         Pose pose;
         const std::vector<bool>* part_mask;
     };
-    // Placements i0 .. i1 - 1 of order_.
     void draw_placement_range(Geo& g, size_t i0, size_t i1);
-    // A placement's group: its class (1..4) if it is a class object drawn as one, the road and
-    // ground (kGroundGroup), or the rest (kOtherGroup).
-    static constexpr int kGroundGroup = 5, kOtherGroup = 6;
-    int placement_group(size_t i) const;
-    std::vector<uint32_t> order_;                 // the placements in drawing order
-    std::vector<std::array<uint32_t, 3>> chunks_; // the jobs: first, end (in order_), group
     void draw_model_into(Geo& g, const Model& model, const Pose& pose, const std::vector<bool>* part_mask);
     void draw_polygon(Geo& g, const ClipVert* poly, size_t count, const Material* mat, uint8_t face_color,
                       int32_t animation, int32_t reflection, float depth_bias, uint8_t open_edges);

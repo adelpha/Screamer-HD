@@ -218,8 +218,6 @@ void compute_bounds(Model& model) {
     for (const Part& part : model.parts)
         for (const Vec3i16& v : part.vertices) {
             const int y = v.y + part.offset[1];
-            model.min_y = any ? std::min(model.min_y, y) : y;
-            model.max_y = any ? std::max(model.max_y, y) : y;
             if (!any) flat_y = y;
             else if (y != flat_y || part.angles != std::array<int32_t, 3>{}) flat = false;
             any = true;

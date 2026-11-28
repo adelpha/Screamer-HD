@@ -217,9 +217,6 @@ SCR_INLINE void store_pixels(uint8_t* p, __m256i col, __m256i mask) {
 
 // a < b ? b : a and b < a ? b : a, lane by lane (signed)
 SCR_INLINE VI vimax(VI a, VI b) { return vixor(a, viand(vixor(a, b), vigt(b, a))); }
-SCR_INLINE VI vandnot_i(VI a, VI b) { return viandnot(a, b); }  // ~a & b
-// How much further away the original draws objects of class 1..4 (Renderer's class objects).
-constexpr float kClassDistance[5] = {0.0f, 6000.0f, 3200.0f, 24000.0f, 800.0f};
 SCR_INLINE VI vimin(VI a, VI b) { return vixor(a, viand(vixor(a, b), vigt(a, b))); }
 
 // The group's texels (at: their places in texels) to its pixels px[lane] and depths dp[lane],
@@ -309,7 +306,6 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
     const VF fade_iz = vset1(c.fade_iz), fade_start = vset1(c.fade_start), fade_range = vset1(c.fade_range);
     const bool writes_depth = fl.writes_depth;
     const bool painter = fl.painter != 0;
-    const bool class_fill = fl.dclass != 0, ground_fill = fl.ground != 0;
     const VI vpart = viset1(fl.part & 63);
     const bool wheel_part = (fl.part & 32) != 0;
     const bool card_part = (fl.part & 16) != 0;
@@ -501,21 +497,6 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
                     for (int j = 0; j < left; ++j) d[j] = drow[x + j];
                     dz = vloadu(d);
                 }
-                // (ours) The original's early-drawn objects (Renderer: class objects, the cliffs
-                // under a road) are stored as if their class distance further away, a class tag
-                // in a depth's low three bits. The road and ground drawn later go by that (they
-                // cover the cliffs' tops, as in the original); everything else is compared with
-                // them at their real depth, as if just as far away itself, and keeps the tag.
-                VF tzc = tz;
-                VI ctag = viset1(0);
-                if (!class_fill && !ground_fill) {
-                    ctag = vandnot_i(vcast(vcmplt(dz, none)), viand(vcast(dz), viset1(7)));
-                    if (vbits(vcastf(vieq(ctag, viset1(0)))) != (1 << kLanes) - 1) {
-                        VF far_by = none;
-                        for (int k = 1; k <= 4; ++k) far_by = vor(far_by, vand(vcastf(vieq(ctag, viset1(k))), vset1(kClassDistance[k])));
-                        tzc = vdiv(tz, vadd(one, vmul(far_by, tz)));
-                    }
-                }
                 int pass;
                 if (painter) {
                     // A car's own pixels hold negated depths, their low six bits the part
@@ -531,20 +512,12 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
                     const VF cardpix = card_part ? vcastf(viset1(-1)) : vcastf(vieq(viand(tag, viset1(16)), viset1(16)));
                     const VF reach = vor(vand(cardpix, adz), vandnot(cardpix, vdiv(adz, vadd(one, vmul(vslack, adz)))));
                     const VF over_car = vor(same, vcmpnlt(tz, reach));  // (no tie tolerance between a car's parts)
-                    pass = in & vbits(vor(vand(car, over_car), vandnot(car, vcmpnlt(vmul(tzc, tie), dz))));
+                    pass = in & vbits(vor(vand(car, over_car), vandnot(car, vcmpnlt(vmul(tz, tie), dz))));
                 } else {
-                    pass = in & vbits(vcmpnlt(vmul(tzc, tie), dz));
+                    pass = in & vbits(vcmpnlt(vmul(tz, tie), dz));
                 }
                 if (!pass) continue;
-                if (true_depth) {
-                    tz = vcastf(viand(vcast(iz), viset1(~7)));  // (the real depth: no tag)
-                } else if (class_fill) {
-                    tz = vcastf(vior(viand(vcast(tz), viset1(~7)), viset1(fl.dclass & 7)));
-                } else if (ground_fill || painter) {
-                    tz = vcastf(viand(vcast(tz), viset1(~7)));
-                } else {
-                    tz = vcastf(vior(viand(vcast(tzc), viset1(~7)), ctag));
-                }
+                if (true_depth) tz = iz;
                 if (painter) tz = vsub(none, vcastf(vior(viand(vcast(tz), viset1(~63)), vpart)));
 
                 if constexpr (K == Kind::Darken) {

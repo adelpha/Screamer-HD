@@ -101,7 +101,6 @@ struct Options {
     float car_slack = 64.0f;        // --car-slack: Renderer::set_car_slack (off: 1e30, the original's order)
     scr::video::Quality quality;    // --filter, --aniso, --msaa, --fog, --scaling (OPTIONS > VIDEO > ADVANCED)
     bool car_cards = true;          // --car-cards off: Renderer::set_car_cards
-    bool photo_camera = false;      // --photo: the camera counts as photo mode's (Camera::free), to look at an F12 picture again
     std::string aspect = "4:3";     // 4:3 | stretch | square | wide
     bool fb_set = false;            // --render-size was given
     bool smooth_turn = true;        // --smooth-turn: the camera's angles as they are, not in 2048ths of a turn
@@ -379,7 +378,6 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--capture-dir") o.capture_dir = next("--capture-dir");
         else if (a == "--renderer") o.renderer = next("--renderer");
         else if (a == "--car-cards") o.car_cards = std::string(next("--car-cards")) != "off";
-        else if (a == "--photo") o.photo_camera = true;
         else if (a == "--filter") {
             const std::string v = next("--filter");
             o.quality.filter = v == "trilinear" ? 2 : v == "bilinear" ? 1 : 0;
@@ -2134,7 +2132,6 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
                 mark(scr::prof::Tween);
                 const auto perf_t0 = std::chrono::steady_clock::now();
                 scr::Camera view_cam = draw_cam;
-                view_cam.free = freecam || opt.photo_camera;
                 // Looking back (ours; the picture only, the race does not know): while B or the
                 // pad's right shoulder, or their bindings) is held the camera faces the other way. In the chase
                 // views it also goes to the other side of the car, so the car is seen from the

@@ -468,8 +468,7 @@ TEST_CASE("render: the sky follows the yaw by less than a panorama column when a
 
 TEST_CASE("render: objects the original draws early are covered by what lies behind them") {
     // one object in front of a larger one
-    // (the one behind: the road or ground, behind_slot 0, or anything else)
-    auto picture = [&](int draw_class, int behind_z, int behind_slot = 0) {
+    auto picture = [&](int draw_class, int behind_z) {
         scr::Track t;
         t.materials = make_library();
         t.objects.push_back(make_model(0, 255, 300));
@@ -481,7 +480,7 @@ TEST_CASE("render: objects the original draws early are covered by what lies beh
         a.slot = 1;
         b.object = 1;
         b.z = behind_z;
-        b.slot = behind_slot;
+        b.slot = 1;
         t.placements = {a, b};
         for (size_t i = 0; i < 256; ++i) t.palette[i] = {uint8_t(i), uint8_t(i), uint8_t(i)};
         scr::Renderer r;
@@ -500,8 +499,6 @@ TEST_CASE("render: objects the original draws early are covered by what lies beh
     const auto far_plain = picture(-1, -40000), far_early = picture(3, -40000);
     CHECK(far_plain == far_early);  // (more than 24000 behind: still hidden by it)
     CHECK(picture(0, -4000) == plain);
-    // (ours) only the road and ground: other things behind stay hidden, as by any object
-    CHECK(picture(3, -4000, 1) == picture(-1, -4000, 1));
 }
 
 TEST_CASE("track: MAP2's cliff faces are in the original's early drawing class") {

@@ -224,22 +224,9 @@ void Renderer::draw_model(const Model& model, const Pose& pose, const std::vecto
     model_jobs_.push_back({&model, pose, part_mask});
 }
 
-int Renderer::placement_group(size_t i) const {
-    const Placement& p = track_->placements[i];
-    const Model& m = track_->objects[size_t(p.object)];
-    static constexpr float kClassBelowTop = 3000.0f;
-    // (ours) The class trick is for the game's cameras, on the road; photo mode's free camera
-    // uses it only with the eye at least near the object's top: from further below (down in a
-    // valley) the road showed over a cliff under it.
-    if (m.draw_class >= 1 && m.draw_class <= 4 && (!cam_->free || cam_->y >= float(p.y + m.max_y) - kClassBelowTop))
-        return int(m.draw_class);
-    return p.slot == 0 || m.flat || m.has_strips ? kGroundGroup : kOtherGroup;
-}
-
 void Renderer::draw_placement_range(Geo& g, size_t i0, size_t i1) {
     const auto& all = track_->placements;
-    for (size_t oi = i0; oi < i1; ++oi) {
-        const size_t i = order_[oi];
+    for (size_t i = i0; i < i1; ++i) {
         const Placement& p = all[i];
         const float dx = float(p.x) - cam_->x, dz = float(p.z) - cam_->z;
         if (std::fabs(dx) > cam_->far_distance || std::fabs(dz) > cam_->far_distance) continue;
@@ -251,13 +238,12 @@ void Renderer::draw_placement_range(Geo& g, size_t i0, size_t i1) {
         // through. (Only ground below the eye: flat ceilings overhead keep their depth.)
         if (p.slot != 0 && m.flat && float(p.y + m.flat_y) < cam_->y) pose.depth_bias = -kFlatGroundBias;
         // The objects the original itself draws early (vis_sort_cells: as if so much further
-        // away), the ground sheets and the cliff faces under a road: the road and ground drawn
-        // after them cover them up to that far behind them (a cliff's top edge stands above
-        // the road it carries and is only hidden by the road and the verge being painted on
-        // top). Ours: only the road and ground; the trees, barriers, cars and cones beyond a
-        // cliff no longer show through it (the filler's class tags, Fill::dclass).
+        // away), the ground sheets and the cliff faces under a road: what lies up to that far
+        // behind them is drawn over them. A cliff's top edge stands above the road it carries
+        // and is only hidden by the road, the verge and the hills beyond being painted on top.
         static constexpr float kClassBias[5] = {0.0f, 6000.0f, 3200.0f, 24000.0f, 800.0f};
-        if (g.cls) pose.depth_bias = std::min(pose.depth_bias, -kClassBias[g.cls]);
+
+        if (m.draw_class >= 1 && m.draw_class <= 4) pose.depth_bias = std::min(pose.depth_bias, -kClassBias[m.draw_class]);
         // (road pieces; some stretches of road are listed with the scenery)
         pose.seal_edges = p.slot == 0 || (m.has_strips && !seal_all_edges_);
         if (weld_joints_ && i < track_->welds.size() && !track_->welds[i].empty()) pose.shifts = &track_->welds[i];
@@ -273,37 +259,7 @@ void Renderer::flush_geometry() {
     // of the draw calls, so the result is the same as drawing one thing after another.
     constexpr size_t kPlacementsPerJob = 8;
     const size_t placements = placements_pending_ ? track_->placements.size() : 0;
-    // The placements in groups (placement_group): the class objects first, class by class, as
-    // the original draws them early; then the road, the ground and the rest in their own order
-    // (as before: equal depths go to the later one). Each job holds placements of one group.
-    order_.clear();
-    chunks_.clear();
-    if (placements) {
-        std::array<std::vector<uint32_t>, 5> classes;
-        std::vector<uint32_t> rest;
-        std::vector<uint8_t> group(placements);
-        for (size_t i = 0; i < placements; ++i) {
-            const int gi = placement_group(i);
-            group[i] = uint8_t(gi);
-            (gi <= 4 ? classes[size_t(gi)] : rest).push_back(uint32_t(i));
-        }
-        for (int c = 1; c <= 4; ++c) {
-            const auto& list = classes[size_t(c)];
-            for (size_t s = 0; s < list.size(); s += kPlacementsPerJob)
-                chunks_.push_back({uint32_t(order_.size() + s), uint32_t(order_.size() + std::min(list.size(), s + kPlacementsPerJob)), uint32_t(c)});
-            order_.insert(order_.end(), list.begin(), list.end());
-        }
-        // the rest in runs of one group, at most kPlacementsPerJob long
-        for (size_t s = 0; s < rest.size();) {
-            const uint8_t gi = group[rest[s]];
-            size_t e = s + 1;
-            while (e < rest.size() && e - s < kPlacementsPerJob && group[rest[e]] == gi) ++e;
-            chunks_.push_back({uint32_t(order_.size() + s), uint32_t(order_.size() + e), uint32_t(gi)});
-            s = e;
-        }
-        order_.insert(order_.end(), rest.begin(), rest.end());
-    }
-    const size_t chunks = chunks_.size();
+    const size_t chunks = (placements + kPlacementsPerJob - 1) / kPlacementsPerJob;
     const size_t models = model_jobs_.size();
     job_count_ = chunks + models;
     if (job_geo_.size() < job_count_) job_geo_.resize(job_count_);
@@ -314,10 +270,8 @@ void Renderer::flush_geometry() {
         g.clear();
         const size_t k = size_t(job);
         if (k >= before && k < before + chunks) {
-            const auto& c = chunks_[k - before];
-            g.cls = c[2] >= 1 && c[2] <= 4 ? uint8_t(c[2]) : 0;
-            g.ground = c[2] == kGroundGroup;
-            draw_placement_range(g, c[0], c[1]);
+            const size_t c = k - before;
+            draw_placement_range(g, c * kPlacementsPerJob, std::min(placements, (c + 1) * kPlacementsPerJob));
         } else {
             const ModelJob& m = model_jobs_[k < before ? k : k - chunks];
             draw_model_into(g, *m.model, m.pose, m.part_mask);
@@ -349,8 +303,6 @@ void Renderer::Geo::clear() {
     stats = {};
     edge_slack = 0;
     painter = false;
-    cls = 0;
-    ground = false;
     bias_test_only = false;
 }
 
@@ -623,7 +575,7 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
                     if (!((halves >> (k - 1)) & 1)) continue;
                     const std::array<ClipVert, 3> tri{poly[0], poly[k], poly[k + 1]};
                     if (mode == Mode::Translucent || mode == Mode::Darken) {
-                        g.deferred.push_back({uint32_t(g.deferred_verts.size()), 3u, mat, f.color, pose.animation, pose.reflection, depth, bias, g.cls, uint8_t(g.ground)});
+                        g.deferred.push_back({uint32_t(g.deferred_verts.size()), 3u, mat, f.color, pose.animation, pose.reflection, depth, bias});
                         g.deferred_verts.insert(g.deferred_verts.end(), tri.begin(), tri.end());
                     } else {
                         draw_polygon(g, tri.data(), 3, mat, f.color, pose.animation, pose.reflection, bias, seal_all_edges_ ? uint8_t(0xff) : uint8_t(0));
@@ -633,7 +585,7 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
             }
             if (mode == Mode::Translucent || mode == Mode::Darken) {
                 g.deferred.push_back({uint32_t(g.deferred_verts.size()), uint32_t(n), mat, f.color, pose.animation,
-                                     pose.reflection, depth, bias, g.cls, uint8_t(g.ground)});
+                                     pose.reflection, depth, bias});
                 g.deferred_verts.insert(g.deferred_verts.end(), poly.begin(), poly.begin() + ptrdiff_t(n));
                 continue;
             }
@@ -650,14 +602,8 @@ RenderStats Renderer::finish() {
     // Translucent polygons do not write depth; draw them far to near over the opaque scene.
     std::stable_sort(g.deferred.begin(), g.deferred.end(),
                      [](const Deferred& a, const Deferred& b) { return a.depth > b.depth; });
-    for (const Deferred& d : g.deferred) {
-        // (in its placement's group: a class object's depths are already its class distance further)
-        g.cls = d.cls;
-        g.ground = d.ground != 0;
+    for (const Deferred& d : g.deferred)
         draw_polygon(g, g.deferred_verts.data() + d.first, d.count, d.mat, d.color, d.animation, d.reflection, d.depth_bias, 0);
-    }
-    g.cls = 0;
-    g.ground = false;
     g.deferred.clear();
     g.deferred_verts.clear();
     if (sink_) {
@@ -682,9 +628,9 @@ RenderStats Renderer::finish() {
             const Geo& o = job_geo_[k];
             if (o.tris.empty()) continue;
             const SceneBatch::Kind kind = o.painter ? SceneBatch::Painter : o.bias_test_only ? SceneBatch::BiasTest : SceneBatch::Normal;
-            f.batches.push_back({kind, o.tris.data(), o.tris.size(), o.fills.data(), o.cls, o.ground});
+            f.batches.push_back({kind, o.tris.data(), o.tris.size(), o.fills.data()});
         }
-        if (!g.tris.empty()) f.batches.push_back({SceneBatch::Deferred, g.tris.data(), g.tris.size(), g.fills.data(), 0, false});
+        if (!g.tris.empty()) f.batches.push_back({SceneBatch::Deferred, g.tris.data(), g.tris.size(), g.fills.data()});
         sink_->draw_scene(f);
         g.tris.clear();
         g.tri_rows.clear();
@@ -752,14 +698,7 @@ RenderStats Renderer::finish() {
             bx1 = std::min(bx1, w - 1);
             for (int y = std::max(by0, y0); y <= std::min(by1, y1 - 1); ++y) {
                 float* const drow = depth_.data() + size_t(y) * size_t(w);
-                for (int x = bx0; x <= bx1; ++x) {
-                    // (and the part tags gone, which would read as class tags: no class tag)
-                    uint32_t bits;
-                    const float a = std::fabs(drow[x]);
-                    std::memcpy(&bits, &a, 4);
-                    bits &= ~uint32_t(63);
-                    std::memcpy(&drow[x], &bits, 4);
-                }
+                for (int x = bx0; x <= bx1; ++x) drow[x] = std::fabs(drow[x]);
             }
             list.clear();
         }
@@ -992,8 +931,6 @@ void Renderer::draw_polygon(Geo& g, const ClipVert* in, size_t count, const Mate
     fill.depth_bias = depth_bias;
     fill.painter = g.painter ? 1 : 0;
     fill.part = g.painter ? g.part : 0;
-    fill.dclass = g.cls;
-    fill.ground = g.ground ? 1 : 0;
     fill.bias_test_only = g.bias_test_only ? 1 : 0;
     fill.edge_slack = fill.writes_depth ? g.edge_slack : 0.0f;
     fill.seal_behind = open_edges != 0xff;
