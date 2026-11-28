@@ -400,8 +400,12 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
         }
         std::stable_sort(part_order.begin(), part_order.end(), [&](size_t a, size_t b) { return keys[a] < keys[b]; });
     }
+    int part_count = 0;
     for (const size_t pi : part_order) {
         if (part_mask && (pi >= part_mask->size() || !(*part_mask)[pi])) continue;
+        // (1..31 in drawing order; bit 5: a wheel's part, which the later parts cover whatever
+        // the depth, as in the original)
+        if (painter) g.part = uint8_t(part_count++ % 31 + 1 + (model.parts[pi].wheel ? 32 : 0));
         const Part& full = model.parts[pi];
         Mat3 prot;
         float ox, oy, oz;
@@ -599,6 +603,7 @@ RenderStats Renderer::finish() {
         f.fade_range = fade_range_;
         f.mipmaps = mipmaps_;
         f.mip_sharpness = mip_sharpness_;
+        f.car_slack = car_slack_;
         for (size_t k = 0; k < job_count_; ++k) {
             const Geo& o = job_geo_[k];
             if (o.tris.empty()) continue;
@@ -632,6 +637,7 @@ RenderStats Renderer::finish() {
     ctx.fade_start = fade_start_;
     ctx.fade_range = fade_range_;
     ctx.mip_sharpness = mip_sharpness_;
+    ctx.car_slack = car_slack_;
     pool_->run(bands, [&](int b) {
         const int y0 = h * b / bands, y1 = h * (b + 1) / bands;
         // (cleared here, the band's rows are still in the cache when its polygons are filled:
@@ -904,6 +910,7 @@ void Renderer::draw_polygon(Geo& g, const ClipVert* in, size_t count, const Mate
     fill.writes_depth = mode != Mode::Translucent && mode != Mode::Darken;
     fill.depth_bias = depth_bias;
     fill.painter = g.painter ? 1 : 0;
+    fill.part = g.painter ? g.part : 0;
     fill.bias_test_only = g.bias_test_only ? 1 : 0;
     fill.edge_slack = fill.writes_depth ? g.edge_slack : 0.0f;
     fill.seal_behind = open_edges != 0xff;

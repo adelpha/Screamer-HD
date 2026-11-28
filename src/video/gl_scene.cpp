@@ -82,6 +82,7 @@ uniform vec3 u_darken_mul, u_darken_add;
 uniform sampler2DArray u_tex0, u_tex1, u_tex2, u_tex3, u_tex4, u_tex5, u_tex6, u_tex7, u_tex8, u_tex9, u_tex10, u_tex11;
 uniform vec4 u_fade;          // on, 1/z where it starts, start depth, range
 uniform int u_true_depth;     // the second pass of a BiasTest batch: the real depth
+uniform float u_bias_add;     // added to every polygon's depth bias (a car's parts over its earlier ones)
 uniform float u_grad_scale;   // texel gradients times this pick the mipmap level
 layout(location = 0, index = 0) out vec4 o_add;
 layout(location = 0, index = 1) out vec4 o_mul;
@@ -130,7 +131,7 @@ float depth_value(float tz) {
 void main() {
     int group = v_fill.x, layer = v_fill.y, mode = v_fill.z, flags = v_fill.w;
     vec2 size = v_fill2.xy;
-    float bias = v_fill2.z;
+    float bias = v_fill2.z + u_bias_add;
     // texel coordinates and their change across the screen (before any branching)
     vec2 uv = v_uvz / v_iz;
     vec2 uvn = uv / v_layer;
@@ -269,7 +270,7 @@ GLuint make_texture_2d(GLenum internal, int w, int h, GLenum format, GLenum type
 
 struct GlScene::Impl {
     GLuint scene_prog = 0, sky_prog = 0, vao = 0, vbo = 0, sky_vao = 0;
-    GLint u_size = -1, u_darken_mul = -1, u_darken_add = -1, u_fade = -1, u_true_depth = -1, u_grad_scale = -1;
+    GLint u_size = -1, u_darken_mul = -1, u_darken_add = -1, u_fade = -1, u_true_depth = -1, u_grad_scale = -1, u_bias_add = -1;
     GLint s_has_pano = -1, s_sky = -1, s_fill = -1, s_wide = -1, s_a = -1, s_b = -1, s_rot = -1;
     // the picture
     GLuint fbo = 0, color = 0, depth = 0;
@@ -677,6 +678,7 @@ bool GlScene::init() {
     d.u_darken_add = gl::GetUniformLocation(d.scene_prog, "u_darken_add");
     d.u_fade = gl::GetUniformLocation(d.scene_prog, "u_fade");
     d.u_true_depth = gl::GetUniformLocation(d.scene_prog, "u_true_depth");
+    d.u_bias_add = gl::GetUniformLocation(d.scene_prog, "u_bias_add");
     d.u_grad_scale = gl::GetUniformLocation(d.scene_prog, "u_grad_scale");
     gl::Uniform1i(gl::GetUniformLocation(d.scene_prog, "u_palette"), 0);
     gl::Uniform1i(gl::GetUniformLocation(d.scene_prog, "u_shade"), 1);
@@ -738,9 +740,23 @@ void GlScene::draw_scene(const SceneFrame& f) {
     // the vertices of every batch, one after another
     d.verts.clear();
     std::vector<std::pair<size_t, size_t>> ranges;  // first vertex, count, per batch
-    for (const SceneBatch& b : f.batches) {
+    struct PartRun {
+        size_t first, count;
+        uint8_t part;
+    };
+    std::vector<std::vector<PartRun>> part_runs(f.batches.size());  // (cars) the vertices of each part
+    for (size_t bi = 0; bi < f.batches.size(); ++bi) {
+        const SceneBatch& b = f.batches[bi];
         const size_t first = d.verts.size();
-        for (size_t i = 0; i < b.tri_count; ++i) d.add_tri(b.tris[i], b.fills[b.tris[i].fill]);
+        for (size_t i = 0; i < b.tri_count; ++i) {
+            const detail::Fill& fl = b.fills[b.tris[i].fill];
+            const size_t at = d.verts.size();
+            d.add_tri(b.tris[i], fl);
+            if (b.kind != SceneBatch::Painter || d.verts.size() == at) continue;
+            auto& runs = part_runs[bi];
+            if (runs.empty() || runs.back().part != fl.part) runs.push_back({at, 0, fl.part});
+            runs.back().count += d.verts.size() - at;
+        }
         ranges.emplace_back(first, d.verts.size() - first);
     }
 
@@ -801,16 +817,54 @@ void GlScene::draw_scene(const SceneFrame& f) {
             glDepthMask(GL_TRUE);
             draw();
             break;
-        case SceneBatch::Painter:
-            // a car: its polygons in their order over each other (tested against the scene
-            // only), then its depths
-            glDepthMask(GL_FALSE);
-            draw();
-            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+        case SceneBatch::Painter: {
+            // A car, part by part as the software renderer draws it (Renderer::set_car_slack):
+            // a part's faces in their order over each other; over the car's earlier parts by
+            // depth with the slack, or whatever the depth where either is a wheel; over the
+            // rest of the scene by depth. The stencil holds 0x80 for the car's pixels, 0x40
+            // for a wheel's, 0x01 for the part being drawn; the part's depths are written
+            // last (the last face's, as the filler leaves them).
+            glEnable(GL_STENCIL_TEST);
+            glClearStencil(0);
+            glStencilMask(0xff);
+            glClear(GL_STENCIL_BUFFER_BIT);
+            for (const PartRun& r : part_runs[bi - 1]) {
+                const bool wheel = (r.part & 32) != 0;
+                const auto part_draw = [&]() { glDrawArrays(GL_TRIANGLES, GLint(r.first), GLsizei(r.count)); };
+                glDepthMask(GL_FALSE);
+                glStencilMask(0x01);
+                glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+                // over the car's wheels, or anywhere on the car for a wheel: always
+                glDepthFunc(GL_ALWAYS);
+                glStencilFunc(GL_EQUAL, wheel ? 0x81 : 0xc1, wheel ? 0x80 : 0xc0);
+                part_draw();
+                // over its other parts: by depth, as if car_slack nearer
+                glDepthFunc(GL_GEQUAL);
+                if (!wheel) {
+                    glStencilFunc(GL_EQUAL, 0x81, 0xc0);
+                    gl::Uniform1f(d.u_bias_add, f.car_slack);
+                    part_draw();
+                    gl::Uniform1f(d.u_bias_add, 0.0f);
+                }
+                // over the rest of the scene: by depth
+                glStencilFunc(GL_EQUAL, 0x01, 0x80);
+                part_draw();
+                // the part's depths where it was drawn, and those pixels the car's
+                glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+                glDepthMask(GL_TRUE);
+                glDepthFunc(GL_ALWAYS);
+                glStencilMask(0xc1);
+                glStencilFunc(GL_NOTEQUAL, wheel ? 0xc0 : 0x80, 0x01);  // (bit 0 set; written with it clear)
+                part_draw();
+                glDepthFunc(GL_GEQUAL);
+                glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            }
+            glStencilMask(0xff);
+            glClear(GL_STENCIL_BUFFER_BIT);
+            glDisable(GL_STENCIL_TEST);
             glDepthMask(GL_TRUE);
-            draw();
-            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
             break;
+        }
         case SceneBatch::BiasTest:
             // drawn where the biased depth passes (marked in the stencil), then the real depth
             // written there
