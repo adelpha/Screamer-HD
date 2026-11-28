@@ -305,6 +305,12 @@ private:
     void update_item_zoom(Item& it, float dt);
     void update_item_slide(Item& it, float dt);
     void update_item_static(Item& it);
+    void arrow_item(int x, int y, bool down);
+    bool rebuild_ = false;  // (ours) the page's lines again (a scroll)
+    static constexpr int kVisibleLines = 6;
+    // lines shown of a page of count: all of up to six; a scrolling page five, with its arrows
+    // in the rows above and below them
+    static constexpr int visible_lines(int count) { return count <= kVisibleLines ? count : kVisibleLines - 1; }
     void hide_objects();
     void handle_keys(const MenuKeys& keys);
     void activate();
@@ -338,6 +344,10 @@ private:
     MenuAssets& a_;
     const PcxImage* backdrop_ = nullptr;
     int built_page_ = -1;     // DAT_0011fb60 (-2: rebuild after an option change)
+    // Ours: pages of more than kVisibleLines lines scroll. The first line shown per page, and
+    // which way the lines are sliding after a scroll (-1 up, 1 down, 0 none).
+    std::array<int, 20> scroll_{};
+    int slide_ = 0;
     int variant_ = 0;         // DAT_0011fab8
     int flipping_ = 0;        // DAT_0011fabc
     int last_key_ = 0;        // DAT_0011fb64

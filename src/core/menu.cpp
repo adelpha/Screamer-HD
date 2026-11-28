@@ -941,6 +941,23 @@ void Menu::draw_text(const std::string& s) {
     }
 }
 
+void Menu::arrow_item(int x, int y, bool down) {
+    // (ours) a scrolling page's arrow, beside its first or last line: the font's V, turned over for up
+    for (Item& it : items) {
+        if (it.ch != -1) continue;
+        it = Item{};
+        it.ch = 'V' - 0x20;
+        it.row = -1;
+        it.x0 = it.x1 = x;
+        it.y0 = it.y1 = y;
+        it.turned = 0;
+        it.angle = 0;
+        it.az = down ? 0.0f : kPi;
+        it.k = 0;
+        return;
+    }
+}
+
 void Menu::update_item_static(Item& it) {
     // menu_item_update: straight to the place on the page
     if (it.ch == -1) return;
@@ -1036,7 +1053,7 @@ void Menu::update_item_slide(Item& it, float dt) {
 void Menu::build_page_items(float dt) {
     // menu_build_page_items
     const auto& entries = pages[size_t(page)];
-    if (built_page_ != page) {
+    if (built_page_ != page || rebuild_) {
         // Ours: a page with lines longer than 15 letters (the original's are 13 at most) is
         // seen from further back, so that they fit; the VIDEO page as for its longest size
         size_t longest = 0;
@@ -1045,37 +1062,60 @@ void Menu::build_page_items(float dt) {
             Entry res = pages[kVideoPage][kResolutionLine];
             for (res.value = 0; res.value < int(res_list_.size()); ++res.value) longest = std::max(longest, entry_text(res).size());
         }
-        // (and a page of more than the original's six lines from as much further back as it is
-        // taller, with a row to spare: its lines take two rows each)
         const float across = longest > 15 ? float(longest + 1) / 16.0f : 1.0f;
-        const float down = entries.size() > 6 ? float(2 * entries.size()) / 11.0f : 1.0f;
-        const int z = across > 1.0f || down > 1.0f ? int(float(kCameraZ) * std::max(across, down)) : kCameraZ;
+        const int z = across > 1.0f ? int(float(kCameraZ) * across) : kCameraZ;
         if (to_[2] != z) {
             from_[2] = int(cam_.z);
             to_[2] = z;
             cam_t_ = 1.0f;
         }
+        // (ours) at most kVisibleLines lines, from scroll_ on, the selected one among them
+        const int count = int(entries.size());
+        const int shown = visible_lines(count);
+        int& first = scroll_[size_t(page)];
+        const int sel = selected[size_t(page)];
+        first = std::clamp(std::clamp(first, sel - shown + 1, sel), 0, count - shown);
         for (Item& it : items) it.ch = -1;
-        block_.row = 0;
-        block_.ypos = 8 - int(entries.size());
+        block_.row = first;
+        block_.ypos = 8 - shown;
         block_.centred = 1;
         block_.phase = 0;
-        block_.x0 = kVariants[variant_][0];
-        block_.y0 = kVariants[variant_][1];
-        block_.z0 = kVariants[variant_][2];
+        const bool sliding = slide_ != 0 && built_page_ == page;
+        rebuild_ = false;
+        block_.x0 = sliding ? 0 : kVariants[variant_][0];
+        block_.y0 = sliding ? 0 : kVariants[variant_][1];
+        block_.z0 = sliding ? 0 : kVariants[variant_][2];
         block_.spin = 0.09f;
-        block_.sx = kVariants[variant_][3];
-        block_.sy = kVariants[variant_][4];
-        for (size_t i = 0; i < entries.size(); ++i) {
-            block_.turned = int(i) != selected[size_t(page)];
-            draw_text(entry_text(entries[i]));
+        block_.sx = sliding ? 0 : kVariants[variant_][3];
+        block_.sy = sliding ? 0 : kVariants[variant_][4];
+        for (int i = first; i < first + shown; ++i) {
+            block_.turned = i != sel;
+            draw_text(entry_text(entries[size_t(i)]));
             ++block_.row;
             block_.ypos += 2;
         }
-        if (++variant_ > 7) variant_ = 0;
+        if (sliding) {
+            // a scroll: every line slides a line's height (two rows) from where it was
+            for (Item& it : items) {
+                if (it.ch == -1) continue;
+                it.x0 = it.x1;
+                it.y0 = it.y1 - slide_ * 2 * 0x180;
+                it.z0 = it.z1;
+                it.timer = 0;
+                it.speed = 6.0f;
+            }
+        } else if (++variant_ > 7) {
+            variant_ = 0;
+        }
+        slide_ = 0;
+        // (and the arrows: more lines above or below)
+        // (in the rows above and below the lines, which a scrolling page leaves free)
+        if (first > 0) arrow_item(0, (8 - shown - 1) * -0x180 + 0x820 + 0x60, false);
+        if (first + shown < count) arrow_item(0, (8 + shown - 1) * -0x180 + 0x820 - 0xc0, true);
     }
     // menu_hide_page_items: the selected line faces front
-    for (Item& it : items) it.turned = it.row == selected[size_t(page)] ? 0 : 1;
+    for (Item& it : items)
+        if (it.row >= 0) it.turned = it.row == selected[size_t(page)] ? 0 : 1;  // (row -1: a scroll arrow)
     wave_ = dt * 9.42477798f + wave_;
     if (25.132741928f < wave_) wave_ = 0;
     if (built_page_ == -2) {
@@ -1580,6 +1620,14 @@ void Menu::handle_keys(const MenuKeys& k) {
             } else if (key == 2 && sel < int(pages[size_t(page)].size()) - 1) {
                 ++sel;
                 sounds.push_back(1);
+            }
+            // (ours) past the lines shown: the page scrolls a line, the lines sliding
+            const int shown = visible_lines(int(pages[size_t(page)].size()));
+            int& first = scroll_[size_t(page)];
+            if (sel < first || sel >= first + shown) {
+                slide_ = sel < first ? -1 : 1;
+                first = sel < first ? sel : sel - shown + 1;
+                rebuild_ = true;  // (in place: build_page_items)
             }
         } else if (mode == 6) {
             // the records page: which total's replay Enter plays
