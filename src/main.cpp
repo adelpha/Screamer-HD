@@ -507,10 +507,50 @@ void apply_video(Options& o, const scr::VideoSettings& v, bool force) {
     if (o.hardware) o.video_api = scr::video::Api::OpenGL;
 }
 
+// Fullscreen as SDL does it (a borderless window covering the display), except with OpenGL:
+// Windows switches a window whose OpenGL picture covers the whole screen to its own fullscreen
+// presentation a few pictures after it starts showing them, with a moment of black on the way
+// (at every start and every switch). There fullscreen is a borderless window one pixel taller
+// than the display, which Windows leaves a window. The windowed size and place come back after.
+void set_fullscreen(SDL_Window* window, bool on, bool opengl) {
+    static SDL_Rect windowed{0, 0, 0, 0};
+    static bool covering = false;  // our OpenGL fullscreen is on
+    if (!opengl && !covering) {
+        SDL_SetWindowFullscreen(window, on);
+        return;
+    }
+    SDL_SetWindowFullscreen(window, false);
+    if (on && opengl) {
+        if (!covering) {
+            SDL_GetWindowPosition(window, &windowed.x, &windowed.y);
+            SDL_GetWindowSize(window, &windowed.w, &windowed.h);
+        }
+        SDL_Rect b{};
+        if (!SDL_GetDisplayBounds(SDL_GetDisplayForWindow(window), &b)) {
+            SDL_SetWindowFullscreen(window, true);
+            return;
+        }
+        SDL_SetWindowBordered(window, false);
+        SDL_SetWindowPosition(window, b.x, b.y);
+        SDL_SetWindowSize(window, b.w, b.h + 1);
+        covering = true;
+        return;
+    }
+    if (covering) {
+        SDL_SetWindowBordered(window, true);
+        if (windowed.w > 0 && windowed.h > 0) {
+            SDL_SetWindowSize(window, windowed.w, windowed.h);
+            SDL_SetWindowPosition(window, windowed.x, windowed.y);
+        }
+        covering = false;
+    }
+    if (on) SDL_SetWindowFullscreen(window, true);  // (Direct3D after OpenGL)
+}
+
 // The window for the run's VIDEO settings: fullscreen or not, and in a window, the size of the
 // picture when it fits on the screen (so its pixels are the screen's).
 void apply_window(SDL_Window* window, const Options& o) {
-    SDL_SetWindowFullscreen(window, o.fullscreen);
+    set_fullscreen(window, o.fullscreen, o.video_api == scr::video::Api::OpenGL);
     if (!o.fullscreen && o.fb_set && o.fb_height >= 480) {
         const int w = o.aspect == "wide" ? o.fb_width : int(std::lround(double(o.fb_height) * 4.0 / 3.0)), h = o.fb_height;
         const float density = std::max(1.0f, SDL_GetWindowPixelDensity(window));
@@ -542,7 +582,8 @@ bool open_display(Display& d, const Options& o, scr::video::Api api, int x = SDL
     }
     for (;;) {
         SDL_WindowFlags wflags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | scr::video::window_flags(api);
-        if (o.fullscreen) wflags |= SDL_WINDOW_FULLSCREEN;
+        // (OpenGL: made fullscreen afterwards, see set_fullscreen)
+        if (o.fullscreen && api != scr::video::Api::OpenGL) wflags |= SDL_WINDOW_FULLSCREEN;
         if (o.hidden) wflags |= SDL_WINDOW_HIDDEN | SDL_WINDOW_NOT_FOCUSABLE;
         SDL_PropertiesID props = SDL_CreateProperties();
         SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, "Screamer HD");
@@ -2593,6 +2634,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
                         }
                         // (OpenGL not to be had: the menu shows what is used)
                         opt.video_api = presenter().api();
+                        if (!opt.headless) set_fullscreen(window, opt.fullscreen, opt.video_api == scr::video::Api::OpenGL);
                         if (presenter().api() != (mv.opengl ? scr::video::Api::OpenGL : scr::video::Api::Sdl)) {
                             menu_video.opengl = !mv.opengl;
                             shared.saved_video = menu_video;
@@ -2916,7 +2958,9 @@ int main(int argc, char** argv) {
     }
     Display display;
     if (!open_display(display, opt, opt.video_api)) return 1;
+    opt.video_api = display.presenter->api();  // (OpenGL not to be had: SDL's renderer)
     if (!opt.headless && !opt.was_given("--size")) apply_window(display.window, opt);
+    else if (!opt.headless) set_fullscreen(display.window, opt.fullscreen, opt.video_api == scr::video::Api::OpenGL);
 
     int exit_code = 0;
     if (!opt.replay_file.empty()) {
