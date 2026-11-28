@@ -514,7 +514,6 @@ void apply_video(Options& o, const scr::VideoSettings& v, bool force) {
 // than the display, which Windows leaves a window. The windowed size and place come back after.
 void set_fullscreen(SDL_Window* window, bool on, bool opengl) {
     static SDL_Rect windowed{0, 0, 0, 0};
-    static bool was_maximized = false;
     static bool covering = false;  // our OpenGL fullscreen is on
     if (!opengl && !covering) {
         SDL_SetWindowFullscreen(window, on);
@@ -525,7 +524,7 @@ void set_fullscreen(SDL_Window* window, bool on, bool opengl) {
         if (!covering) {
             // (a maximised window is restored first: Windows keeps its size and place otherwise,
             // and the title bar's strip stays uncovered)
-            was_maximized = (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0;
+            const bool was_maximized = (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0;
             if (was_maximized) {
                 SDL_RestoreWindow(window);
                 SDL_SyncWindow(window);
@@ -550,7 +549,6 @@ void set_fullscreen(SDL_Window* window, bool on, bool opengl) {
             SDL_SetWindowSize(window, windowed.w, windowed.h);
             SDL_SetWindowPosition(window, windowed.x, windowed.y);
         }
-        if (was_maximized && !on) SDL_MaximizeWindow(window);
         covering = false;
     }
     if (on) SDL_SetWindowFullscreen(window, true);  // (Direct3D after OpenGL)
@@ -558,18 +556,39 @@ void set_fullscreen(SDL_Window* window, bool on, bool opengl) {
 
 // The window for the run's VIDEO settings: fullscreen or not, and in a window, the size of the
 // picture when it fits on the screen (so its pixels are the screen's).
+// A window with a chosen render size has the picture's shape, and keeps it when resized (RES
+// NATIVE: any shape, the picture follows the window). Its size: the picture at a whole multiple
+// of its own size when that fits on the desktop (above the taskbar, with the title bar), so
+// every pixel of it is a block of the screen's; a picture larger than that is shown as large
+// as fits (filtered down).
 void apply_window(SDL_Window* window, const Options& o) {
+    SDL_SetWindowAspectRatio(window, 0.0f, 0.0f);  // (none while the size changes)
     set_fullscreen(window, o.fullscreen, o.video_api == scr::video::Api::OpenGL);
-    if (!o.fullscreen && o.fb_set && o.fb_height >= 480) {
-        const int w = o.aspect == "wide" ? o.fb_width : int(std::lround(double(o.fb_height) * 4.0 / 3.0)), h = o.fb_height;
+    if (!o.fullscreen && o.fb_set && o.aspect != "stretch") {
+        if (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) {
+            SDL_RestoreWindow(window);
+            SDL_SyncWindow(window);
+        }
+        // the picture's shape on the screen: square pixels when wide, else the 320x200 screen's 4:3
+        const bool square = o.aspect == "wide" || o.aspect == "square";
+        const int w = square ? o.fb_width : int(std::lround(double(o.fb_height) * 4.0 / 3.0)), h = o.fb_height;
         const float density = std::max(1.0f, SDL_GetWindowPixelDensity(window));
         SDL_Rect usable{};
-        if (SDL_GetDisplayUsableBounds(SDL_GetDisplayForWindow(window), &usable)) {
-            const int pw = int(std::lround(w / density)), ph = int(std::lround(h / density));
-            if (pw <= usable.w && ph + 40 <= usable.h) {
-                SDL_SetWindowSize(window, pw, ph);
-                SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        if (w > 0 && h > 0 && SDL_GetDisplayUsableBounds(SDL_GetDisplayForWindow(window), &usable)) {
+            int top = 0, left = 0, bottom = 0, right = 0;
+            if (!SDL_GetWindowBordersSize(window, &top, &left, &bottom, &right) || top <= 0) {
+                top = 32;  // (not known before the window is shown: a title bar's)
+                left = right = bottom = 1;
             }
+            const double room_w = double(usable.w - left - right) * density, room_h = double(usable.h - top - bottom) * density;
+            double scale = std::min(room_w / w, room_h / h);
+            if (scale >= 1.0) scale = std::floor(scale);  // (a whole multiple when it fits)
+            const int ww = std::max(1, int(std::lround(w * scale / density))), wh = std::max(1, int(std::lround(h * scale / density)));
+            SDL_SetWindowSize(window, ww, wh);
+            SDL_SetWindowPosition(window, usable.x + left + (usable.w - left - right - ww) / 2,
+                                  usable.y + top + (usable.h - top - bottom - wh) / 2);
+            const float ratio = float(double(w) / double(h));
+            SDL_SetWindowAspectRatio(window, ratio, ratio);
         }
     }
     SDL_SyncWindow(window);
