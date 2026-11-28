@@ -403,9 +403,9 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
     int part_count = 0;
     for (const size_t pi : part_order) {
         if (part_mask && (pi >= part_mask->size() || !(*part_mask)[pi])) continue;
-        // (1..31 in drawing order; bit 5: a wheel's part, which the later parts cover whatever
+        // (1..15 in drawing order; bit 4: a card, bit 5: a wheel's part, which the later parts cover whatever
         // the depth, as in the original)
-        if (painter) g.part = uint8_t(part_count++ % 31 + 1 + (model.parts[pi].wheel ? 32 : 0));
+        if (painter) g.part = uint8_t(part_count++ % 15 + 1 + (model.parts[pi].wheel ? 32 : 0));
         const Part& full = model.parts[pi];
         Mat3 prot;
         float ox, oy, oz;
@@ -495,9 +495,29 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
             const auto& list = part.draw_order[size_t(list_index)];
             if (painter && !list.empty()) order = &list;
         }
+        // (ours) A car part's cards (Face::card: thin fins and supports modelled as a face per
+        // side) after its other faces, as a part of their own: covered by those only where
+        // behind them. In the original's order a later face of the part can paint over one,
+        // which the black car's spoiler supports show, one coming and going with the angle.
+        std::vector<uint16_t>& seq = g.face_seq;
+        seq.clear();
+        const bool cards_after = painter && car_cards_ && !part.wheel;
         const size_t face_count = order ? order->size() : part.faces.size();
         for (size_t fi = 0; fi < face_count; ++fi) {
-            const Face& f = part.faces[order ? (*order)[fi] : fi];
+            const uint16_t k = order ? (*order)[fi] : uint16_t(fi);
+            if (!(cards_after && k < part.faces.size() && part.faces[k].card)) seq.push_back(k);
+        }
+        const size_t card_start = seq.size();
+        if (cards_after)
+            for (size_t fi = 0; fi < face_count; ++fi) {
+                const uint16_t k = order ? (*order)[fi] : uint16_t(fi);
+                if (k < part.faces.size() && part.faces[k].card) seq.push_back(k);
+            }
+        for (size_t si = 0; si < seq.size(); ++si) {
+            // (each card a part of its own: the wing, its fins and its supports are all cards,
+            // and they cover each other by depth too)
+            if (si >= card_start && si > 0) g.part = uint8_t(part_count++ % 15 + 1 + 16);
+            const Face& f = part.faces[seq[si]];
             if (face_lists_ && list_index >= 0 && !((f.lists >> list_index) & 1)) continue;
             // Back-face test like object_build_polygons: dot(vertex - eye, normal) >= 0 draws.
             float nx, ny, nz;

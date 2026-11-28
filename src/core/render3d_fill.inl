@@ -308,6 +308,7 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
     const bool painter = fl.painter != 0;
     const VI vpart = viset1(fl.part & 63);
     const bool wheel_part = (fl.part & 32) != 0;
+    const bool card_part = (fl.part & 16) != 0;
     const VF vslack = vset1(c.car_slack);
     const bool true_depth = fl.bias_test_only != 0 && bias;
     const bool behind = fl.seal_behind && (e[0] != 0 || e[1] != 0 || e[2] != 0);
@@ -507,8 +508,10 @@ void fill_tri(const FillContext& c, const Tri& t, const Fill& fl, int band0, int
                     const VI tag = viand(vcast(dz), viset1(63));
                     const VF same = wheel_part ? car : vand(car, vcastf(vior(vieq(tag, vpart), vieq(viand(tag, viset1(32)), viset1(32)))));
                     const VF adz = vabs(dz);
-                    const VF reach = vdiv(adz, vadd(one, vmul(vslack, adz)));  // 1/z of car_slack further
-                    const VF over_car = vor(same, vcmpnlt(vmul(tz, tie), reach));
+                    // (cards: no slack, against them or for them; see Renderer::set_car_slack)
+                    const VF cardpix = card_part ? vcastf(viset1(-1)) : vcastf(vieq(viand(tag, viset1(16)), viset1(16)));
+                    const VF reach = vor(vand(cardpix, adz), vandnot(cardpix, vdiv(adz, vadd(one, vmul(vslack, adz)))));
+                    const VF over_car = vor(same, vcmpnlt(tz, reach));  // (no tie tolerance between a car's parts)
                     pass = in & vbits(vor(vand(car, over_car), vandnot(car, vcmpnlt(vmul(tz, tie), dz))));
                 } else {
                     pass = in & vbits(vcmpnlt(vmul(tz, tie), dz));

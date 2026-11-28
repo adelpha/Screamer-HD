@@ -283,6 +283,58 @@ void compute_bounds(Model& model) {
             }
         }
         part.wheel = std::find(std::begin(kWheels), std::end(kWheels), part.name) != std::end(kWheels);
+        // cards: two faces with the same corners (by position), normals opposite
+        {
+            std::map<std::vector<std::array<int, 3>>, std::vector<size_t>> by_corners;
+            for (size_t fi = 0; fi < part.faces.size(); ++fi) {
+                const Face& f = part.faces[fi];
+                std::vector<std::array<int, 3>> c;
+                for (int i = 0; i < f.count && i < 6; ++i) {
+                    if (f.vtx[size_t(i)] >= part.vertices.size()) break;
+                    const Vec3i16& v = part.vertices[f.vtx[size_t(i)]];
+                    c.push_back({v.x, v.y, v.z});
+                }
+                if (c.size() < 3 || c.size() != size_t(f.count)) continue;
+                std::sort(c.begin(), c.end());
+                by_corners[c].push_back(fi);
+            }
+            for (const auto& [corners, faces] : by_corners)
+                for (size_t a : faces)
+                    for (size_t b : faces) {
+                        const Face& fa = part.faces[a];
+                        const Face& fb = part.faces[b];
+                        if (int64_t(fa.normal[0]) * fb.normal[0] + int64_t(fa.normal[1]) * fb.normal[1] + int64_t(fa.normal[2]) * fb.normal[2] < 0)
+                            part.faces[a].card = true;
+                    }
+            // ... standing free of the rest of the part: every edge shared with cards only (a
+            // wing, its fins and supports; not the vents and panels set into the bodywork)
+            using Pos = std::array<int, 3>;
+            std::map<std::pair<Pos, Pos>, std::vector<size_t>> edge_faces;
+            auto pos = [&](uint16_t k) { const Vec3i16& v = part.vertices[k]; return Pos{v.x, v.y, v.z}; };
+            for (size_t fi = 0; fi < part.faces.size(); ++fi) {
+                const Face& f = part.faces[fi];
+                for (int i = 0; i < f.count && i < 6; ++i) {
+                    const uint16_t a = f.vtx[size_t(i)], b = f.vtx[size_t((i + 1) % f.count)];
+                    if (a >= part.vertices.size() || b >= part.vertices.size()) continue;
+                    Pos pa = pos(a), pb = pos(b);
+                    if (pb < pa) std::swap(pa, pb);
+                    edge_faces[{pa, pb}].push_back(fi);
+                }
+            }
+            for (bool changed = true; changed;) {
+                changed = false;
+                for (const auto& [edge, faces] : edge_faces) {
+                    bool all_cards = true;
+                    for (size_t fi : faces) all_cards = all_cards && part.faces[fi].card;
+                    if (all_cards) continue;
+                    for (size_t fi : faces)
+                        if (part.faces[fi].card) {
+                            part.faces[fi].card = false;
+                            changed = true;
+                        }
+                }
+            }
+        }
         if (part.wheel) model.car = true;
         if (part.vertices.empty()) {
             part.center = {};

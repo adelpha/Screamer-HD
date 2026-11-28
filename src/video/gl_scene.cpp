@@ -830,6 +830,7 @@ void GlScene::draw_scene(const SceneFrame& f) {
             glClear(GL_STENCIL_BUFFER_BIT);
             for (const PartRun& r : part_runs[bi - 1]) {
                 const bool wheel = (r.part & 32) != 0;
+                const bool card = (r.part & 16) != 0;  // (stencil 0x20: a card's pixel)
                 const auto part_draw = [&]() { glDrawArrays(GL_TRIANGLES, GLint(r.first), GLsizei(r.count)); };
                 glDepthMask(GL_FALSE);
                 glStencilMask(0x01);
@@ -838,10 +839,16 @@ void GlScene::draw_scene(const SceneFrame& f) {
                 glDepthFunc(GL_ALWAYS);
                 glStencilFunc(GL_EQUAL, wheel ? 0x81 : 0xc1, wheel ? 0x80 : 0xc0);
                 part_draw();
-                // over its other parts: by depth, as if car_slack nearer
+                // over its other parts: by depth, as if car_slack nearer (a card, or over one:
+                // by depth alone)
                 glDepthFunc(GL_GEQUAL);
-                if (!wheel) {
+                if (!wheel && card) {
                     glStencilFunc(GL_EQUAL, 0x81, 0xc0);
+                    part_draw();
+                } else if (!wheel) {
+                    glStencilFunc(GL_EQUAL, 0xa1, 0xe0);
+                    part_draw();
+                    glStencilFunc(GL_EQUAL, 0x81, 0xe0);
                     gl::Uniform1f(d.u_bias_add, f.car_slack);
                     part_draw();
                     gl::Uniform1f(d.u_bias_add, 0.0f);
@@ -853,8 +860,8 @@ void GlScene::draw_scene(const SceneFrame& f) {
                 glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
                 glDepthMask(GL_TRUE);
                 glDepthFunc(GL_ALWAYS);
-                glStencilMask(0xc1);
-                glStencilFunc(GL_NOTEQUAL, wheel ? 0xc0 : 0x80, 0x01);  // (bit 0 set; written with it clear)
+                glStencilMask(0xe1);
+                glStencilFunc(GL_NOTEQUAL, 0x80 | (wheel ? 0x40 : 0) | (card ? 0x20 : 0), 0x01);  // (bit 0 set; written with it clear)
                 part_draw();
                 glDepthFunc(GL_GEQUAL);
                 glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);

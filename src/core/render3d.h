@@ -217,6 +217,9 @@ public:
     // decides (ours: parts sorted nearer, such as spoiler supports, drew over the wing). The
     // faces within a part keep the original's order. 1e30: the original's order everywhere.
     void set_car_slack(float units) { car_slack_ = units; }
+    // A car part's cards (Face::card) are drawn after the part's other faces and covered by
+    // them only where behind them (ours); off: in the original's face order.
+    void set_car_cards(bool on) { car_cards_ = on; }
     float car_slack() const { return car_slack_; }
     void set_mipmaps(bool on, float sharpness = 1.4f) { mipmaps_ = on; mip_sharpness_ = sharpness; }
     // Threads that fill pixels (<= 0: one per hardware thread, the default).
@@ -304,6 +307,7 @@ private:
         uint8_t part = 0;             // (painter) the car's part being drawn (Fill::part)
         bool bias_test_only = false;  // Pose::bias_test_only of the model being drawn
         std::vector<size_t> part_order;
+        std::vector<uint16_t> face_seq;  // the faces of the part being drawn, in order
         std::vector<float> part_keys;
         RenderStats stats{};
         void clear();
@@ -357,7 +361,8 @@ private:
     bool sky_tilt_ = true;
     bool face_lists_ = true;
     bool folded_faces_ = true;
-    float car_slack_ = 1.0f;
+    float car_slack_ = 64.0f;
+    bool car_cards_ = true;
     float mip_sharpness_ = 1.4f;
     bool skip_ = false;
     bool fade_ = false;            // the view-distance fade is on this frame

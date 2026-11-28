@@ -98,7 +98,8 @@ struct Options {
     std::string renderer;           // SDL renderer name, empty = default
     scr::video::Api video_api = scr::video::Api::Sdl;  // --video-api: SDL's 2D renderer or our OpenGL context
     bool hardware = false;          // --renderer3d hardware: the 3D view drawn on the graphics card (OpenGL)
-    float car_slack = 1.0f;         // --car-slack: Renderer::set_car_slack (off: 1e30, the original's order)
+    float car_slack = 64.0f;        // --car-slack: Renderer::set_car_slack (off: 1e30, the original's order)
+    bool car_cards = true;          // --car-cards off: Renderer::set_car_cards
     std::string aspect = "4:3";     // 4:3 | stretch | square | wide
     bool fb_set = false;            // --render-size was given
     bool smooth_turn = true;        // --smooth-turn: the camera's angles as they are, not in 2048ths of a turn
@@ -369,6 +370,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--capture-every") o.capture_every = std::strtoull(next("--capture-every"), nullptr, 10);
         else if (a == "--capture-dir") o.capture_dir = next("--capture-dir");
         else if (a == "--renderer") o.renderer = next("--renderer");
+        else if (a == "--car-cards") o.car_cards = std::string(next("--car-cards")) != "off";
         else if (a == "--car-slack") {
             const std::string v = next("--car-slack");
             o.car_slack = v == "off" ? 1e30f : float(std::atof(v.c_str()));
@@ -1120,6 +1122,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
     renderer3d.set_face_lists(opt.face_lists);
     renderer3d.set_folded_faces(opt.folded_faces);
     renderer3d.set_car_slack(opt.car_slack);
+    renderer3d.set_car_cards(opt.car_cards);
 
     // --scene menu: the front end (kept by main across races)
     scr::Menu* menu = nullptr;
