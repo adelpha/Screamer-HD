@@ -460,8 +460,15 @@ SDL_FRect present_rect(int out_w, int out_h, const std::string& aspect, int fb_w
     else target = 4.0 / 3.0;
     double w = out_w, h = out_w / target;
     if (h > out_h) { h = out_h; w = out_h * target; }
-    return {float((out_w - w) / 2), float((out_h - h) / 2), float(w), float(h)};
+    // (in whole pixels: a picture shown at half a pixel's offset, scaled with nearest-neighbour,
+    // would take some rows and columns twice and others not at all)
+    w = std::round(w);
+    h = std::round(h);
+    return {float(std::floor((out_w - w) / 2)), float(std::floor((out_h - h) / 2)), float(w), float(h)};
 }
+
+// Rows at the bottom of the window that lie off the screen (OpenGL fullscreen, set_fullscreen).
+int g_hidden_rows = 0;
 
 // OPTIONS > VIDEO as the run has it now
 scr::VideoSettings video_from(const Options& o) {
@@ -541,8 +548,10 @@ void set_fullscreen(SDL_Window* window, bool on, bool opengl) {
         SDL_SetWindowPosition(window, b.x, b.y);
         SDL_SetWindowSize(window, b.w, b.h + 1);
         covering = true;
+        g_hidden_rows = int(std::lround(SDL_GetWindowPixelDensity(window)));
         return;
     }
+    g_hidden_rows = 0;
     if (covering) {
         SDL_SetWindowBordered(window, true);
         if (windowed.w > 0 && windowed.h > 0) {
@@ -689,6 +698,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
     if ((wide || opt.native_res) && !opt.fb_set) {
         int ww = opt.width, wh = opt.height;
         if (!opt.headless) SDL_GetWindowSizeInPixels(window, &ww, &wh);
+        wh -= g_hidden_rows;
         if (ww > 0 && wh > 0) {
             if (!wide) {
                 wh = std::min(wh, int(std::lround(double(ww) * 3.0 / 4.0)));
@@ -1301,6 +1311,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
         if (!opt.fb_set && (w || opt.native_res)) {
             int ww = opt.width, wh = opt.height;
             if (!opt.headless) SDL_GetWindowSizeInPixels(window, &ww, &wh);
+            wh -= g_hidden_rows;
             if (ww > 0 && wh > 0) {
                 if (!w) {
                     wh = std::min(wh, int(std::lround(double(ww) * 3.0 / 4.0)));
@@ -1476,6 +1487,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
         if (window) SDL_GetWindowSize(window, &ww, &wh);
         presenter().output_size(ow, oh);
         const float px = wx * float(ow) / float(std::max(ww, 1)), py = wy * float(oh) / float(std::max(wh, 1));
+        oh -= g_hidden_rows;
         const SDL_FRect dst = present_rect(ow, oh, opt.aspect, fb.width(), fb.height());
         fx = (px - dst.x) / std::max(dst.w, 1.0f) * float(fb.width());
         fy = (py - dst.y) / std::max(dst.h, 1.0f) * float(fb.height());
@@ -2789,6 +2801,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
         int ow, oh;
         presenter().output_size(ow, oh);
         // (a menu made before WIDESCREEN went on keeps its 4:3 shape: its pixels need not be square)
+        oh -= g_hidden_rows;  // (the part of the window on the screen)
         const SDL_FRect dst = present_rect(ow, oh, menu && !fb.wide && opt.aspect == "wide" ? "4:3" : opt.aspect, fb.width(), fb.height());
         float backdrop = -1;  // (none)
         if (menu && opt.aspect == "wide" && (dst.w + 1.0f < float(ow) || dst.h + 1.0f < float(oh))) {
