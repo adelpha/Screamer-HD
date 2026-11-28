@@ -551,7 +551,8 @@ TEST_CASE("menu: OPTIONS > CONTROLS asks main for bindings and shows its texts")
     run(m, 60);
     int letters = 0;
     for (const auto& it : m.items) letters += it.ch != -1;
-    CHECK(letters == int(std::string("ACCELPADRTBRAKEPADLTLEFTRIGHTGEARUPGEARDOWNLOOKBACK").size()) + 2 + 2 + 1 + 1 + 1);
+    // (seven lines: the page scrolls, five shown and the arrow below them)
+    CHECK(letters == int(std::string("ACCELPADRTBRAKEPADLTLEFTRIGHTGEARUP").size()) + 2 + 2 + 1 + 1);
     press([](scr::MenuKeys& k) { k.down = true; });
     press([](scr::MenuKeys& k) { k.enter = true; });  // BRAKE: main waits for a button
     REQUIRE(m.bind_request.has_value());
