@@ -11,6 +11,7 @@
 
 #include "core/render3d.h"
 #include "video/gl_api.h"
+#include "video/presenter.h"
 
 #include <memory>
 
@@ -24,6 +25,8 @@ public:
     void draw_scene(const SceneFrame& frame) override;
     // The track's textures made and uploaded now (a fraction of a second), not at its first frame.
     void prepare(const Track& track) override;
+    // FILTER, ANISO, AA and FADE (Quality), from the next scene on.
+    void set_quality(const Quality& q);
     // The last scene drawn (RGBA, width x height, top row first), or 0.
     GLuint texture() const;
     int width() const;

@@ -21,6 +21,16 @@ class SceneSink;
 namespace scr::video {
 
 enum class Api { Sdl, OpenGL };
+
+// OPTIONS > VIDEO > ADVANCED's picture quality (VideoSettings).
+struct Quality {
+    int filter = 0;     // the hardware renderer's textures: 0 nearest, 1 bilinear, 2 trilinear
+    int aniso = 0;      // anisotropic filtering: 0 off, 1..4: 2x, 4x, 8x, 16x
+    int msaa = 0;       // multisampling: 0 off, 1..3: 2x, 4x, 8x (and alpha to coverage)
+    bool fog = false;   // the view distance's fade as fog towards the sky (off: the dither)
+    int scaling = 0;    // the picture scaled up to the window: 0 sharp, 1 pixel, 2 smooth (3: nearest)
+    bool operator==(const Quality&) const = default;
+};
 const char* api_name(Api api);                 // "sdl", "opengl"
 bool parse_api(const std::string& s, Api& out);
 
@@ -49,6 +59,7 @@ public:
     // The hardware renderer, where this presenter has one (null: the software renderer only).
     // A layered Framebuffer (Framebuffer::set_layered) is shown over the last scene drawn by it.
     virtual SceneSink* scene_sink() { return nullptr; }
+    virtual void set_quality(const Quality& q) = 0;
     // The last uploaded picture as shown before scaling (the Framebuffer's size; with a layered
     // one, the scene and what is over it), or null where the picture is the Framebuffer itself.
     virtual SurfacePtr read_picture() { return nullptr; }

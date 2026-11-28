@@ -82,7 +82,8 @@ private:
 // music; 0..kVolumeMax), then the music source (0 CD, 1 MIDI). A file without them (the
 // original's), or with fewer, gets the defaults for the rest.
 // Then (ours) the VIDEO page: fullscreen, widescreen, render width and height (0: the screen's),
-// view distance in tenths (0: no limit), vsync, frame limit, far models simple, mipmaps, OpenGL, hardware renderer.
+// view distance in tenths (0: no limit), vsync, frame limit, far models simple, mipmaps, OpenGL, hardware renderer,
+// texture filter, anisotropic filtering, multisampling, fog, scaling.
 constexpr int kVolumeMax = 10;
 
 // The VIDEO page's settings (main applies them; the detail stays in CHOICE.DAT's own bytes).
@@ -97,6 +98,13 @@ struct VideoSettings {
     bool mipmaps = true;
     bool opengl = false;         // the picture through OpenGL (--video-api opengl); off: SDL's renderer
     bool hardware = false;       // the 3D view on the graphics card (--renderer3d hardware; needs opengl)
+    // the hardware renderer's quality (video::Quality): texture filter (nearest, bilinear,
+    // trilinear), anisotropic filtering (off, 2x .. 16x), multisampling (off, 2x, 4x, 8x), the
+    // view distance's fade as fog instead of the dither; and the picture scaled up to the window
+    // sharp (whole multiples, then smoothed), in whole multiples only, or smoothed
+    int filter = 0, aniso = 0, msaa = 0;
+    bool fog = false;
+    int scaling = 0;
     bool operator==(const VideoSettings&) const = default;
 };
 // The VIDEO page's render sizes: {0, 0} (NATIVE) first, then 4:3 sizes (with the original's
@@ -219,7 +227,8 @@ public:
     // Ours: the VIDEO page (OPTIONS > VIDEO) and its ADVANCED page (kVideoPage + 1).
     static constexpr int kVideoPage = 8;
     enum VideoLine : int { kFullscreenLine, kWidescreenLine, kResolutionLine, kDistanceLine, kDetailLine, kRendererLine, kVsyncLine,
-                           kFpsLine, kFarModelsLine, kMipmapsLine, kApiLine };
+                           kFpsLine, kFarModelsLine, kMipmapsLine, kApiLine, kFilterLine, kAnisoLine, kAaLine,
+                           kFadeLine, kScaleLine };
     VideoSettings video() const;
     void set_video(const VideoSettings& v);
     // Set when Esc leaves the VIDEO page (main applies every change at once and clears it).
@@ -305,6 +314,12 @@ private:
     void update_item_zoom(Item& it, float dt);
     void update_item_slide(Item& it, float dt);
     void update_item_static(Item& it);
+    void arrow_item(int x, int y, bool down);
+    bool rebuild_ = false;  // (ours) the page's lines again (a scroll)
+    static constexpr int kVisibleLines = 6;
+    // lines shown of a page of count: all of up to six; a scrolling page five, with its arrows
+    // in the rows above and below them
+    static constexpr int visible_lines(int count) { return count <= kVisibleLines ? count : kVisibleLines - 1; }
     void hide_objects();
     void handle_keys(const MenuKeys& keys);
     void activate();
@@ -338,6 +353,10 @@ private:
     MenuAssets& a_;
     const PcxImage* backdrop_ = nullptr;
     int built_page_ = -1;     // DAT_0011fb60 (-2: rebuild after an option change)
+    // Ours: pages of more than kVisibleLines lines scroll. The first line shown per page, and
+    // which way the lines are sliding after a scroll (-1 up, 1 down, 0 none).
+    std::array<int, 20> scroll_{};
+    int slide_ = 0;
     int variant_ = 0;         // DAT_0011fab8
     int flipping_ = 0;        // DAT_0011fabc
     int last_key_ = 0;        // DAT_0011fb64

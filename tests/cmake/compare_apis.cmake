@@ -18,7 +18,7 @@ endif()
 foreach(api sdl opengl)
   set(shot "${OUTPUT}_${api}.png")
   file(REMOVE "${shot}")
-  execute_process(COMMAND "${EXE}" --hidden --video-api ${api} ${ARG_LIST} --screenshot "${shot}"
+  execute_process(COMMAND "${EXE}" --hidden --video-api ${api} --scaling nearest ${ARG_LIST} --screenshot "${shot}"
     RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
   if(NOT rc EQUAL 0)
     message(FATAL_ERROR "screamer (${api}) exited with ${rc}\n${out}\n${err}")

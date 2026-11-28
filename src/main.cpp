@@ -99,6 +99,7 @@ struct Options {
     scr::video::Api video_api = scr::video::Api::Sdl;  // --video-api: SDL's 2D renderer or our OpenGL context
     bool hardware = false;          // --renderer3d hardware: the 3D view drawn on the graphics card (OpenGL)
     float car_slack = 64.0f;        // --car-slack: Renderer::set_car_slack (off: 1e30, the original's order)
+    scr::video::Quality quality;    // --filter, --aniso, --msaa, --fog, --scaling (OPTIONS > VIDEO > ADVANCED)
     bool car_cards = true;          // --car-cards off: Renderer::set_car_cards
     std::string aspect = "4:3";     // 4:3 | stretch | square | wide
     bool fb_set = false;            // --render-size was given
@@ -213,6 +214,12 @@ void print_usage() {
         "  --vsync on|off       wait for the screen's refresh (default on, or as OPTIONS > VIDEO)\n"
         "  --frame-limit N      at most N pictures a second (default 0: no limit)\n"
         "  --renderer NAME      SDL renderer (direct3d11, direct3d12, vulkan, opengl, software, gpu)\n"
+        "  --filter nearest|bilinear|trilinear  the hardware renderer's textures (default nearest)\n"
+        "  --aniso 0|2|4|8|16   anisotropic filtering (hardware renderer)\n"
+        "  --msaa 0|2|4|8       multisampling, with alpha to coverage (hardware renderer)\n"
+        "  --fog on|off         the view distance's fade as fog instead of the dither (hardware renderer)\n"
+        "  --scaling sharp|pixel|smooth  a picture smaller than the window: whole multiples then\n"
+        "                       smoothed (default), whole multiples only, or smoothed\n"
         "  --renderer3d software|hardware  the 3D view drawn here (default) or on the graphics card\n"
         "                       with OpenGL (implies --video-api opengl)\n"
         "  --video-api sdl|opengl  how the picture reaches the screen: SDL's renderer (default) or an\n"
@@ -371,6 +378,24 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--capture-dir") o.capture_dir = next("--capture-dir");
         else if (a == "--renderer") o.renderer = next("--renderer");
         else if (a == "--car-cards") o.car_cards = std::string(next("--car-cards")) != "off";
+        else if (a == "--filter") {
+            const std::string v = next("--filter");
+            o.quality.filter = v == "trilinear" ? 2 : v == "bilinear" ? 1 : 0;
+        }
+        else if (a == "--aniso") {
+            const int v = std::atoi(next("--aniso"));
+            o.quality.aniso = v >= 16 ? 4 : v >= 8 ? 3 : v >= 4 ? 2 : v >= 2 ? 1 : 0;
+        }
+        else if (a == "--msaa") {
+            const int v = std::atoi(next("--msaa"));
+            o.quality.msaa = v >= 8 ? 3 : v >= 4 ? 2 : v >= 2 ? 1 : 0;
+        }
+        else if (a == "--fog") o.quality.fog = std::string(next("--fog")) == "on";
+        else if (a == "--scaling") {
+            const std::string v = next("--scaling");
+            // (nearest: plain nearest-neighbour, as SDL's renderer does it; not in the menu)
+            o.quality.scaling = v == "nearest" ? 3 : v == "smooth" ? 2 : v == "pixel" ? 1 : 0;
+        }
         else if (a == "--car-slack") {
             const std::string v = next("--car-slack");
             o.car_slack = v == "off" ? 1e30f : float(std::atof(v.c_str()));
@@ -460,13 +485,19 @@ bool save_or_log(SDL_Surface* s, const std::string& path) {
     return true;
 }
 
-SDL_FRect present_rect(int out_w, int out_h, const std::string& aspect, int fb_w, int fb_h) {
+// whole: SCALE PIXEL, a picture smaller than out_w x out_h shown at a whole multiple of its height
+SDL_FRect present_rect(int out_w, int out_h, const std::string& aspect, int fb_w, int fb_h, bool whole = false) {
     double target;
     if (aspect == "stretch") return {0, 0, float(out_w), float(out_h)};
     if (aspect == "square" || aspect == "wide") target = double(fb_w) / fb_h;
     else target = 4.0 / 3.0;
     double w = out_w, h = out_w / target;
     if (h > out_h) { h = out_h; w = out_h * target; }
+    if (whole && fb_h > 0 && h >= fb_h) {
+        const double k = std::floor(h / fb_h);
+        h = k * fb_h;
+        w = h * target;
+    }
     // (in whole pixels: a picture shown at half a pixel's offset, scaled with nearest-neighbour,
     // would take some rows and columns twice and others not at all)
     w = std::round(w);
@@ -493,6 +524,11 @@ scr::VideoSettings video_from(const Options& o) {
     v.mipmaps = o.mipmaps;
     v.opengl = o.video_api == scr::video::Api::OpenGL;
     v.hardware = o.hardware;
+    v.filter = o.quality.filter;
+    v.aniso = o.quality.aniso;
+    v.msaa = o.quality.msaa;
+    v.fog = o.quality.fog;
+    v.scaling = o.quality.scaling;
     return v;
 }
 
@@ -517,6 +553,11 @@ void apply_video(Options& o, const scr::VideoSettings& v, bool force) {
     if (take("--mipmaps")) o.mipmaps = v.mipmaps;
     if (take("--video-api")) o.video_api = v.opengl ? scr::video::Api::OpenGL : scr::video::Api::Sdl;
     if (take("--renderer3d")) o.hardware = v.hardware;
+    if (take("--filter")) o.quality.filter = v.filter;
+    if (take("--aniso")) o.quality.aniso = v.aniso;
+    if (take("--msaa")) o.quality.msaa = v.msaa;
+    if (take("--fog")) o.quality.fog = v.fog;
+    if (take("--scaling")) o.quality.scaling = v.scaling;
     // (the hardware renderer draws with OpenGL)
     if (o.hardware) o.video_api = scr::video::Api::OpenGL;
 }
@@ -1497,7 +1538,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
         presenter().output_size(ow, oh);
         const float px = wx * float(ow) / float(std::max(ww, 1)), py = wy * float(oh) / float(std::max(wh, 1));
         oh -= g_hidden_rows;
-        const SDL_FRect dst = present_rect(ow, oh, opt.aspect, fb.width(), fb.height());
+        const SDL_FRect dst = present_rect(ow, oh, opt.aspect, fb.width(), fb.height(), opt.quality.scaling == 1);
         fx = (px - dst.x) / std::max(dst.w, 1.0f) * float(fb.width());
         fy = (py - dst.y) / std::max(dst.h, 1.0f) * float(fb.height());
     };
@@ -2651,6 +2692,11 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
                     const bool new_api = mv.opengl != now.opengl;
                     now.opengl = mv.opengl;
                     now.hardware = mv.hardware;
+                    now.filter = mv.filter;
+                    now.aniso = mv.aniso;
+                    now.msaa = mv.msaa;
+                    now.fog = mv.fog;
+                    now.scaling = mv.scaling;
                     const bool new_picture = mv.fullscreen != now.fullscreen || mv.width != now.width || mv.height != now.height;
                     now.widescreen = mv.widescreen;
                     now.view_distance = mv.view_distance;
@@ -2802,6 +2848,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
             }
         }
         mark(stepped ? scr::prof::Hud : scr::prof::Other);
+        presenter().set_quality(opt.quality);  // (OPTIONS > VIDEO > ADVANCED, live)
         if (stepped) {
             presenter().upload(fb, renderer3d.pool());
             mark(scr::prof::Upload);
@@ -2811,7 +2858,8 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
         presenter().output_size(ow, oh);
         // (a menu made before WIDESCREEN went on keeps its 4:3 shape: its pixels need not be square)
         oh -= g_hidden_rows;  // (the part of the window on the screen)
-        const SDL_FRect dst = present_rect(ow, oh, menu && !fb.wide && opt.aspect == "wide" ? "4:3" : opt.aspect, fb.width(), fb.height());
+        const SDL_FRect dst = present_rect(ow, oh, menu && !fb.wide && opt.aspect == "wide" ? "4:3" : opt.aspect, fb.width(), fb.height(),
+                                           opt.quality.scaling == 1);
         float backdrop = -1;  // (none)
         if (menu && opt.aspect == "wide" && (dst.w + 1.0f < float(ow) || dst.h + 1.0f < float(oh))) {
             if (menu->backdrop() != bars_of) {

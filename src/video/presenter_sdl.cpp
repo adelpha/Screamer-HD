@@ -50,6 +50,8 @@ public:
     Api api() const override { return Api::Sdl; }
     void output_size(int& w, int& h) const override { SDL_GetRenderOutputSize(r_, &w, &h); }
     void set_vsync(bool on) override { SDL_SetRenderVSync(r_, on ? 1 : 0); }
+    // (no hardware renderer: only the scaling counts; SHARP is nearest-neighbour here)
+    void set_quality(const Quality& q) override { smooth_ = q.scaling == 2; }
 
     void upload(const Framebuffer& fb, WorkerPool* pool) override {
         // The picture goes to the renderer as it is, one byte a pixel, with its palette (the
@@ -130,6 +132,8 @@ public:
             SDL_SetTextureColorMod(backdrop_, m, m, m);
             SDL_RenderTexture(r_, backdrop_, nullptr, nullptr);
         }
+        if (shown && shown == tex_ && dst.w >= float(tex_w_))
+            SDL_SetTextureScaleMode(shown, smooth_ ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
         if (shown) SDL_RenderTexture(r_, shown, nullptr, &dst);
     }
 
@@ -171,6 +175,7 @@ private:
     bool colors_set_ = false;
     std::vector<SDL_Texture*> halves_;  // the picture halved, for showing it much smaller
     SDL_Texture* backdrop_ = nullptr;
+    bool smooth_ = false;
 };
 
 } // namespace

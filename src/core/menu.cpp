@@ -52,13 +52,18 @@ enum : int {
     kTxFullscreen, kTxFullscreenOn, kTxWidescreen, kTxWidescreenOn, kTxResolution, kTxDistance, kTxVsync,
     kTxVsyncOn, kTxFpsLimit, kTxFarModels, kTxFarModelsSimple, kTxMipmaps, kTxMipmapsOn, kTxAdvanced,
     kTxControls, kTxKeyboard, kTxController, kTxRumble, kTxRumbleOn, kTxPad, kTxDefaults, kTxApi, kTxApiOpenGl, kTxRenderer, kTxRendererHw,
+    kTxFilter, kTxFilter1, kTxFilter2, kTxAniso, kTxAniso1, kTxAniso2, kTxAniso3, kTxAniso4, kTxAa, kTxAa1, kTxAa2, kTxAa3,
+    kTxFade, kTxFadeFog, kTxScale, kTxScale1, kTxScale2,
 };
 const char* const kOwnTexts[] = {"SOUND", "ANNOUNCER", "ENGINE", "EFFECTS", "MUSIC", "CD MUSIC", "MIDI MUSIC", "VIDEO",
                                  "FULLSCREEN OFF", "FULLSCREEN ON", "WIDESCREEN OFF", "WIDESCREEN ON", "RES",
                                  "DISTANCE", "VSYNC OFF", "VSYNC ON", "FPS LIMIT", "FAR MODELS FULL",
                                  "FAR MODELS LOW", "MIPMAPS OFF", "MIPMAPS ON", "ADVANCED",
                                  "CONTROLS", "KEYBOARD", "CONTROLLER", "RUMBLE OFF", "RUMBLE ON", "PAD", "DEFAULTS",
-                                 "API DIRECT3D", "API OPENGL", "RENDER SOFTWARE", "RENDER HARDWARE"};
+                                 "API DIRECT3D", "API OPENGL", "RENDER SOFTWARE", "RENDER HARDWARE",
+                                 "FILTER NEAREST", "FILTER BILINEAR", "FILTER TRILINEAR", "ANISO OFF", "ANISO 2X",
+                                 "ANISO 4X", "ANISO 8X", "ANISO 16X", "AA OFF", "AA 2X", "AA 4X", "AA 8X",
+                                 "FADE DITHER", "FADE FOG", "SCALE SHARP", "SCALE PIXEL", "SCALE SMOOTH"};
 
 // The VIDEO page's steps: view distance (times the original's far clip; 0: no limit) and the
 // frame limit (0: none).
@@ -94,7 +99,14 @@ std::vector<std::vector<Menu::Entry>> default_pages() {
          {kOwnText + kTxFpsLimit, kActionChoice, 0, int(std::size(kFpsSteps)) - 1},
          {kOwnText + kTxFarModels, 1234, 0, 1},
          {kOwnText + kTxMipmaps, 1234, 1, 1},
-         {kOwnText + kTxApi, 1234, 0, 1}},  // how the picture reaches the screen: SDL's renderer or OpenGL
+         {kOwnText + kTxApi, 1234, 0, 1},  // how the picture reaches the screen: SDL's renderer or OpenGL
+         // the hardware renderer's: texture filter, anisotropic filtering, multisampling, the
+         // view distance's fade; and how the picture is scaled up to the window
+         {kOwnText + kTxFilter, 1234, 0, 2},
+         {kOwnText + kTxAniso, 1234, 0, 4},
+         {kOwnText + kTxAa, 1234, 0, 3},
+         {kOwnText + kTxFade, 1234, 0, 1},
+         {kOwnText + kTxScale, 1234, 0, 2}},
         // 10 (ours) CONTROLS, 11 its KEYBOARD and 12 its CONTROLLER pages (one line per action,
         // the text from Menu::bind_text)
         {{kOwnText + kTxKeyboard, kActionKeyboard, 0, 0},
@@ -254,7 +266,7 @@ enum : int { kChampPos = 0, kChampTrack = 1, kChampTime = 2, kChampScore = 3, kC
 namespace {
 constexpr size_t kLapRecords = 0x6c, kTotalRecords = 0x24c, kRecordStride = 0x50;
 constexpr char kExtMagic[4] = {'S', 'C', 'R', 'X'};  // our settings after the original's 0x460 bytes
-constexpr size_t kExtValues = 16;                      // the four volumes, music_midi, the VIDEO page (11)
+constexpr size_t kExtValues = 21;                      // the four volumes, music_midi, the VIDEO page (16)
 }
 
 std::vector<std::pair<int, int>> video_resolutions(bool widescreen) {
@@ -347,6 +359,11 @@ bool ChoiceFile::load(const std::string& path) {
             case 13: video.mipmaps = v != 0; break;
             case 14: video.opengl = v != 0; break;
             case 15: video.hardware = v != 0; break;
+            case 16: video.filter = std::clamp(v, 0, 2); break;
+            case 17: video.aniso = std::clamp(v, 0, 4); break;
+            case 18: video.msaa = std::clamp(v, 0, 3); break;
+            case 19: video.fog = v != 0; break;
+            case 20: video.scaling = std::clamp(v, 0, 2); break;
             default: break;
             }
         }
@@ -374,6 +391,11 @@ bool ChoiceFile::save(const std::string& path) const {
     ext[13] = video.mipmaps;
     ext[14] = video.opengl;
     ext[15] = video.hardware;
+    ext[16] = video.filter;
+    ext[17] = video.aniso;
+    ext[18] = video.msaa;
+    ext[19] = video.fog;
+    ext[20] = video.scaling;
     const int32_t count = int32_t(ext.size());
     ok = ok && std::fwrite(kExtMagic, 1, 4, f) == 4 && std::fwrite(&count, 4, 1, f) == 1 &&
          std::fwrite(ext.data(), 4, ext.size(), f) == ext.size();
@@ -821,6 +843,11 @@ VideoSettings Menu::video() const {
     v.mipmaps = p(kMipmapsLine).value != 0;
     v.opengl = p(kApiLine).value != 0;
     v.hardware = p(kRendererLine).value != 0;
+    v.filter = p(kFilterLine).value;
+    v.aniso = p(kAnisoLine).value;
+    v.msaa = p(kAaLine).value;
+    v.fog = p(kFadeLine).value != 0;
+    v.scaling = p(kScaleLine).value;
     return v;
 }
 
@@ -846,6 +873,11 @@ void Menu::set_video(const VideoSettings& v) {
     p(kMipmapsLine).value = v.mipmaps ? 1 : 0;
     p(kApiLine).value = v.opengl ? 1 : 0;
     p(kRendererLine).value = v.hardware ? 1 : 0;
+    p(kFilterLine).value = std::clamp(v.filter, 0, 2);
+    p(kAnisoLine).value = std::clamp(v.aniso, 0, 4);
+    p(kAaLine).value = std::clamp(v.msaa, 0, 3);
+    p(kFadeLine).value = v.fog ? 1 : 0;
+    p(kScaleLine).value = std::clamp(v.scaling, 0, 2);
 }
 
 void Menu::set_resolutions(bool widescreen, int w, int h) {
@@ -938,6 +970,23 @@ void Menu::draw_text(const std::string& s) {
         const int px = block_.x0, py = block_.y0;
         block_.x0 = int(double(py) * s0 + double(px) * c0);
         block_.y0 = int(double(py) * c0 - double(px) * s0);
+    }
+}
+
+void Menu::arrow_item(int x, int y, bool down) {
+    // (ours) a scrolling page's arrow, beside its first or last line: the font's V, turned over for up
+    for (Item& it : items) {
+        if (it.ch != -1) continue;
+        it = Item{};
+        it.ch = 'V' - 0x20;
+        it.row = -1;
+        it.x0 = it.x1 = x;
+        it.y0 = it.y1 = y;
+        it.turned = 0;
+        it.angle = 0;
+        it.az = down ? 0.0f : kPi;
+        it.k = 0;
+        return;
     }
 }
 
@@ -1036,7 +1085,7 @@ void Menu::update_item_slide(Item& it, float dt) {
 void Menu::build_page_items(float dt) {
     // menu_build_page_items
     const auto& entries = pages[size_t(page)];
-    if (built_page_ != page) {
+    if (built_page_ != page || rebuild_) {
         // Ours: a page with lines longer than 15 letters (the original's are 13 at most) is
         // seen from further back, so that they fit; the VIDEO page as for its longest size
         size_t longest = 0;
@@ -1045,37 +1094,60 @@ void Menu::build_page_items(float dt) {
             Entry res = pages[kVideoPage][kResolutionLine];
             for (res.value = 0; res.value < int(res_list_.size()); ++res.value) longest = std::max(longest, entry_text(res).size());
         }
-        // (and a page of more than the original's six lines from as much further back as it is
-        // taller, with a row to spare: its lines take two rows each)
         const float across = longest > 15 ? float(longest + 1) / 16.0f : 1.0f;
-        const float down = entries.size() > 6 ? float(2 * entries.size()) / 11.0f : 1.0f;
-        const int z = across > 1.0f || down > 1.0f ? int(float(kCameraZ) * std::max(across, down)) : kCameraZ;
+        const int z = across > 1.0f ? int(float(kCameraZ) * across) : kCameraZ;
         if (to_[2] != z) {
             from_[2] = int(cam_.z);
             to_[2] = z;
             cam_t_ = 1.0f;
         }
+        // (ours) at most kVisibleLines lines, from scroll_ on, the selected one among them
+        const int count = int(entries.size());
+        const int shown = visible_lines(count);
+        int& first = scroll_[size_t(page)];
+        const int sel = selected[size_t(page)];
+        first = std::clamp(std::clamp(first, sel - shown + 1, sel), 0, count - shown);
         for (Item& it : items) it.ch = -1;
-        block_.row = 0;
-        block_.ypos = 8 - int(entries.size());
+        block_.row = first;
+        block_.ypos = 8 - shown;
         block_.centred = 1;
         block_.phase = 0;
-        block_.x0 = kVariants[variant_][0];
-        block_.y0 = kVariants[variant_][1];
-        block_.z0 = kVariants[variant_][2];
+        const bool sliding = slide_ != 0 && built_page_ == page;
+        rebuild_ = false;
+        block_.x0 = sliding ? 0 : kVariants[variant_][0];
+        block_.y0 = sliding ? 0 : kVariants[variant_][1];
+        block_.z0 = sliding ? 0 : kVariants[variant_][2];
         block_.spin = 0.09f;
-        block_.sx = kVariants[variant_][3];
-        block_.sy = kVariants[variant_][4];
-        for (size_t i = 0; i < entries.size(); ++i) {
-            block_.turned = int(i) != selected[size_t(page)];
-            draw_text(entry_text(entries[i]));
+        block_.sx = sliding ? 0 : kVariants[variant_][3];
+        block_.sy = sliding ? 0 : kVariants[variant_][4];
+        for (int i = first; i < first + shown; ++i) {
+            block_.turned = i != sel;
+            draw_text(entry_text(entries[size_t(i)]));
             ++block_.row;
             block_.ypos += 2;
         }
-        if (++variant_ > 7) variant_ = 0;
+        if (sliding) {
+            // a scroll: every line slides a line's height (two rows) from where it was
+            for (Item& it : items) {
+                if (it.ch == -1) continue;
+                it.x0 = it.x1;
+                it.y0 = it.y1 - slide_ * 2 * 0x180;
+                it.z0 = it.z1;
+                it.timer = 0;
+                it.speed = 6.0f;
+            }
+        } else if (++variant_ > 7) {
+            variant_ = 0;
+        }
+        slide_ = 0;
+        // (and the arrows: more lines above or below)
+        // (in the rows above and below the lines, which a scrolling page leaves free)
+        if (first > 0) arrow_item(0, (8 - shown - 1) * -0x180 + 0x820 + 0x60, false);
+        if (first + shown < count) arrow_item(0, (8 + shown - 1) * -0x180 + 0x820 - 0xc0, true);
     }
     // menu_hide_page_items: the selected line faces front
-    for (Item& it : items) it.turned = it.row == selected[size_t(page)] ? 0 : 1;
+    for (Item& it : items)
+        if (it.row >= 0) it.turned = it.row == selected[size_t(page)] ? 0 : 1;  // (row -1: a scroll arrow)
     wave_ = dt * 9.42477798f + wave_;
     if (25.132741928f < wave_) wave_ = 0;
     if (built_page_ == -2) {
@@ -1580,6 +1652,14 @@ void Menu::handle_keys(const MenuKeys& k) {
             } else if (key == 2 && sel < int(pages[size_t(page)].size()) - 1) {
                 ++sel;
                 sounds.push_back(1);
+            }
+            // (ours) past the lines shown: the page scrolls a line, the lines sliding
+            const int shown = visible_lines(int(pages[size_t(page)].size()));
+            int& first = scroll_[size_t(page)];
+            if (sel < first || sel >= first + shown) {
+                slide_ = sel < first ? -1 : 1;
+                first = sel < first ? sel : sel - shown + 1;
+                rebuild_ = true;  // (in place: build_page_items)
             }
         } else if (mode == 6) {
             // the records page: which total's replay Enter plays

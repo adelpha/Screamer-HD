@@ -6,6 +6,7 @@
 #include "video/presenter.h"
 
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -65,6 +66,25 @@ void main() {
 }
 )";
 
+// SCALE SHARP: a picture scaled up by a factor that is not whole, as nearest-neighbour would
+// but with the seams between its pixels blended over one window pixel (the linear filter's
+// weights squeezed towards each texel's edges), so every pixel keeps the same size.
+constexpr const char* kSharpFs = R"(#version 330 core
+uniform sampler2D u_tex;
+uniform vec2 u_size;   // the picture's pixels
+uniform vec2 u_scale;  // window pixels per picture pixel
+in vec2 v_uv;
+out vec4 o_color;
+void main() {
+    vec2 t = v_uv * u_size;
+    vec2 i = floor(t);
+    vec2 d = t - i - 0.5;
+    vec2 region = 0.5 - 0.5 / u_scale;
+    vec2 f = (d - clamp(d, -region, region)) * u_scale + 0.5;
+    o_color = vec4(texture(u_tex, (i + f) / u_size).rgb, 1.0);
+}
+)";
+
 struct Target {
     GLuint fbo = 0, tex = 0;
     int w = 0, h = 0;
@@ -121,6 +141,7 @@ public:
         for (Target& t : halves_) t.destroy();
         if (compose_prog_) gl::DeleteProgram(compose_prog_);
         if (rgba_prog_) gl::DeleteProgram(rgba_prog_);
+        if (sharp_prog_) gl::DeleteProgram(sharp_prog_);
         if (vao_) gl::DeleteVertexArrays(1, &vao_);
         SDL_GL_DestroyContext(ctx_);
     }
@@ -128,6 +149,14 @@ public:
     bool init() {
         compose_prog_ = gl::make_program("picture", kQuadVs, kComposeFs);
         rgba_prog_ = gl::make_program("rgba", kQuadVs, kRgbaFs);
+        sharp_prog_ = gl::make_program("sharp", kQuadVs, kSharpFs);
+        if (!sharp_prog_) return false;
+        gl::UseProgram(sharp_prog_);
+        gl::Uniform1i(gl::GetUniformLocation(sharp_prog_, "u_tex"), 0);
+        sharp_dst_ = gl::GetUniformLocation(sharp_prog_, "u_dst");
+        sharp_src_ = gl::GetUniformLocation(sharp_prog_, "u_src");
+        sharp_size_ = gl::GetUniformLocation(sharp_prog_, "u_size");
+        sharp_scale_ = gl::GetUniformLocation(sharp_prog_, "u_scale");
         if (!compose_prog_ || !rgba_prog_) return false;
         gl::UseProgram(compose_prog_);
         gl::Uniform1i(gl::GetUniformLocation(compose_prog_, "u_index"), 0);
@@ -172,6 +201,10 @@ public:
     void output_size(int& w, int& h) const override { SDL_GetWindowSizeInPixels(window_, &w, &h); }
     void set_vsync(bool on) override { SDL_GL_SetSwapInterval(on ? 1 : 0); }
     SceneSink* scene_sink() override { return scene_.get(); }
+    void set_quality(const Quality& q) override {
+        quality_ = q;
+        if (scene_) scene_->set_quality(q);
+    }
 
     void upload(const Framebuffer& fb, WorkerPool*) override {
         SDL_GL_MakeCurrent(window_, ctx_);
@@ -340,7 +373,12 @@ private:
                 ch = nh;
             }
         }
-        if (shown) set_filter(shown, larger && dst.w < float(cw) ? GL_LINEAR : GL_NEAREST);
+        // (scaled up: as SCALE says; sharp only where the factor is not whole)
+        const bool up = !larger || dst.w >= float(cw);
+        const bool sharp = up && quality_.scaling == 0 && shown &&
+                           (std::fabs(dst.w / float(cw) - std::round(dst.w / float(cw))) > 1e-3f ||
+                            std::fabs(dst.h / float(ch) - std::round(dst.h / float(ch))) > 1e-3f);
+        if (shown) set_filter(shown, (larger && dst.w < float(cw)) || sharp || (up && quality_.scaling == 2) ? GL_LINEAR : GL_NEAREST);
 
         gl::BindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, ow, oh);
@@ -355,7 +393,13 @@ private:
             quad(rgba_dst_, rgba_src_, 0, 0, float(ow), float(oh), ow, oh, window);
             gl::Uniform1f(rgba_mul_, 1.0f);
         }
-        if (shown) {
+        if (shown && sharp) {
+            gl::UseProgram(sharp_prog_);
+            gl::Uniform2f(sharp_size_, float(cw), float(ch));
+            gl::Uniform2f(sharp_scale_, dst.w / float(cw), dst.h / float(ch));
+            glBindTexture(GL_TEXTURE_2D, shown);
+            quad(sharp_dst_, sharp_src_, dst.x, dst.y, dst.x + dst.w, dst.y + dst.h, ow, oh, window);
+        } else if (shown) {
             glBindTexture(GL_TEXTURE_2D, shown);
             quad(rgba_dst_, rgba_src_, dst.x, dst.y, dst.x + dst.w, dst.y + dst.h, ow, oh, window);
         }
@@ -367,6 +411,9 @@ private:
     GLuint compose_prog_ = 0, rgba_prog_ = 0, vao_ = 0;
     GLint cmp_dst_ = -1, cmp_src_ = -1, cmp_layered_ = -1, cmp_bright_ = -1, cmp_flip_ = -1;
     GLint rgba_dst_ = -1, rgba_src_ = -1, rgba_mul_ = -1;
+    GLuint sharp_prog_ = 0;
+    GLint sharp_dst_ = -1, sharp_src_ = -1, sharp_size_ = -1, sharp_scale_ = -1;
+    Quality quality_;
     GLuint index_tex_ = 0, cover_tex_ = 0, palette_tex_ = 0, backdrop_tex_ = 0;
     int tex_w_ = 0, tex_h_ = 0;
     std::array<uint8_t, 256 * 4> colors_{};

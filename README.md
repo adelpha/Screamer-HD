@@ -384,7 +384,10 @@ The menus are the original's 3D menus, rebuilt. New pages:
 - **OPTIONS > VIDEO**: FULLSCREEN, WIDESCREEN, RES, DISTANCE, DETAIL, RENDER (SOFTWARE/HARDWARE:
   the 3D view drawn by the CPU or on the graphics card with OpenGL); ADVANCED: VSYNC,
   FPS LIMIT, FAR MODELS (FULL/LOW), MIPMAPS, API (DIRECT3D/OPENGL: how the picture reaches
-  the screen; switching makes the window again).
+  the screen; switching makes the window again), and for the hardware renderer FILTER
+  (NEAREST/BILINEAR/TRILINEAR), ANISO (OFF to 16X), AA (OFF/2X/4X/8X), FADE (DITHER/FOG), and
+  SCALE (SHARP/PIXEL/SMOOTH: how a picture smaller than the window is enlarged). Pages with more
+  than six lines scroll.
 - **OPTIONS > CONTROLS**: KEYBOARD, CONTROLLER, RUMBLE, PAD, DEFAULTS.
 
 DETAIL works as in the original: LOW loads the low-detail track and has no moving scenery;
