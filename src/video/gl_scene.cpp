@@ -68,7 +68,44 @@ void main() {
 }
 )";
 
-constexpr const char* kSceneFs = R"(#version 330 core
+// The sky's palette index at a pixel, as Renderer::draw_background_rows works it out (the sky
+// pass and the fog both use it).
+constexpr const char* kSkyFunc = R"(
+uniform sampler2D u_pano;   // palette indices, top row first
+uniform int u_has_pano;
+uniform int u_sky;          // palette index without a panorama
+uniform int u_fill;         // above and below the panorama
+uniform int u_wide;
+uniform vec4 u_a;           // x_offset, mid, cx, cy
+uniform vec4 u_b;           // across, down, scale, top
+uniform vec2 u_rot;         // sin, cos of the roll (0, 1: level)
+int sky_index(vec2 frag) {
+    if (u_has_pano == 0) return u_sky;
+    float x = floor(frag.x), y = floor(frag.y);
+    float x_offset = u_a.x, mid = u_a.y, cx = u_a.z, cy = u_a.w;
+    float across = u_b.x, down = u_b.y, scale = u_b.z, top = u_b.w;
+    float s2 = u_rot.x, c2 = u_rot.y;
+    float dy = y - cy;
+    float u0, v0, dv;
+    if (u_wide != 0) {
+        u0 = x_offset + mid + (cx - c2 * cx) * across - s2 * dy * down;
+        v0 = (cy + c2 * dy - top) / scale - s2 * cx * across;
+        dv = s2 * across;
+    } else {
+        u0 = x_offset + (cx - c2 * cx - s2 * dy) * across;
+        v0 = (cy - s2 * cx + c2 * dy - top) / scale;
+        dv = s2 / scale;
+    }
+    ivec2 size = textureSize(u_pano, 0);
+    int row = int(floor(v0 + dv * x));
+    if (row < 0 || row >= size.y) return u_fill;
+    int col = int(floor(u0 + c2 * across * x)) % size.x;
+    if (col < 0) col += size.x;
+    return int(texelFetch(u_pano, ivec2(col, row), 0).r * 255.0 + 0.5);
+}
+)";
+
+constexpr const char* kSceneFs = R"(
 noperspective in float v_iz;
 noperspective in vec2 v_uvz;
 noperspective in vec3 v_w;
@@ -84,6 +121,9 @@ uniform vec4 u_fade;          // on, 1/z where it starts, start depth, range
 uniform int u_true_depth;     // the second pass of a BiasTest batch: the real depth
 uniform float u_bias_add;     // added to every polygon's depth bias (a car's parts over its earlier ones)
 uniform float u_grad_scale;   // texel gradients times this pick the mipmap level
+uniform int u_linear;         // the textures are filtered (bilinear, trilinear)
+uniform int u_fog;            // the fade as fog towards the sky (else the dither)
+uniform int u_a2c;            // multisampled: transparent texels by alpha to coverage
 layout(location = 0, index = 0) out vec4 o_add;
 layout(location = 0, index = 1) out vec4 o_mul;
 
@@ -140,39 +180,57 @@ void main() {
     float iz = v_iz;
     ivec2 px = ivec2(gl_FragCoord.xy);
     if (float(px.x) < v_box.x || float(px.x) > v_box.z || float(px.y) < v_box.y || float(px.y) > v_box.w) discard;
+    float fog = 0.0;
     if (u_fade.x > 0.0 && iz < u_fade.y) {
-        // the view-distance fade: an ordered dither over its last quarter
+        // the view-distance fade over its last quarter: an ordered dither, or fog
         float frac = (1.0 / iz - 128.0 - u_fade.z) / u_fade.w;
-        if (!(frac < kBayer[(px.y & 3) * 4 + (px.x & 3)])) discard;
+        if (u_fog != 0) {
+            if (frac >= 1.0) discard;
+            fog = smoothstep(0.0, 1.0, clamp(frac, 0.0, 1.0));
+        } else if (!(frac < kBayer[(px.y & 3) * 4 + (px.x & 3)])) {
+            discard;
+        }
     }
     float tz = bias != 0.0 ? iz / max(1e-3, 1.0 - bias * iz) : iz;
     // pixels past the polygon's own edges (sealing): as if a little further away
     if ((flags & 2) != 0 && any(lessThan(v_w, vec3(0.0)))) tz *= 0.995;
     gl_FragDepth = depth_value(u_true_depth != 0 ? iz : tz);
 
+    vec3 fog_rgb = fog > 0.0 ? texelFetch(u_palette, ivec2(sky_index(gl_FragCoord.xy), 0), 0).rgb : vec3(0.0);
+
     o_mul = vec4(0.0);
-    if (mode == 3) {  // darken
-        o_add = vec4(u_darken_add, 0.0);
-        o_mul = vec4(u_darken_mul, 1.0);
+    if (mode == 3) {  // darken (fading out with the fog)
+        o_add = vec4(u_darken_add * (1.0 - fog), 0.0);
+        o_mul = vec4(mix(u_darken_mul, vec3(1.0), fog), 1.0);
         return;
     }
     if (mode == 2 || (flags & 4) == 0) {  // flat
-        o_add = vec4(texelFetch(u_palette, ivec2(int(v_fill2.w), 0), 0).rgb, 1.0);
+        o_add = vec4(mix(texelFetch(u_palette, ivec2(int(v_fill2.w), 0), 0).rgb, fog_rgb, fog), 1.0);
         return;
     }
-    // wrapped to the material (or kept on it), in the layer it repeats across
-    if ((flags & 1) != 0) uv = clamp(uv, vec2(0.0), size - vec2(1.0 / 256.0));
+    // wrapped to the material (or kept on it), in the layer it repeats across (filtered: kept
+    // half a texel inside, where the filter would reach past the edge)
+    if ((flags & 1) != 0) uv = u_linear != 0 ? clamp(uv, vec2(0.5), size - vec2(0.5)) : clamp(uv, vec2(0.0), size - vec2(1.0 / 256.0));
     else uv -= size * floor(uv / size);
     if (mode == 4) {  // translucent: the palette index in alpha, fitted table
         ivec2 t = clamp(ivec2(floor(uv)), ivec2(0), ivec2(size) - 1);
         int idx = int(fetch_group(group, ivec3(t, layer)).a * 255.0 + 0.5) & 63;
-        o_mul = vec4(texelFetch(u_shade, ivec2(idx, 0), 0).rgb, 1.0);
-        o_add = vec4(texelFetch(u_shade, ivec2(idx, 1), 0).rgb, 0.0);
+        o_mul = vec4(mix(texelFetch(u_shade, ivec2(idx, 0), 0).rgb, vec3(1.0), fog), 1.0);
+        o_add = vec4(texelFetch(u_shade, ivec2(idx, 1), 0).rgb * (1.0 - fog), 0.0);
         return;
     }
     vec4 c = sample_group(group, vec3(uv / v_layer, float(layer)), gx, gy);
-    if (mode == 1 && c.a < 0.5) discard;  // transparent texels
-    o_add = vec4(c.rgb, 1.0);
+    float alpha = 1.0;
+    if (mode == 1) {  // transparent texels
+        if (u_a2c != 0) {
+            // (alpha to coverage: the edge sharpened to about a pixel's width)
+            alpha = clamp((c.a - 0.5) / max(fwidth(c.a), 1e-4) + 0.5, 0.0, 1.0);
+            if (alpha <= 0.0) discard;
+        } else if (c.a < 0.5) {
+            discard;
+        }
+    }
+    o_add = vec4(mix(c.rgb, fog_rgb, fog), alpha);
 }
 )";
 
@@ -184,46 +242,11 @@ void main() {
     gl_Position = vec4(p, 0.0, 1.0);
 }
 )";
-constexpr const char* kSkyFs = R"(#version 330 core
+constexpr const char* kSkyFs = R"(
 uniform sampler2D u_palette;
-uniform sampler2D u_pano;   // palette indices, top row first
-uniform int u_has_pano;
-uniform int u_sky;          // palette index without a panorama
-uniform int u_fill;         // above and below the panorama
-uniform int u_wide;
-uniform vec4 u_a;           // x_offset, mid, cx, cy
-uniform vec4 u_b;           // across, down, scale, top
-uniform vec2 u_rot;         // sin, cos of the roll (0, 1: level)
 out vec4 o_color;
 void main() {
-    int idx = u_sky;
-    if (u_has_pano != 0) {
-        float x = floor(gl_FragCoord.x), y = floor(gl_FragCoord.y);
-        float x_offset = u_a.x, mid = u_a.y, cx = u_a.z, cy = u_a.w;
-        float across = u_b.x, down = u_b.y, scale = u_b.z, top = u_b.w;
-        float s2 = u_rot.x, c2 = u_rot.y;
-        float dy = y - cy;
-        float u0, v0, dv;
-        if (u_wide != 0) {
-            u0 = x_offset + mid + (cx - c2 * cx) * across - s2 * dy * down;
-            v0 = (cy + c2 * dy - top) / scale - s2 * cx * across;
-            dv = s2 * across;
-        } else {
-            u0 = x_offset + (cx - c2 * cx - s2 * dy) * across;
-            v0 = (cy - s2 * cx + c2 * dy - top) / scale;
-            dv = s2 / scale;
-        }
-        ivec2 size = textureSize(u_pano, 0);
-        int row = int(floor(v0 + dv * x));
-        if (row < 0 || row >= size.y) {
-            idx = u_fill;
-        } else {
-            int col = int(floor(u0 + c2 * across * x)) % size.x;
-            if (col < 0) col += size.x;
-            idx = int(texelFetch(u_pano, ivec2(col, row), 0).r * 255.0 + 0.5);
-        }
-    }
-    o_color = vec4(texelFetch(u_palette, ivec2(idx, 0), 0).rgb, 1.0);
+    o_color = vec4(texelFetch(u_palette, ivec2(sky_index(gl_FragCoord.xy), 0), 0).rgb, 1.0);
 }
 )";
 
@@ -271,11 +294,31 @@ GLuint make_texture_2d(GLenum internal, int w, int h, GLenum format, GLenum type
 struct GlScene::Impl {
     GLuint scene_prog = 0, sky_prog = 0, vao = 0, vbo = 0, sky_vao = 0;
     GLint u_size = -1, u_darken_mul = -1, u_darken_add = -1, u_fade = -1, u_true_depth = -1, u_grad_scale = -1, u_bias_add = -1;
-    GLint s_has_pano = -1, s_sky = -1, s_fill = -1, s_wide = -1, s_a = -1, s_b = -1, s_rot = -1;
-    // the picture
+    GLint u_linear = -1, u_fog = -1, u_a2c = -1;
+    // the sky's uniforms in each program (sky pass, scene)
+    struct SkyLoc {
+        GLint has_pano = -1, sky = -1, fill = -1, wide = -1, a = -1, b = -1, rot = -1;
+        void find(GLuint p) {
+            has_pano = gl::GetUniformLocation(p, "u_has_pano");
+            sky = gl::GetUniformLocation(p, "u_sky");
+            fill = gl::GetUniformLocation(p, "u_fill");
+            wide = gl::GetUniformLocation(p, "u_wide");
+            a = gl::GetUniformLocation(p, "u_a");
+            b = gl::GetUniformLocation(p, "u_b");
+            rot = gl::GetUniformLocation(p, "u_rot");
+        }
+    };
+    SkyLoc sky_loc, scene_sky_loc;
+    // the picture (multisampled: drawn in ms_fbo, then resolved into fbo's colour texture)
     GLuint fbo = 0, color = 0, depth = 0;
-    int w = 0, h = 0;
+    GLuint ms_fbo = 0, ms_color = 0, ms_depth = 0;
+    int w = 0, h = 0, samples = 0;
     bool drawn = false;
+    Quality quality;
+    float max_aniso = 1.0f;
+    int max_samples = 1;
+    // the arrays' sampler state as last set: filter, anisotropy, mipmaps
+    int set_filter = -1, set_aniso = -1;
     // the track's textures
     const MaterialLibrary* lib = nullptr;
     const PcxImage* pano_of = nullptr;
@@ -298,9 +341,7 @@ struct GlScene::Impl {
     ~Impl() {
         free_textures();
         if (pano_tex) glDeleteTextures(1, &pano_tex);
-        if (fbo) gl::DeleteFramebuffers(1, &fbo);
-        if (color) glDeleteTextures(1, &color);
-        if (depth) gl::DeleteRenderbuffers(1, &depth);
+        free_target();
         if (vbo) gl::DeleteBuffers(1, &vbo);
         if (vao) gl::DeleteVertexArrays(1, &vao);
         if (sky_vao) gl::DeleteVertexArrays(1, &sky_vao);
@@ -319,14 +360,23 @@ struct GlScene::Impl {
         lib = nullptr;
     }
 
-    bool ensure_target(int nw, int nh) {
-        if (fbo && w == nw && h == nh) return true;
+    void free_target() {
         if (fbo) gl::DeleteFramebuffers(1, &fbo);
         if (color) glDeleteTextures(1, &color);
         if (depth) gl::DeleteRenderbuffers(1, &depth);
-        fbo = color = depth = 0;
-        w = h = 0;
+        if (ms_fbo) gl::DeleteFramebuffers(1, &ms_fbo);
+        if (ms_color) gl::DeleteRenderbuffers(1, &ms_color);
+        if (ms_depth) gl::DeleteRenderbuffers(1, &ms_depth);
+        fbo = color = depth = ms_fbo = ms_color = ms_depth = 0;
+        w = h = samples = 0;
         drawn = false;
+    }
+
+    // The picture's target, multisampled with ns samples (0: none).
+    bool ensure_target(int nw, int nh, int ns) {
+        ns = ns > 1 ? std::min(ns, max_samples) : 0;
+        if (fbo && w == nw && h == nh && samples == ns) return true;
+        free_target();
         color = make_texture_2d(GL_RGBA8, nw, nh, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         gl::GenRenderbuffers(1, &depth);
         gl::BindRenderbuffer(GL_RENDERBUFFER, depth);
@@ -335,14 +385,29 @@ struct GlScene::Impl {
         gl::BindFramebuffer(GL_FRAMEBUFFER, fbo);
         gl::FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color, 0);
         gl::FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, depth);
-        const bool ok = gl::CheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        bool ok = gl::CheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        if (ok && ns) {
+            gl::GenRenderbuffers(1, &ms_color);
+            gl::BindRenderbuffer(GL_RENDERBUFFER, ms_color);
+            gl::RenderbufferStorageMultisample(GL_RENDERBUFFER, ns, GL_RGBA8, nw, nh);
+            gl::GenRenderbuffers(1, &ms_depth);
+            gl::BindRenderbuffer(GL_RENDERBUFFER, ms_depth);
+            gl::RenderbufferStorageMultisample(GL_RENDERBUFFER, ns, GL_DEPTH32F_STENCIL8, nw, nh);
+            gl::GenFramebuffers(1, &ms_fbo);
+            gl::BindFramebuffer(GL_FRAMEBUFFER, ms_fbo);
+            gl::FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, ms_color);
+            gl::FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, ms_depth);
+            ok = gl::CheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        }
         gl::BindFramebuffer(GL_FRAMEBUFFER, 0);
         if (!ok) {
-            SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "OpenGL: cannot draw a %dx%d scene", nw, nh);
+            SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "OpenGL: cannot draw a %dx%d scene (%d samples)", nw, nh, ns);
+            free_target();
             return false;
         }
         w = nw;
         h = nh;
+        samples = ns;
         return true;
     }
 
@@ -546,12 +611,22 @@ struct GlScene::Impl {
         }
     }
 
-    void set_mip_filter(bool on) {
-        if (on == mip_filter) return;
-        mip_filter = on;
+    // The arrays' filters for FILTER, ANISO and MIPMAPS.
+    void set_sampling(bool mips) {
+        const int filter = std::clamp(quality.filter, 0, 2);
+        const int aniso = std::clamp(quality.aniso, 0, 4);
+        if (mips == mip_filter && filter == set_filter && aniso == set_aniso) return;
+        mip_filter = mips;
+        set_filter = filter;
+        set_aniso = aniso;
+        const GLint mag = filter ? GL_LINEAR : GL_NEAREST;
+        const GLint min = !mips ? mag : filter == 0 ? GL_NEAREST_MIPMAP_NEAREST : filter == 1 ? GL_LINEAR_MIPMAP_NEAREST : GL_LINEAR_MIPMAP_LINEAR;
+        const float a = std::min(max_aniso, aniso ? float(1 << aniso) : 1.0f);
         for (const Group& g : groups) {
             glBindTexture(GL_TEXTURE_2D_ARRAY, g.tex);
-            glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, on ? GL_NEAREST_MIPMAP_NEAREST : GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, mag);
+            glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, min);
+            if (max_aniso > 1.0f) glTexParameterf(GL_TEXTURE_2D_ARRAY, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY */, a);
         }
     }
 
@@ -564,13 +639,10 @@ struct GlScene::Impl {
             pano_tex = make_texture_2d(GL_R8, bck->width, bck->height, GL_RED, GL_UNSIGNED_BYTE, bck->pixels.data());
     }
 
-    void draw_sky(const SceneFrame& f) {
+    // The sky's uniforms (for the program in use, by its locations).
+    void sky_uniforms(const SceneFrame& f, const SkyLoc& s_) {
+        const GLint s_sky = s_.sky, s_has_pano = s_.has_pano, s_fill = s_.fill, s_wide = s_.wide, s_a = s_.a, s_b = s_.b, s_rot = s_.rot;
         const Camera& cam = *f.cam;
-        gl::UseProgram(sky_prog);
-        gl::ActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, palette_tex);
-        gl::ActiveTexture(GL_TEXTURE3);
-        glBindTexture(GL_TEXTURE_2D, pano_tex);
         gl::Uniform1i(s_sky, f.sky);
         const PcxImage* bck = f.track->background ? &*f.track->background : nullptr;
         gl::Uniform1i(s_has_pano, pano_tex ? 1 : 0);
@@ -601,6 +673,16 @@ struct GlScene::Impl {
             gl::Uniform4f(s_b, across, down, scale, top);
             gl::Uniform2f(s_rot, s2, c2);
         }
+    }
+
+    void draw_sky(const SceneFrame& f) {
+        gl::UseProgram(sky_prog);
+        gl::ActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, palette_tex);
+        gl::ActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, pano_tex);
+        gl::ActiveTexture(GL_TEXTURE0);
+        sky_uniforms(f, sky_loc);
         gl::BindVertexArray(sky_vao);
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
@@ -669,8 +751,9 @@ GlScene::~GlScene() = default;
 
 bool GlScene::init() {
     Impl& d = *d_;
-    d.scene_prog = gl::make_program("scene", kSceneVs, kSceneFs);
-    d.sky_prog = gl::make_program("sky", kSkyVs, kSkyFs);
+    const std::string version = "#version 330 core\n";
+    d.scene_prog = gl::make_program("scene", kSceneVs, (version + kSkyFunc + kSceneFs).c_str());
+    d.sky_prog = gl::make_program("sky", kSkyVs, (version + kSkyFunc + kSkyFs).c_str());
     if (!d.scene_prog || !d.sky_prog) return false;
     gl::UseProgram(d.scene_prog);
     d.u_size = gl::GetUniformLocation(d.scene_prog, "u_size");
@@ -680,6 +763,11 @@ bool GlScene::init() {
     d.u_true_depth = gl::GetUniformLocation(d.scene_prog, "u_true_depth");
     d.u_bias_add = gl::GetUniformLocation(d.scene_prog, "u_bias_add");
     d.u_grad_scale = gl::GetUniformLocation(d.scene_prog, "u_grad_scale");
+    d.u_linear = gl::GetUniformLocation(d.scene_prog, "u_linear");
+    d.u_fog = gl::GetUniformLocation(d.scene_prog, "u_fog");
+    d.u_a2c = gl::GetUniformLocation(d.scene_prog, "u_a2c");
+    d.scene_sky_loc.find(d.scene_prog);
+    gl::Uniform1i(gl::GetUniformLocation(d.scene_prog, "u_pano"), 3);
     gl::Uniform1i(gl::GetUniformLocation(d.scene_prog, "u_palette"), 0);
     gl::Uniform1i(gl::GetUniformLocation(d.scene_prog, "u_shade"), 1);
     for (int g = 0; g < kMaxGroups; ++g) {
@@ -689,13 +777,15 @@ bool GlScene::init() {
     gl::UseProgram(d.sky_prog);
     gl::Uniform1i(gl::GetUniformLocation(d.sky_prog, "u_palette"), 0);
     gl::Uniform1i(gl::GetUniformLocation(d.sky_prog, "u_pano"), 3);
-    d.s_has_pano = gl::GetUniformLocation(d.sky_prog, "u_has_pano");
-    d.s_sky = gl::GetUniformLocation(d.sky_prog, "u_sky");
-    d.s_fill = gl::GetUniformLocation(d.sky_prog, "u_fill");
-    d.s_wide = gl::GetUniformLocation(d.sky_prog, "u_wide");
-    d.s_a = gl::GetUniformLocation(d.sky_prog, "u_a");
-    d.s_b = gl::GetUniformLocation(d.sky_prog, "u_b");
-    d.s_rot = gl::GetUniformLocation(d.sky_prog, "u_rot");
+    d.sky_loc.find(d.sky_prog);
+    {
+        GLfloat a = 1.0f;
+        glGetFloatv(0x84FF /* GL_MAX_TEXTURE_MAX_ANISOTROPY */, &a);
+        if (glGetError() == GL_NO_ERROR) d.max_aniso = std::max(1.0f, a);
+        GLint s = 1;
+        glGetIntegerv(0x8D57 /* GL_MAX_SAMPLES */, &s);
+        if (glGetError() == GL_NO_ERROR) d.max_samples = std::max(1, s);
+    }
 
     gl::GenVertexArrays(1, &d.sky_vao);
     gl::GenVertexArrays(1, &d.vao);
@@ -726,16 +816,19 @@ void GlScene::prepare(const Track& track) {
     d_->ensure_panorama(track.background ? &*track.background : nullptr);
 }
 
+void GlScene::set_quality(const Quality& q) { d_->quality = q; }
+
 GLuint GlScene::texture() const { return d_->drawn ? d_->color : 0; }
 int GlScene::width() const { return d_->w; }
 int GlScene::height() const { return d_->h; }
 
 void GlScene::draw_scene(const SceneFrame& f) {
     Impl& d = *d_;
-    if (!f.track || !f.cam || f.width <= 0 || f.height <= 0 || !d.ensure_target(f.width, f.height)) return;
+    const int ns = d.quality.msaa > 0 ? 1 << std::clamp(d.quality.msaa, 1, 3) : 0;
+    if (!f.track || !f.cam || f.width <= 0 || f.height <= 0 || !d.ensure_target(f.width, f.height, ns)) return;
     d.ensure_textures(*f.track);
     d.ensure_panorama(f.track->background ? &*f.track->background : nullptr);
-    d.set_mip_filter(f.mipmaps);
+    d.set_sampling(f.mipmaps);
 
     // the vertices of every batch, one after another
     d.verts.clear();
@@ -760,7 +853,7 @@ void GlScene::draw_scene(const SceneFrame& f) {
         ranges.emplace_back(first, d.verts.size() - first);
     }
 
-    gl::BindFramebuffer(GL_FRAMEBUFFER, d.fbo);
+    gl::BindFramebuffer(GL_FRAMEBUFFER, d.samples ? d.ms_fbo : d.fbo);
     glViewport(0, 0, f.width, f.height);
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_CULL_FACE);
@@ -782,8 +875,15 @@ void GlScene::draw_scene(const SceneFrame& f) {
     gl::Uniform4f(d.u_fade, f.fade ? 1.0f : 0.0f, f.fade_iz, f.fade_start, f.fade_range);
     gl::Uniform1i(d.u_true_depth, 0);
     // the software filler's level: from 1 / sharpness texels a pixel; GL's nearest level
-    // is rounded, the filler's rounded down
-    gl::Uniform1f(d.u_grad_scale, std::exp2(std::log2(std::max(0.01f, f.mip_sharpness)) - 0.5f));
+    // is rounded, the filler's rounded down (filtered: the levels as GL picks them)
+    const bool linear = d.quality.filter > 0;
+    gl::Uniform1f(d.u_grad_scale, linear ? 1.0f : std::exp2(std::log2(std::max(0.01f, f.mip_sharpness)) - 0.5f));
+    gl::Uniform1i(d.u_linear, linear ? 1 : 0);
+    gl::Uniform1i(d.u_fog, d.quality.fog ? 1 : 0);
+    gl::Uniform1i(d.u_a2c, d.samples ? 1 : 0);
+    d.sky_uniforms(f, d.scene_sky_loc);
+    gl::ActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, d.pano_tex);
     gl::ActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, d.palette_tex);
     gl::ActiveTexture(GL_TEXTURE1);
@@ -801,6 +901,7 @@ void GlScene::draw_scene(const SceneFrame& f) {
     glDepthFunc(GL_GEQUAL);
     glEnable(GL_BLEND);
     glBlendFunc(GL_ONE, GL_SRC1_COLOR);
+    if (d.samples) glEnable(GL_SAMPLE_ALPHA_TO_COVERAGE);
     // consecutive Normal batches in one draw
     for (size_t bi = 0; bi < f.batches.size();) {
         const SceneBatch::Kind kind = f.batches[bi].kind;
@@ -901,8 +1002,15 @@ void GlScene::draw_scene(const SceneFrame& f) {
     }
     glDisable(GL_BLEND);
     glDisable(GL_DEPTH_TEST);
+    glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
     glDepthMask(GL_TRUE);
     gl::BindVertexArray(0);
+    if (d.samples) {
+        // the samples averaged into the picture
+        gl::BindFramebuffer(GL_READ_FRAMEBUFFER, d.ms_fbo);
+        gl::BindFramebuffer(GL_DRAW_FRAMEBUFFER, d.fbo);
+        gl::BlitFramebuffer(0, 0, f.width, f.height, 0, 0, f.width, f.height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    }
     gl::BindFramebuffer(GL_FRAMEBUFFER, 0);
     d.drawn = true;
 }

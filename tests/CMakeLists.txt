@@ -132,6 +132,9 @@ if(EXISTS ${SCREAMER_DATA_DIR}/GFX/MAP1H.DAT)
     TOLERANCE 24 MAX_FRACTION 0.05)
   add_renderer_test(still_cars ARGS --scene track --track MAP1 --car AUTO00 --car AUTO03,0,0,0,300,8000 --frames 3
     --render-size 1600x1000 --mipmaps off TOLERANCE 24 MAX_FRACTION 0.005)
+  # every quality option at once: the same scene, softer and smoother
+  add_renderer_test(quality ARGS --scene drive --track MAP1 --hold accel --frames 300 --render-size 1280x800
+    --filter trilinear --aniso 16 --msaa 4 --fog on --view-distance 1 TOLERANCE 48 MAX_FRACTION 0.08)
   add_renderer_test(mirror_wide ARGS --scene drive --track MAP1 --hold accel,right --frames 200 --render-size 1280x720
     --aspect wide --race-options 0x30 --mipmaps off TOLERANCE 24 MAX_FRACTION 0.02)
 endif()

@@ -237,7 +237,7 @@ TEST_CASE("menu: CHOICE.DAT keeps our volumes after the original's bytes") {
     c.music_midi = 1;
     c.set(0x14, 2);
     REQUIRE(c.save(path.string()));
-    CHECK(std::filesystem::file_size(path) == 0x460 + 4 + 4 + 16 * 4);  // 4 volumes, music, 11 VIDEO settings
+    CHECK(std::filesystem::file_size(path) == 0x460 + 4 + 4 + 21 * 4);  // 4 volumes, music, 16 VIDEO settings
     scr::ChoiceFile d;
     REQUIRE(d.load(path.string()));
     CHECK((d.volume == std::array<int32_t, 4>{3, 0, 7, 10}));
