@@ -2017,7 +2017,8 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
                     view_cam.fade_depth = view_cam.far_depth * 0.75f;
                 }
                 // the hardware renderer: the 3D view on the graphics card, the HUD over it here
-                scr::SceneSink* const hw_sink = opt.hardware ? presenter().scene_sink() : nullptr;
+                // (not in track edit mode: picking and its markers need the software renderer's depths)
+                scr::SceneSink* const hw_sink = opt.hardware && !(freecam && editing) ? presenter().scene_sink() : nullptr;
                 fb.set_layered(hw_sink != nullptr);
                 if (hw_sink) fb.clear_layer();
                 renderer3d.set_sink(hw_sink);
