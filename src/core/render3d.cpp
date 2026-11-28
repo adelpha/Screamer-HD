@@ -146,12 +146,12 @@ void Renderer::begin(const Track& track, const Camera& cam, Framebuffer& fb, uin
     geometry_done_ = false;
     job_count_ = 0;
     if (!pool_) pool_ = std::make_unique<WorkerPool>();
-    depth_.resize(size_t(fb.width()) * size_t(fb.height()));
+    if (!sink_) depth_.resize(size_t(fb.width()) * size_t(fb.height()));
     const int w = fb.width(), h = fb.height();
     // (the background covers every pixel when there is one; the sky colour otherwise)
     bg_columns_.clear();
     if (track.background) background_columns(*track.background, cam, fb, bg_columns_);
-    if (!clear_at_finish) {
+    if (!clear_at_finish && !sink_) {
         const int bands = std::max(1, std::min(h, pool_->threads() * 2));
         pool_->run(bands, [&](int b) { clear_rows(h * b / bands, h * (b + 1) / bands); });
     }
@@ -400,8 +400,12 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
         }
         std::stable_sort(part_order.begin(), part_order.end(), [&](size_t a, size_t b) { return keys[a] < keys[b]; });
     }
+    int part_count = 0;
     for (const size_t pi : part_order) {
         if (part_mask && (pi >= part_mask->size() || !(*part_mask)[pi])) continue;
+        // (1..15 in drawing order; bit 4: a card, bit 5: a wheel's part, which the later parts cover whatever
+        // the depth, as in the original)
+        if (painter) g.part = uint8_t(part_count++ % 15 + 1 + (model.parts[pi].wheel ? 32 : 0));
         const Part& full = model.parts[pi];
         Mat3 prot;
         float ox, oy, oz;
@@ -491,9 +495,29 @@ void Renderer::draw_model_into(Geo& g, const Model& model, const Pose& pose, con
             const auto& list = part.draw_order[size_t(list_index)];
             if (painter && !list.empty()) order = &list;
         }
+        // (ours) A car part's cards (Face::card: thin fins and supports modelled as a face per
+        // side) after its other faces, as a part of their own: covered by those only where
+        // behind them. In the original's order a later face of the part can paint over one,
+        // which the black car's spoiler supports show, one coming and going with the angle.
+        std::vector<uint16_t>& seq = g.face_seq;
+        seq.clear();
+        const bool cards_after = painter && car_cards_ && !part.wheel;
         const size_t face_count = order ? order->size() : part.faces.size();
         for (size_t fi = 0; fi < face_count; ++fi) {
-            const Face& f = part.faces[order ? (*order)[fi] : fi];
+            const uint16_t k = order ? (*order)[fi] : uint16_t(fi);
+            if (!(cards_after && k < part.faces.size() && part.faces[k].card)) seq.push_back(k);
+        }
+        const size_t card_start = seq.size();
+        if (cards_after)
+            for (size_t fi = 0; fi < face_count; ++fi) {
+                const uint16_t k = order ? (*order)[fi] : uint16_t(fi);
+                if (k < part.faces.size() && part.faces[k].card) seq.push_back(k);
+            }
+        for (size_t si = 0; si < seq.size(); ++si) {
+            // (each card a part of its own: the wing, its fins and its supports are all cards,
+            // and they cover each other by depth too)
+            if (si >= card_start && si > 0) g.part = uint8_t(part_count++ % 15 + 1 + 16);
+            const Face& f = part.faces[seq[si]];
             if (face_lists_ && list_index >= 0 && !((f.lists >> list_index) & 1)) continue;
             // Back-face test like object_build_polygons: dot(vertex - eye, normal) >= 0 draws.
             float nx, ny, nz;
@@ -582,6 +606,38 @@ RenderStats Renderer::finish() {
         draw_polygon(g, g.deferred_verts.data() + d.first, d.count, d.mat, d.color, d.animation, d.reflection, d.depth_bias, 0);
     g.deferred.clear();
     g.deferred_verts.clear();
+    if (sink_) {
+        // the hardware renderer fills the pixels
+        SceneFrame f{};
+        f.track = track_;
+        f.cam = cam_;
+        f.width = fb_->width();
+        f.height = fb_->height();
+        f.wide = fb_->wide;
+        f.unit_x = fb_->unit_x();
+        f.sky = sky_;
+        f.sky_tilt = sky_tilt_;
+        f.fade = fade_;
+        f.fade_iz = fade_iz_;
+        f.fade_start = fade_start_;
+        f.fade_range = fade_range_;
+        f.mipmaps = mipmaps_;
+        f.mip_sharpness = mip_sharpness_;
+        f.car_slack = car_slack_;
+        for (size_t k = 0; k < job_count_; ++k) {
+            const Geo& o = job_geo_[k];
+            if (o.tris.empty()) continue;
+            const SceneBatch::Kind kind = o.painter ? SceneBatch::Painter : o.bias_test_only ? SceneBatch::BiasTest : SceneBatch::Normal;
+            f.batches.push_back({kind, o.tris.data(), o.tris.size(), o.fills.data()});
+        }
+        if (!g.tris.empty()) f.batches.push_back({SceneBatch::Deferred, g.tris.data(), g.tris.size(), g.fills.data()});
+        sink_->draw_scene(f);
+        g.tris.clear();
+        g.tri_rows.clear();
+        g.fills.clear();
+        job_count_ = 0;
+        return g.stats;
+    }
     // Fill the pixels: bands of rows, several per thread so that the busy parts of the
     // screen are shared out.
     if (!pool_) pool_ = std::make_unique<WorkerPool>();
@@ -601,6 +657,7 @@ RenderStats Renderer::finish() {
     ctx.fade_start = fade_start_;
     ctx.fade_range = fade_range_;
     ctx.mip_sharpness = mip_sharpness_;
+    ctx.car_slack = car_slack_;
     pool_->run(bands, [&](int b) {
         const int y0 = h * b / bands, y1 = h * (b + 1) / bands;
         // (cleared here, the band's rows are still in the cache when its polygons are filled:
@@ -873,6 +930,7 @@ void Renderer::draw_polygon(Geo& g, const ClipVert* in, size_t count, const Mate
     fill.writes_depth = mode != Mode::Translucent && mode != Mode::Darken;
     fill.depth_bias = depth_bias;
     fill.painter = g.painter ? 1 : 0;
+    fill.part = g.painter ? g.part : 0;
     fill.bias_test_only = g.bias_test_only ? 1 : 0;
     fill.edge_slack = fill.writes_depth ? g.edge_slack : 0.0f;
     fill.seal_behind = open_edges != 0xff;

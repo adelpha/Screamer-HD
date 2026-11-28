@@ -2,6 +2,7 @@
 // and the scaling does what the SDL path does (the same picture), so the two can be compared.
 
 #include "video/gl_api.h"
+#include "video/gl_scene.h"
 #include "video/presenter.h"
 
 #include <array>
@@ -24,15 +25,33 @@ void main() {
 }
 )";
 
-// Palette indices (R8) through the palette (256 x 1 RGBA).
-constexpr const char* kIndexFs = R"(#version 330 core
+// The picture in colour, one texel a pixel: its palette indices (R8) through the palette
+// (256 x 1 RGBA); a layered picture (the hardware renderer) over the 3D scene where its cover
+// byte says so (Framebuffer::kCovered), the scene darkened 0.75 times per step elsewhere.
+constexpr const char* kComposeFs = R"(#version 330 core
 uniform sampler2D u_index;
 uniform sampler2D u_palette;
-in vec2 v_uv;
+uniform sampler2D u_cover;
+uniform sampler2D u_scene;
+uniform int u_layered;
+uniform float u_bright;
+uniform ivec2 u_flip;
 out vec4 o_color;
 void main() {
-    int i = int(texture(u_index, v_uv).r * 255.0 + 0.5);
-    o_color = vec4(texelFetch(u_palette, ivec2(i, 0), 0).rgb, 1.0);
+    ivec2 p = ivec2(gl_FragCoord.xy);
+    int i = int(texelFetch(u_index, p, 0).r * 255.0 + 0.5);
+    vec3 c = texelFetch(u_palette, ivec2(i, 0), 0).rgb;
+    if (u_layered != 0) {
+        int cover = int(texelFetch(u_cover, p, 0).r * 255.0 + 0.5);
+        if (cover != 255) {
+            ivec2 size = textureSize(u_scene, 0);
+            ivec2 q = p;
+            if (u_flip.x != 0) q.x = size.x - 1 - q.x;
+            if (u_flip.y != 0) q.y = size.y - 1 - q.y;
+            c = texelFetch(u_scene, clamp(q, ivec2(0), size - 1), 0).rgb * u_bright * pow(0.75, float(cover));
+        }
+    }
+    o_color = vec4(c, 1.0);
 }
 )";
 
@@ -92,27 +111,34 @@ public:
     GlPresenter(SDL_Window* window, SDL_GLContext ctx) : window_(window), ctx_(ctx) {}
     ~GlPresenter() override {
         SDL_GL_MakeCurrent(window_, ctx_);
+        scene_.reset();
         if (index_tex_) glDeleteTextures(1, &index_tex_);
+        if (cover_tex_) glDeleteTextures(1, &cover_tex_);
         if (palette_tex_) glDeleteTextures(1, &palette_tex_);
         if (backdrop_tex_) glDeleteTextures(1, &backdrop_tex_);
         rgba_.destroy();
         readback_.destroy();
         for (Target& t : halves_) t.destroy();
-        if (index_prog_) gl::DeleteProgram(index_prog_);
+        if (compose_prog_) gl::DeleteProgram(compose_prog_);
         if (rgba_prog_) gl::DeleteProgram(rgba_prog_);
         if (vao_) gl::DeleteVertexArrays(1, &vao_);
         SDL_GL_DestroyContext(ctx_);
     }
 
     bool init() {
-        index_prog_ = gl::make_program("picture", kQuadVs, kIndexFs);
+        compose_prog_ = gl::make_program("picture", kQuadVs, kComposeFs);
         rgba_prog_ = gl::make_program("rgba", kQuadVs, kRgbaFs);
-        if (!index_prog_ || !rgba_prog_) return false;
-        gl::UseProgram(index_prog_);
-        gl::Uniform1i(gl::GetUniformLocation(index_prog_, "u_index"), 0);
-        gl::Uniform1i(gl::GetUniformLocation(index_prog_, "u_palette"), 1);
-        idx_dst_ = gl::GetUniformLocation(index_prog_, "u_dst");
-        idx_src_ = gl::GetUniformLocation(index_prog_, "u_src");
+        if (!compose_prog_ || !rgba_prog_) return false;
+        gl::UseProgram(compose_prog_);
+        gl::Uniform1i(gl::GetUniformLocation(compose_prog_, "u_index"), 0);
+        gl::Uniform1i(gl::GetUniformLocation(compose_prog_, "u_palette"), 1);
+        gl::Uniform1i(gl::GetUniformLocation(compose_prog_, "u_cover"), 2);
+        gl::Uniform1i(gl::GetUniformLocation(compose_prog_, "u_scene"), 3);
+        cmp_dst_ = gl::GetUniformLocation(compose_prog_, "u_dst");
+        cmp_src_ = gl::GetUniformLocation(compose_prog_, "u_src");
+        cmp_layered_ = gl::GetUniformLocation(compose_prog_, "u_layered");
+        cmp_bright_ = gl::GetUniformLocation(compose_prog_, "u_bright");
+        cmp_flip_ = gl::GetUniformLocation(compose_prog_, "u_flip");
         gl::UseProgram(rgba_prog_);
         gl::Uniform1i(gl::GetUniformLocation(rgba_prog_, "u_tex"), 0);
         rgba_dst_ = gl::GetUniformLocation(rgba_prog_, "u_dst");
@@ -128,7 +154,13 @@ public:
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_BLEND);
         glDisable(GL_CULL_FACE);
-        return glGetError() == GL_NO_ERROR;
+        if (glGetError() != GL_NO_ERROR) return false;
+        scene_ = std::make_unique<GlScene>();
+        if (!scene_->init()) {
+            SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "OpenGL: no hardware renderer (its shaders did not build)");
+            scene_.reset();
+        }
+        return true;
     }
 
     std::string name() const override {
@@ -139,23 +171,27 @@ public:
     Api api() const override { return Api::OpenGL; }
     void output_size(int& w, int& h) const override { SDL_GetWindowSizeInPixels(window_, &w, &h); }
     void set_vsync(bool on) override { SDL_GL_SetSwapInterval(on ? 1 : 0); }
+    SceneSink* scene_sink() override { return scene_.get(); }
 
     void upload(const Framebuffer& fb, WorkerPool*) override {
+        SDL_GL_MakeCurrent(window_, ctx_);
         if (!index_tex_ || fb.width() != tex_w_ || fb.height() != tex_h_) {
             if (index_tex_) glDeleteTextures(1, &index_tex_);
+            if (cover_tex_) glDeleteTextures(1, &cover_tex_);
             tex_w_ = fb.width();
             tex_h_ = fb.height();
-            glGenTextures(1, &index_tex_);
-            glBindTexture(GL_TEXTURE_2D, index_tex_);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, tex_w_, tex_h_, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            index_tex_ = make_r8(tex_w_, tex_h_);
+            cover_tex_ = make_r8(tex_w_, tex_h_);
         }
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         glBindTexture(GL_TEXTURE_2D, index_tex_);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, tex_w_, tex_h_, GL_RED, GL_UNSIGNED_BYTE, fb.pixels());
+        const GLuint scene = scene_ ? scene_->texture() : 0;
+        const bool layered = fb.layered() && scene;
+        if (layered) {
+            glBindTexture(GL_TEXTURE_2D, cover_tex_);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, tex_w_, tex_h_, GL_RED, GL_UNSIGNED_BYTE, fb.cover());
+        }
         std::array<uint8_t, 256 * 4> colors;
         for (size_t i = 0; i < 256; ++i) {
             colors[i * 4 + 0] = fb.palette()[i].r;
@@ -169,9 +205,30 @@ public:
             colors_ = colors;
             colors_set_ = true;
         }
+        // the picture in colour, one texel a pixel
+        if (!rgba_.ensure(tex_w_, tex_h_)) return;
+        gl::BindVertexArray(vao_);
+        gl::BindFramebuffer(GL_FRAMEBUFFER, rgba_.fbo);
+        glViewport(0, 0, tex_w_, tex_h_);
+        gl::UseProgram(compose_prog_);
+        gl::Uniform1i(cmp_layered_, layered ? 1 : 0);
+        gl::Uniform1f(cmp_bright_, fb.scene_brightness);
+        gl::Uniform2i(cmp_flip_, fb.scene_flip_x ? 1 : 0, fb.scene_flip_y ? 1 : 0);
+        gl::ActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, layered ? scene : 0);
+        gl::ActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, cover_tex_);
+        gl::ActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, palette_tex_);
+        gl::ActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, index_tex_);
+        quad(cmp_dst_, cmp_src_, 0, 0, float(tex_w_), float(tex_h_), tex_w_, tex_h_, false);
+        gl::BindFramebuffer(GL_FRAMEBUFFER, 0);
+        composed_ = true;
     }
 
     void set_backdrop(const uint8_t* rgba, int w, int h) override {
+        SDL_GL_MakeCurrent(window_, ctx_);
         if (backdrop_tex_) glDeleteTextures(1, &backdrop_tex_);
         backdrop_tex_ = 0;
         if (!rgba || w <= 0 || h <= 0) return;
@@ -198,9 +255,35 @@ public:
         if (!drawn_ || w <= 0 || h <= 0 || !readback_.ensure(w, h)) return nullptr;
         // (drawn again into a texture: a hidden or covered window's own pixels are undefined)
         draw_to(readback_.fbo, last_dst_, last_brightness_);
+        return read_target(readback_.fbo, w, h);
+    }
+
+    SurfacePtr read_picture() override {
+        if (!composed_) return nullptr;
+        SDL_GL_MakeCurrent(window_, ctx_);
+        return read_target(rgba_.fbo, tex_w_, tex_h_);
+    }
+
+    void present() override { SDL_GL_SwapWindow(window_); }
+
+private:
+    static GLuint make_r8(int w, int h) {
+        GLuint t = 0;
+        glGenTextures(1, &t);
+        glBindTexture(GL_TEXTURE_2D, t);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        return t;
+    }
+
+    // A target of ours (rows top down) as a surface.
+    static SurfacePtr read_target(GLuint fbo, int w, int h) {
         SurfacePtr s(SDL_CreateSurface(w, h, SDL_PIXELFORMAT_RGBA32));
         if (!s) return nullptr;
-        gl::BindFramebuffer(GL_FRAMEBUFFER, readback_.fbo);
+        gl::BindFramebuffer(GL_FRAMEBUFFER, fbo);
         glPixelStorei(GL_PACK_ALIGNMENT, 1);
         std::vector<uint8_t> px(size_t(w) * size_t(h) * 4);
         glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
@@ -211,9 +294,6 @@ public:
         return s;
     }
 
-    void present() override { SDL_GL_SwapWindow(window_); }
-
-private:
     // Draws a quad into the bound target (tw x th pixels): dst in target pixels, top left
     // first. The window's own framebuffer has its rows bottom up, our textures top down.
     void quad(GLint dst_loc, GLint src_loc, float x0, float y0, float x1, float y1, int tw, int th, bool window,
@@ -234,25 +314,16 @@ private:
         int ow = 0, oh = 0;
         output_size(ow, oh);
         gl::BindVertexArray(vao_);
-        gl::ActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, palette_tex_);
         gl::ActiveTexture(GL_TEXTURE0);
 
-        // What is shown: the picture's indices through the palette straight into the window, or,
-        // when the picture is larger than the window, its colours first (one texel a pixel), then
-        // halved and filtered as the SDL path does.
-        GLuint shown = 0;
+        // What is shown: the picture in colour (upload), scaled up with nearest-neighbour, or,
+        // when it is larger than the window, halved and filtered as the SDL path does.
+        GLuint shown = composed_ ? rgba_.tex : 0;
         int cw = tex_w_, ch = tex_h_;
-        const bool larger = index_tex_ && ow > 0 && (tex_w_ > ow || tex_h_ > oh);
-        if (larger && rgba_.ensure(tex_w_, tex_h_)) {
-            gl::BindFramebuffer(GL_FRAMEBUFFER, rgba_.fbo);
-            glViewport(0, 0, tex_w_, tex_h_);
-            gl::UseProgram(index_prog_);
-            glBindTexture(GL_TEXTURE_2D, index_tex_);
-            quad(idx_dst_, idx_src_, 0, 0, float(tex_w_), float(tex_h_), tex_w_, tex_h_, false);
-            shown = rgba_.tex;
-            gl::UseProgram(rgba_prog_);
-            gl::Uniform1f(rgba_mul_, 1.0f);
+        const bool larger = shown && ow > 0 && (tex_w_ > ow || tex_h_ > oh);
+        gl::UseProgram(rgba_prog_);
+        gl::Uniform1f(rgba_mul_, 1.0f);
+        if (larger) {
             for (size_t level = 0; cw >= 2 * int(dst.w) && ch >= 2 * int(dst.h) && cw >= 2 && ch >= 2; ++level) {
                 const int nw = cw / 2, nh = ch / 2;
                 if (halves_.size() <= level) halves_.emplace_back();
@@ -268,8 +339,8 @@ private:
                 cw = nw;
                 ch = nh;
             }
-            set_filter(shown, dst.w < float(cw) ? GL_LINEAR : GL_NEAREST);
         }
+        if (shown) set_filter(shown, larger && dst.w < float(cw) ? GL_LINEAR : GL_NEAREST);
 
         gl::BindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, ow, oh);
@@ -277,33 +348,30 @@ private:
         glClear(GL_COLOR_BUFFER_BIT);
         const bool window = fbo == 0;
         if (backdrop_tex_ && backdrop_brightness >= 0) {
-            gl::UseProgram(rgba_prog_);
             // (as SDL's colour modulation: the brightness in whole 255ths)
             const float m = float(int(SDL_clamp(backdrop_brightness, 0.0f, 1.0f) * 255.0f)) / 255.0f;
             gl::Uniform1f(rgba_mul_, m);
             glBindTexture(GL_TEXTURE_2D, backdrop_tex_);
             quad(rgba_dst_, rgba_src_, 0, 0, float(ow), float(oh), ow, oh, window);
+            gl::Uniform1f(rgba_mul_, 1.0f);
         }
         if (shown) {
-            gl::UseProgram(rgba_prog_);
-            gl::Uniform1f(rgba_mul_, 1.0f);
             glBindTexture(GL_TEXTURE_2D, shown);
             quad(rgba_dst_, rgba_src_, dst.x, dst.y, dst.x + dst.w, dst.y + dst.h, ow, oh, window);
-        } else if (index_tex_) {
-            gl::UseProgram(index_prog_);
-            glBindTexture(GL_TEXTURE_2D, index_tex_);
-            quad(idx_dst_, idx_src_, dst.x, dst.y, dst.x + dst.w, dst.y + dst.h, ow, oh, window);
         }
     }
 
     SDL_Window* window_;
     SDL_GLContext ctx_;
-    GLuint index_prog_ = 0, rgba_prog_ = 0, vao_ = 0;
-    GLint idx_dst_ = -1, idx_src_ = -1, rgba_dst_ = -1, rgba_src_ = -1, rgba_mul_ = -1;
-    GLuint index_tex_ = 0, palette_tex_ = 0, backdrop_tex_ = 0;
+    std::unique_ptr<GlScene> scene_;
+    GLuint compose_prog_ = 0, rgba_prog_ = 0, vao_ = 0;
+    GLint cmp_dst_ = -1, cmp_src_ = -1, cmp_layered_ = -1, cmp_bright_ = -1, cmp_flip_ = -1;
+    GLint rgba_dst_ = -1, rgba_src_ = -1, rgba_mul_ = -1;
+    GLuint index_tex_ = 0, cover_tex_ = 0, palette_tex_ = 0, backdrop_tex_ = 0;
     int tex_w_ = 0, tex_h_ = 0;
     std::array<uint8_t, 256 * 4> colors_{};
     bool colors_set_ = false;
+    bool composed_ = false;
     Target rgba_, readback_;
     std::vector<Target> halves_;
     SDL_FRect last_dst_{};

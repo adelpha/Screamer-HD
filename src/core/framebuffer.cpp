@@ -21,11 +21,25 @@ Framebuffer::Framebuffer(int width, int height)
 
 void Framebuffer::clear(uint8_t index) { std::fill(pixels_.begin(), pixels_.end(), index); }
 
+void Framebuffer::set_layered(bool on) {
+    if (on == layered()) return;
+    if (on) cover_.assign(pixels_.size(), 0);
+    else cover_.clear();
+}
+
+void Framebuffer::clear_layer() {
+    std::fill(pixels_.begin(), pixels_.end(), uint8_t(0));
+    std::fill(cover_.begin(), cover_.end(), uint8_t(0));
+    scene_brightness = 1.0f;
+    scene_flip_x = scene_flip_y = false;
+}
+
 void Framebuffer::fill_rect(int x, int y, int w, int h, uint8_t index) {
     const int x0 = std::max(x, 0), y0 = std::max(y, 0);
     const int x1 = std::min(x + w, width_), y1 = std::min(y + h, height_);
     for (int yy = y0; yy < y1; ++yy) {
         std::fill_n(&pixels_[static_cast<size_t>(yy) * width_ + x0], std::max(x1 - x0, 0), index);
+        if (!cover_.empty()) std::fill_n(&cover_[static_cast<size_t>(yy) * width_ + x0], std::max(x1 - x0, 0), kCovered);
     }
 }
 

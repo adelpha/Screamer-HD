@@ -63,6 +63,7 @@ struct Fill {
     bool seal_behind;
     const MipTexture* mip;  // the smaller versions to draw from where the texture is squeezed, or null
     uint8_t painter;        // a car's polygon: writes its depths negated (see Renderer::Geo::painter)
+    uint8_t part;           // and which of the car's parts it is in (1..15 in drawing order, +16 a card, +32 a wheel)
     uint8_t bias_test_only; // depth_bias only decides whether a pixel is drawn; the depth written is the real one
     float depth_bias;       // in units of d = 128 - z
     float edge_slack;       // pixels the polygon reaches past its edges
@@ -92,6 +93,7 @@ struct FillContext {
     float fade_iz;          // 1 / (128 + fade_depth): pixels with a smaller 1/z are in the fade
     float fade_start, fade_range;
     float mip_sharpness;    // a level is used from 1 / sharpness of its texels per pixel on
+    float car_slack;        // a car's part is drawn over its earlier parts up to this far behind them
 };
 
 // Fills rows band0 .. band1 - 1 with the listed triangles, in order.

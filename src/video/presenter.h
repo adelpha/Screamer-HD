@@ -15,6 +15,7 @@
 
 namespace scr {
 class WorkerPool;
+class SceneSink;
 }
 
 namespace scr::video {
@@ -45,6 +46,12 @@ public:
     // What the last draw() made, at output_size().
     virtual SurfacePtr read_pixels() = 0;
     virtual void present() = 0;
+    // The hardware renderer, where this presenter has one (null: the software renderer only).
+    // A layered Framebuffer (Framebuffer::set_layered) is shown over the last scene drawn by it.
+    virtual SceneSink* scene_sink() { return nullptr; }
+    // The last uploaded picture as shown before scaling (the Framebuffer's size; with a layered
+    // one, the scene and what is over it), or null where the picture is the Framebuffer itself.
+    virtual SurfacePtr read_picture() { return nullptr; }
 };
 
 struct SdlOptions {

@@ -65,6 +65,7 @@ constexpr float kObstacleBias = 512.0f;
 struct Options {
     std::string data_dir;
     bool headless = false;
+    bool realtime = false;          // --realtime: a headless run paced by the clock, as a window is (catching up, drawing between steps)
     bool hidden = false;            // --hidden: as --headless, but the real video driver and renderer on a window that is never shown
     std::string upload;             // --upload: how the picture gets to the renderer (index | rgba; empty: index when the renderer can)
     bool perf = false;              // print the 3D render time per frame at the end
@@ -96,6 +97,9 @@ struct Options {
     int width = 0, height = 0;      // output size; 0 = default
     std::string renderer;           // SDL renderer name, empty = default
     scr::video::Api video_api = scr::video::Api::Sdl;  // --video-api: SDL's 2D renderer or our OpenGL context
+    bool hardware = false;          // --renderer3d hardware: the 3D view drawn on the graphics card (OpenGL)
+    float car_slack = 64.0f;        // --car-slack: Renderer::set_car_slack (off: 1e30, the original's order)
+    bool car_cards = true;          // --car-cards off: Renderer::set_car_cards
     std::string aspect = "4:3";     // 4:3 | stretch | square | wide
     bool fb_set = false;            // --render-size was given
     bool smooth_turn = true;        // --smooth-turn: the camera's angles as they are, not in 2048ths of a turn
@@ -147,6 +151,8 @@ void print_usage() {
         "  --data DIR           original game directory (default: $SCREAMER_DATA, the build's path in\n"
         "                       developer builds, a SCREAMER folder next to screamer.exe, screamer.exe's folder)\n"
         "  --headless           no visible window, software renderer, dummy audio\n"
+        "  --realtime           headless runs paced by the clock as a window is (steps skipped when behind,\n"
+        "                       pictures drawn between steps), for checking what a real run shows\n"
         "  --hidden             like --headless, but with the real video driver and renderer (the graphics card) on a\n"
         "                       window that is never shown; for checking and timing what a real run does\n"
         "  --upload index|rgba  how the picture is handed to the renderer: as palette indices with the palette\n"
@@ -207,6 +213,10 @@ void print_usage() {
         "  --vsync on|off       wait for the screen's refresh (default on, or as OPTIONS > VIDEO)\n"
         "  --frame-limit N      at most N pictures a second (default 0: no limit)\n"
         "  --renderer NAME      SDL renderer (direct3d11, direct3d12, vulkan, opengl, software, gpu)\n"
+        "  --renderer3d software|hardware  the 3D view drawn here (default) or on the graphics card\n"
+        "                       with OpenGL (implies --video-api opengl)\n"
+        "  --video-api sdl|opengl  how the picture reaches the screen: SDL's renderer (default) or an\n"
+        "                       OpenGL 3.3 context of our own (needs a real video driver: --hidden, not --headless)\n"
         "  --aspect MODE        4:3 (default), stretch, square, or wide: widescreen. The picture fills a\n"
         "                       window of any shape with square pixels; races show more to the sides,\n"
         "                       the HUD keeps to the edges, menus stay 4:3 in the middle. Without\n"
@@ -332,6 +342,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         if (a == "--data") o.data_dir = next("--data");
         else if (a == "--headless") o.headless = true;
         else if (a == "--hidden") o.headless = o.hidden = true;
+        else if (a == "--realtime") o.realtime = true;
         else if (a == "--upload") o.upload = next("--upload");
         else if (a == "--perf") o.perf = true;
         else if (a == "--lod") o.lod = true;
@@ -359,6 +370,19 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--capture-every") o.capture_every = std::strtoull(next("--capture-every"), nullptr, 10);
         else if (a == "--capture-dir") o.capture_dir = next("--capture-dir");
         else if (a == "--renderer") o.renderer = next("--renderer");
+        else if (a == "--car-cards") o.car_cards = std::string(next("--car-cards")) != "off";
+        else if (a == "--car-slack") {
+            const std::string v = next("--car-slack");
+            o.car_slack = v == "off" ? 1e30f : float(std::atof(v.c_str()));
+        }
+        else if (a == "--renderer3d") {
+            const std::string v = next("--renderer3d");
+            if (v != "software" && v != "hardware") {
+                std::fprintf(stderr, "--renderer3d: software or hardware, not %s\n", v.c_str());
+                return false;
+            }
+            o.hardware = v == "hardware";
+        }
         else if (a == "--video-api") {
             const std::string v = next("--video-api");
             if (!scr::video::parse_api(v, o.video_api)) {
@@ -443,8 +467,15 @@ SDL_FRect present_rect(int out_w, int out_h, const std::string& aspect, int fb_w
     else target = 4.0 / 3.0;
     double w = out_w, h = out_w / target;
     if (h > out_h) { h = out_h; w = out_h * target; }
-    return {float((out_w - w) / 2), float((out_h - h) / 2), float(w), float(h)};
+    // (in whole pixels: a picture shown at half a pixel's offset, scaled with nearest-neighbour,
+    // would take some rows and columns twice and others not at all)
+    w = std::round(w);
+    h = std::round(h);
+    return {float(std::floor((out_w - w) / 2)), float(std::floor((out_h - h) / 2)), float(w), float(h)};
 }
+
+// Rows at the bottom of the window that lie off the screen (OpenGL fullscreen, set_fullscreen).
+int g_hidden_rows = 0;
 
 // OPTIONS > VIDEO as the run has it now
 scr::VideoSettings video_from(const Options& o) {
@@ -461,6 +492,7 @@ scr::VideoSettings video_from(const Options& o) {
     v.lod = o.lod;
     v.mipmaps = o.mipmaps;
     v.opengl = o.video_api == scr::video::Api::OpenGL;
+    v.hardware = o.hardware;
     return v;
 }
 
@@ -484,22 +516,95 @@ void apply_video(Options& o, const scr::VideoSettings& v, bool force) {
     if (take("--lod")) o.lod = v.lod;
     if (take("--mipmaps")) o.mipmaps = v.mipmaps;
     if (take("--video-api")) o.video_api = v.opengl ? scr::video::Api::OpenGL : scr::video::Api::Sdl;
+    if (take("--renderer3d")) o.hardware = v.hardware;
+    // (the hardware renderer draws with OpenGL)
+    if (o.hardware) o.video_api = scr::video::Api::OpenGL;
+}
+
+// Fullscreen as SDL does it (a borderless window covering the display), except with OpenGL:
+// Windows switches a window whose OpenGL picture covers the whole screen to its own fullscreen
+// presentation a few pictures after it starts showing them, with a moment of black on the way
+// (at every start and every switch). There fullscreen is a borderless window one pixel taller
+// than the display, which Windows leaves a window. The windowed size and place come back after.
+void set_fullscreen(SDL_Window* window, bool on, bool opengl) {
+    static SDL_Rect windowed{0, 0, 0, 0};
+    static bool covering = false;  // our OpenGL fullscreen is on
+    if (!opengl && !covering) {
+        SDL_SetWindowFullscreen(window, on);
+        return;
+    }
+    SDL_SetWindowFullscreen(window, false);
+    if (on && opengl) {
+        if (!covering) {
+            // (a maximised window is restored first: Windows keeps its size and place otherwise,
+            // and the title bar's strip stays uncovered)
+            const bool was_maximized = (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0;
+            if (was_maximized) {
+                SDL_RestoreWindow(window);
+                SDL_SyncWindow(window);
+            }
+            SDL_GetWindowPosition(window, &windowed.x, &windowed.y);
+            SDL_GetWindowSize(window, &windowed.w, &windowed.h);
+        }
+        SDL_Rect b{};
+        if (!SDL_GetDisplayBounds(SDL_GetDisplayForWindow(window), &b)) {
+            SDL_SetWindowFullscreen(window, true);
+            return;
+        }
+        SDL_SetWindowBordered(window, false);
+        SDL_SetWindowPosition(window, b.x, b.y);
+        SDL_SetWindowSize(window, b.w, b.h + 1);
+        covering = true;
+        g_hidden_rows = int(std::lround(SDL_GetWindowPixelDensity(window)));
+        return;
+    }
+    g_hidden_rows = 0;
+    if (covering) {
+        SDL_SetWindowBordered(window, true);
+        if (windowed.w > 0 && windowed.h > 0) {
+            SDL_SetWindowSize(window, windowed.w, windowed.h);
+            SDL_SetWindowPosition(window, windowed.x, windowed.y);
+        }
+        covering = false;
+    }
+    if (on) SDL_SetWindowFullscreen(window, true);  // (Direct3D after OpenGL)
 }
 
 // The window for the run's VIDEO settings: fullscreen or not, and in a window, the size of the
 // picture when it fits on the screen (so its pixels are the screen's).
+// A window with a chosen render size has the picture's shape, and keeps it when resized (RES
+// NATIVE: any shape, the picture follows the window). Its size: the picture at a whole multiple
+// of its own size when that fits on the desktop (above the taskbar, with the title bar), so
+// every pixel of it is a block of the screen's; a picture larger than that is shown as large
+// as fits (filtered down).
 void apply_window(SDL_Window* window, const Options& o) {
-    SDL_SetWindowFullscreen(window, o.fullscreen);
-    if (!o.fullscreen && o.fb_set && o.fb_height >= 480) {
-        const int w = o.aspect == "wide" ? o.fb_width : int(std::lround(double(o.fb_height) * 4.0 / 3.0)), h = o.fb_height;
+    SDL_SetWindowAspectRatio(window, 0.0f, 0.0f);  // (none while the size changes)
+    set_fullscreen(window, o.fullscreen, o.video_api == scr::video::Api::OpenGL);
+    if (!o.fullscreen && o.fb_set && o.aspect != "stretch") {
+        if (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) {
+            SDL_RestoreWindow(window);
+            SDL_SyncWindow(window);
+        }
+        // the picture's shape on the screen: square pixels when wide, else the 320x200 screen's 4:3
+        const bool square = o.aspect == "wide" || o.aspect == "square";
+        const int w = square ? o.fb_width : int(std::lround(double(o.fb_height) * 4.0 / 3.0)), h = o.fb_height;
         const float density = std::max(1.0f, SDL_GetWindowPixelDensity(window));
         SDL_Rect usable{};
-        if (SDL_GetDisplayUsableBounds(SDL_GetDisplayForWindow(window), &usable)) {
-            const int pw = int(std::lround(w / density)), ph = int(std::lround(h / density));
-            if (pw <= usable.w && ph + 40 <= usable.h) {
-                SDL_SetWindowSize(window, pw, ph);
-                SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        if (w > 0 && h > 0 && SDL_GetDisplayUsableBounds(SDL_GetDisplayForWindow(window), &usable)) {
+            int top = 0, left = 0, bottom = 0, right = 0;
+            if (!SDL_GetWindowBordersSize(window, &top, &left, &bottom, &right) || top <= 0) {
+                top = 32;  // (not known before the window is shown: a title bar's)
+                left = right = bottom = 1;
             }
+            const double room_w = double(usable.w - left - right) * density, room_h = double(usable.h - top - bottom) * density;
+            double scale = std::min(room_w / w, room_h / h);
+            if (scale >= 1.0) scale = std::floor(scale);  // (a whole multiple when it fits)
+            const int ww = std::max(1, int(std::lround(w * scale / density))), wh = std::max(1, int(std::lround(h * scale / density)));
+            SDL_SetWindowSize(window, ww, wh);
+            SDL_SetWindowPosition(window, usable.x + left + (usable.w - left - right - ww) / 2,
+                                  usable.y + top + (usable.h - top - bottom - wh) / 2);
+            const float ratio = float(double(w) / double(h));
+            SDL_SetWindowAspectRatio(window, ratio, ratio);
         }
     }
     SDL_SyncWindow(window);
@@ -521,7 +626,8 @@ bool open_display(Display& d, const Options& o, scr::video::Api api, int x = SDL
     }
     for (;;) {
         SDL_WindowFlags wflags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | scr::video::window_flags(api);
-        if (o.fullscreen) wflags |= SDL_WINDOW_FULLSCREEN;
+        // (OpenGL: made fullscreen afterwards, see set_fullscreen)
+        if (o.fullscreen && api != scr::video::Api::OpenGL) wflags |= SDL_WINDOW_FULLSCREEN;
         if (o.hidden) wflags |= SDL_WINDOW_HIDDEN | SDL_WINDOW_NOT_FOCUSABLE;
         SDL_PropertiesID props = SDL_CreateProperties();
         SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, "Screamer HD");
@@ -599,6 +705,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
     if ((wide || opt.native_res) && !opt.fb_set) {
         int ww = opt.width, wh = opt.height;
         if (!opt.headless) SDL_GetWindowSizeInPixels(window, &ww, &wh);
+        wh -= g_hidden_rows;
         if (ww > 0 && wh > 0) {
             if (!wide) {
                 wh = std::min(wh, int(std::lround(double(ww) * 3.0 / 4.0)));
@@ -1003,6 +1110,9 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "--fill %s: this CPU cannot run it", opt.fill.c_str());
         return 2;
     }
+    // the hardware renderer's textures for the track now, not as a stall at its first frame
+    if (track && opt.hardware)
+        if (scr::SceneSink* s = presenter().scene_sink()) s->prepare(*track);
     renderer3d.set_lod(opt.lod);
     renderer3d.set_mipmaps(opt.mipmaps, opt.mip_sharpness);
     renderer3d.set_clamp_edges(opt.clamp_edges);
@@ -1011,6 +1121,8 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
     renderer3d.set_sky_tilt(opt.sky_tilt);
     renderer3d.set_face_lists(opt.face_lists);
     renderer3d.set_folded_faces(opt.folded_faces);
+    renderer3d.set_car_slack(opt.car_slack);
+    renderer3d.set_car_cards(opt.car_cards);
 
     // --scene menu: the front end (kept by main across races)
     scr::Menu* menu = nullptr;
@@ -1208,6 +1320,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
         if (!opt.fb_set && (w || opt.native_res)) {
             int ww = opt.width, wh = opt.height;
             if (!opt.headless) SDL_GetWindowSizeInPixels(window, &ww, &wh);
+            wh -= g_hidden_rows;
             if (ww > 0 && wh > 0) {
                 if (!w) {
                     wh = std::min(wh, int(std::lround(double(ww) * 3.0 / 4.0)));
@@ -1223,6 +1336,16 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
         next.wide = w;
         fb = std::move(next);
         SDL_Log("menu picture: %dx%d", fb.width(), fb.height());
+    };
+
+    // The picture as drawn (render size): the Framebuffer, or with the hardware renderer the
+    // scene and the HUD over it, from the graphics card.
+    auto picture_surface = [&]() -> scr::SurfacePtr {
+        if (fb.layered()) {
+            presenter().upload(fb, renderer3d.pool());
+            if (scr::SurfacePtr s = presenter().read_picture()) return s;
+        }
+        return scr::framebuffer_to_surface(fb);
     };
 
     uint64_t frame = 0;
@@ -1373,6 +1496,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
         if (window) SDL_GetWindowSize(window, &ww, &wh);
         presenter().output_size(ow, oh);
         const float px = wx * float(ow) / float(std::max(ww, 1)), py = wy * float(oh) / float(std::max(wh, 1));
+        oh -= g_hidden_rows;
         const SDL_FRect dst = present_rect(ow, oh, opt.aspect, fb.width(), fb.height());
         fx = (px - dst.x) / std::max(dst.w, 1.0f) * float(fb.width());
         fy = (py - dst.y) / std::max(dst.h, 1.0f) * float(fb.height());
@@ -1606,7 +1730,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
         // frame count. Interactive runs count real 10 ms ticks, like the timer interrupt.
         bool stepped = false;   // a picture was drawn
         bool catching_up = false;  // a step that is not drawn: the next one is already due
-        if (opt.headless) {
+        if (opt.headless && !opt.realtime) {
             if (frame > 0 || opt.tween_test) clock.add_ticks(opt.tween_test ? 1 : scr::SimClock::kMinTicksPerFrame);
         } else {
             const uint64_t now = SDL_GetTicksNS();
@@ -1618,7 +1742,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
         // A game step when 2 ticks have passed; in between, interactive races draw the
         // picture again, blended towards the next step.
         const bool step = clock.frame_ready();
-        const bool interactive = !opt.headless || opt.tween_test;
+        const bool interactive = !opt.headless || opt.tween_test || opt.realtime;
         // OPTIONS > VIDEO's FPS LIMIT (interactive runs): no picture before its time (the game
         // steps all the same)
         const uint64_t now_ns = SDL_GetTicksNS();
@@ -1630,7 +1754,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
             // one is; more than half a second behind (a stall): the extra time is dropped.
             if (step && interactive && clock.pending_ticks() > 50) clock.drop_ticks(clock.pending_ticks() - 2);
             if (step) clock.begin_frame(interactive ? 2 : UINT32_MAX);
-            const bool skip_draw = step && interactive && !opt.headless && (clock.frame_ready() || too_soon);
+            const bool skip_draw = step && interactive && (!opt.headless || opt.realtime) && (clock.frame_ready() || too_soon);
             if (!skip_draw) last_draw_ns = now_ns;
             catching_up = skip_draw;
             renderer3d.set_skip(skip_draw);
@@ -1989,6 +2113,12 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
                     view_cam.far_depth = 43808.0f * opt.view_distance;
                     view_cam.fade_depth = view_cam.far_depth * 0.75f;
                 }
+                // the hardware renderer: the 3D view on the graphics card, the HUD over it here
+                // (not in track edit mode: picking and its markers need the software renderer's depths)
+                scr::SceneSink* const hw_sink = opt.hardware && !(freecam && editing) ? presenter().scene_sink() : nullptr;
+                fb.set_layered(hw_sink != nullptr);
+                if (hw_sink) fb.clear_layer();
+                renderer3d.set_sink(hw_sink);
                 renderer3d.begin(*track, view_cam, fb, 0, true);
                 renderer3d.draw_placements();
                 for (size_t oi = 0; oi < obstacles.list.size(); ++oi) {
@@ -2221,9 +2351,13 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
                 renderer3d.flush_geometry();
                 mark(scr::prof::Geometry);
                 renderer3d.finish();
+                renderer3d.set_sink(nullptr);
                 mark(scr::prof::Fill);
                 // MIRRO / UPDOW: race_frame flips the 3D picture (not the HUD) after drawing it
-                if (opt.race_options & 0x30) {
+                if (fb.layered()) {
+                    fb.scene_flip_x = (opt.race_options & 0x10) != 0;
+                    fb.scene_flip_y = (opt.race_options & 0x20) != 0;
+                } else if (opt.race_options & 0x30) {
                     const int fw = fb.width(), fh = fb.height();
                     if (opt.race_options & 0x10)
                         for (int y = 0; y < fh; ++y) std::reverse(&fb.at(0, y), &fb.at(0, y) + fw);
@@ -2240,6 +2374,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
                     // attract_mode_overlay, and attract_mode_fade_out's palette
                     attract.draw(fb);
                     const float b = attract.brightness();
+                    if (fb.layered()) fb.scene_brightness = b;
                     if (b < 1.0f)
                         for (scr::Rgb& c : fb.palette()) {
                             c.r = uint8_t(float(c.r) * b);
@@ -2496,16 +2631,26 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
                     apply_group_volumes();
                     save_menu();
                 }
-                if (const scr::VideoSettings mv = menu->video(); !(mv == menu_video) || menu->video_apply) {
+                if (scr::VideoSettings mv = menu->video(); !(mv == menu_video) || menu->video_apply) {
                     // OPTIONS > VIDEO: saved and used straight away (distance, detail, far models
                     // and mipmaps are for the races)
+                    scr::VideoSettings now = video_from(opt);
+                    // (the hardware renderer draws with OpenGL: choosing it chooses OpenGL, and
+                    // Direct3D the software renderer)
+                    if (mv.hardware != now.hardware && mv.hardware && !mv.opengl) {
+                        mv.opengl = true;
+                        menu->set_video(mv);
+                    } else if (mv.opengl != now.opengl && !mv.opengl && mv.hardware) {
+                        mv.hardware = false;
+                        menu->set_video(mv);
+                    }
                     menu_video = mv;
                     shared.saved_video = mv;
                     save_menu();
                     if (mv.vsync != opt.vsync && !opt.headless) presenter().set_vsync(mv.vsync);
-                    scr::VideoSettings now = video_from(opt);
                     const bool new_api = mv.opengl != now.opengl;
                     now.opengl = mv.opengl;
+                    now.hardware = mv.hardware;
                     const bool new_picture = mv.fullscreen != now.fullscreen || mv.width != now.width || mv.height != now.height;
                     now.widescreen = mv.widescreen;
                     now.view_distance = mv.view_distance;
@@ -2538,6 +2683,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
                         }
                         // (OpenGL not to be had: the menu shows what is used)
                         opt.video_api = presenter().api();
+                        if (!opt.headless) set_fullscreen(window, opt.fullscreen, opt.video_api == scr::video::Api::OpenGL);
                         if (presenter().api() != (mv.opengl ? scr::video::Api::OpenGL : scr::video::Api::Sdl)) {
                             menu_video.opengl = !mv.opengl;
                             shared.saved_video = menu_video;
@@ -2618,8 +2764,8 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
                 recorded.resize(at + size_t(n) * 2);
                 mixer.mix(recorded.data() + at, n, 44100);
             }
-            if ((step || opt.tween_test) && opt.capture_every && frame >= opt.capture_from && frame % opt.capture_every == 0) {
-                scr::SurfacePtr s = scr::framebuffer_to_surface(fb);
+            if ((step || opt.tween_test || opt.realtime) && stepped && opt.capture_every && frame >= opt.capture_from && frame % opt.capture_every == 0) {
+                scr::SurfacePtr s = picture_surface();
                 char name[64];
                 std::snprintf(name, sizeof name, "/fb_%06llu%s.png", static_cast<unsigned long long>(frame), step ? "" : "_t");
                 save_or_log(s.get(), opt.capture_dir + name);
@@ -2640,7 +2786,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
             std::strftime(name, sizeof name, "screamer_%Y%m%d_%H%M%S", &tm);
             std::string path = dir + name + ".png";
             for (int i = 2; std::filesystem::exists(path); ++i) path = dir + name + "_" + std::to_string(i) + ".png";
-            scr::SurfacePtr shot = scr::framebuffer_to_surface(fb);
+            scr::SurfacePtr shot = picture_surface();
             if (save_or_log(shot.get(), path)) {
                 // where it was taken, to look at the same view again (--scene track --camera)
                 if (std::FILE* f = std::fopen((path.substr(0, path.size() - 4) + ".txt").c_str(), "w")) {
@@ -2664,6 +2810,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
         int ow, oh;
         presenter().output_size(ow, oh);
         // (a menu made before WIDESCREEN went on keeps its 4:3 shape: its pixels need not be square)
+        oh -= g_hidden_rows;  // (the part of the window on the screen)
         const SDL_FRect dst = present_rect(ow, oh, menu && !fb.wide && opt.aspect == "wide" ? "4:3" : opt.aspect, fb.width(), fb.height());
         float backdrop = -1;  // (none)
         if (menu && opt.aspect == "wide" && (dst.w + 1.0f < float(ow) || dst.h + 1.0f < float(oh))) {
@@ -2691,7 +2838,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
                 if (!s || !save_or_log(s.get(), opt.screenshot)) exit_code = 1;
             }
             if (!opt.dump_fb.empty()) {
-                scr::SurfacePtr s = scr::framebuffer_to_surface(fb);
+                scr::SurfacePtr s = picture_surface();
                 if (!save_or_log(s.get(), opt.dump_fb)) exit_code = 1;
             }
             running = false;
@@ -2746,6 +2893,7 @@ int main(int argc, char** argv) {
 #endif
     Options opt;
     if (!parse_args(argc, argv, opt)) return 2;
+    if (opt.hardware) opt.video_api = scr::video::Api::OpenGL;  // (the hardware renderer draws with OpenGL)
     install_debug_report(opt.headless);  // headless runs (tests): assertions to stderr, no dialog
 
     if (opt.headless) {
@@ -2860,7 +3008,9 @@ int main(int argc, char** argv) {
     }
     Display display;
     if (!open_display(display, opt, opt.video_api)) return 1;
+    opt.video_api = display.presenter->api();  // (OpenGL not to be had: SDL's renderer)
     if (!opt.headless && !opt.was_given("--size")) apply_window(display.window, opt);
+    else if (!opt.headless) set_fullscreen(display.window, opt.fullscreen, opt.video_api == scr::video::Api::OpenGL);
 
     int exit_code = 0;
     if (!opt.replay_file.empty()) {

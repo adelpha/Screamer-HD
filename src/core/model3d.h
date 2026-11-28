@@ -57,6 +57,9 @@ struct Face {
     // of the tracks' cliffs are folded along a diagonal). The original tests the whole face
     // for facing the eye by its one normal; the renderer tests each half of such a face.
     bool folded = false;
+    // One side of a card: another face of the part has the same corners, facing the other
+    // way (thin fins and supports, a face per side). compute_bounds works it out.
+    bool card = false;
 };
 
 struct Part {

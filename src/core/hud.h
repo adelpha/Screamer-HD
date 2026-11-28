@@ -84,6 +84,7 @@ public:
 
 private:
     int offset(int x) const;
+    static void darken_layer(uint8_t* row, uint8_t* cover, int n, const std::array<uint8_t, 256>& t);
     Framebuffer& fb_;
     int w_, h_;
     float sx_, sy_;

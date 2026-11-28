@@ -104,12 +104,44 @@ if(EXISTS ${SCREAMER_DATA_DIR}/GFX/MAP1H.DAT)
     MAX_FRACTION 0.005)
   add_api_test(race_wide ARGS --scene drive --track MAP1 --frames 300 --size 1280x720 --aspect wide --hold accel)
 endif()
+# The hardware renderer (--renderer3d hardware) against the software renderer: the same picture
+# but for texel and pixel edges rounded apart (mipmaps off), and with mipmaps on, the levels the
+# graphics card picks (one for both directions; the software renderer halves u and v apart).
+function(add_renderer_test name)
+  cmake_parse_arguments(RT "" "TOLERANCE;MAX_FRACTION" "ARGS" ${ARGN})
+  string(REPLACE ";" "|" RT_ARGS_PIPE "${RT_ARGS}")
+  add_test(NAME gpu.hw_${name}
+    COMMAND ${CMAKE_COMMAND}
+      -DEXE=$<TARGET_FILE:screamer>
+      -DIMGCMP=$<TARGET_FILE:imgcmp>
+      "-DARGS=${RT_ARGS_PIPE}"
+      -DOUTPUT=${TEST_OUT_DIR}/hw_${name}
+      -DTOLERANCE=${RT_TOLERANCE}
+      -DMAX_FRACTION=${RT_MAX_FRACTION}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/compare_renderers.cmake)
+  set_tests_properties(gpu.hw_${name} PROPERTIES LABELS "gpu" SKIP_RETURN_CODE 77)
+endfunction()
+foreach(n 1 3 5 6)
+  if(EXISTS ${SCREAMER_DATA_DIR}/GFX/MAP${n}H.DAT)
+    add_renderer_test(race_map${n} ARGS --scene drive --track MAP${n} --hold accel --frames 340 --render-size 1600x1000
+      --mipmaps off TOLERANCE 24 MAX_FRACTION 0.01)
+  endif()
+endforeach()
+if(EXISTS ${SCREAMER_DATA_DIR}/GFX/MAP1H.DAT)
+  add_renderer_test(race_mipmaps ARGS --scene drive --track MAP1 --hold accel --frames 300 --render-size 1280x800
+    TOLERANCE 24 MAX_FRACTION 0.05)
+  add_renderer_test(still_cars ARGS --scene track --track MAP1 --car AUTO00 --car AUTO03,0,0,0,300,8000 --frames 3
+    --render-size 1600x1000 --mipmaps off TOLERANCE 24 MAX_FRACTION 0.005)
+  add_renderer_test(mirror_wide ARGS --scene drive --track MAP1 --hold accel,right --frames 200 --render-size 1280x720
+    --aspect wide --race-options 0x30 --mipmaps off TOLERANCE 24 MAX_FRACTION 0.02)
+endif()
+
 if(EXISTS ${SCREAMER_DATA_DIR}/GFX/MENU.DAT)
   # the widescreen menu's backdrop
   add_api_test(menu_wide ARGS --scene menu --frames 120 --size 1920x1080 --aspect wide)
   # OPTIONS > VIDEO > ADVANCED > API, from DIRECT3D to OPENGL: the window made again, live
   add_test(NAME gpu.menu_api_switch COMMAND screamer --hidden --scene menu --frames 1000 --size 1280x720 --menu-keys
-    100:down,130:down,160:down,190:down,240:enter,320:down,350:down,400:enter,480:down,510:down,540:down,570:down,600:down,640:enter,720:down,750:down,780:down,810:down,860:enter)
+    100:down,130:down,160:down,190:down,240:enter,320:down,350:down,400:enter,470:down,495:down,520:down,545:down,570:down,600:down,640:enter,720:down,750:down,780:down,810:down,860:enter)
   set_tests_properties(gpu.menu_api_switch PROPERTIES LABELS "gpu"
     PASS_REGULAR_EXPRESSION "renderer: opengl[^
 ]*

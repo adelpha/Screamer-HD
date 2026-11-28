@@ -51,14 +51,14 @@ enum : int {
     kTxSound = 0, kTxAnnouncer, kTxEngine, kTxEffects, kTxMusic, kTxCdMusic, kTxMidiMusic, kTxVideo,
     kTxFullscreen, kTxFullscreenOn, kTxWidescreen, kTxWidescreenOn, kTxResolution, kTxDistance, kTxVsync,
     kTxVsyncOn, kTxFpsLimit, kTxFarModels, kTxFarModelsSimple, kTxMipmaps, kTxMipmapsOn, kTxAdvanced,
-    kTxControls, kTxKeyboard, kTxController, kTxRumble, kTxRumbleOn, kTxPad, kTxDefaults, kTxApi, kTxApiOpenGl,
+    kTxControls, kTxKeyboard, kTxController, kTxRumble, kTxRumbleOn, kTxPad, kTxDefaults, kTxApi, kTxApiOpenGl, kTxRenderer, kTxRendererHw,
 };
 const char* const kOwnTexts[] = {"SOUND", "ANNOUNCER", "ENGINE", "EFFECTS", "MUSIC", "CD MUSIC", "MIDI MUSIC", "VIDEO",
                                  "FULLSCREEN OFF", "FULLSCREEN ON", "WIDESCREEN OFF", "WIDESCREEN ON", "RES",
                                  "DISTANCE", "VSYNC OFF", "VSYNC ON", "FPS LIMIT", "FAR MODELS FULL",
                                  "FAR MODELS LOW", "MIPMAPS OFF", "MIPMAPS ON", "ADVANCED",
                                  "CONTROLS", "KEYBOARD", "CONTROLLER", "RUMBLE OFF", "RUMBLE ON", "PAD", "DEFAULTS",
-                                 "API DIRECT3D", "API OPENGL"};
+                                 "API DIRECT3D", "API OPENGL", "RENDER SOFTWARE", "RENDER HARDWARE"};
 
 // The VIDEO page's steps: view distance (times the original's far clip; 0: no limit) and the
 // frame limit (0: none).
@@ -88,6 +88,7 @@ std::vector<std::vector<Menu::Entry>> default_pages() {
          {kOwnText + kTxResolution, kActionChoice, 0, 0},
          {kOwnText + kTxDistance, kActionChoice, 2, int(std::size(kViewSteps)) - 1},
          {5, 1234, 2, 2},  // MENU.TXT's LOW / MID / HI DETAIL
+         {kOwnText + kTxRenderer, 1234, 0, 1},  // the 3D view in software or on the graphics card
          {kOwnText + kTxAdvanced, kActionAdvanced, 0, 0}},
         {{kOwnText + kTxVsync, 1234, 1, 1},
          {kOwnText + kTxFpsLimit, kActionChoice, 0, int(std::size(kFpsSteps)) - 1},
@@ -253,7 +254,7 @@ enum : int { kChampPos = 0, kChampTrack = 1, kChampTime = 2, kChampScore = 3, kC
 namespace {
 constexpr size_t kLapRecords = 0x6c, kTotalRecords = 0x24c, kRecordStride = 0x50;
 constexpr char kExtMagic[4] = {'S', 'C', 'R', 'X'};  // our settings after the original's 0x460 bytes
-constexpr size_t kExtValues = 15;                      // the four volumes, music_midi, the VIDEO page (10)
+constexpr size_t kExtValues = 16;                      // the four volumes, music_midi, the VIDEO page (11)
 }
 
 std::vector<std::pair<int, int>> video_resolutions(bool widescreen) {
@@ -345,6 +346,7 @@ bool ChoiceFile::load(const std::string& path) {
             case 12: video.lod = v != 0; break;
             case 13: video.mipmaps = v != 0; break;
             case 14: video.opengl = v != 0; break;
+            case 15: video.hardware = v != 0; break;
             default: break;
             }
         }
@@ -371,6 +373,7 @@ bool ChoiceFile::save(const std::string& path) const {
     ext[12] = video.lod;
     ext[13] = video.mipmaps;
     ext[14] = video.opengl;
+    ext[15] = video.hardware;
     const int32_t count = int32_t(ext.size());
     ok = ok && std::fwrite(kExtMagic, 1, 4, f) == 4 && std::fwrite(&count, 4, 1, f) == 1 &&
          std::fwrite(ext.data(), 4, ext.size(), f) == ext.size();
@@ -817,6 +820,7 @@ VideoSettings Menu::video() const {
     v.lod = p(kFarModelsLine).value != 0;
     v.mipmaps = p(kMipmapsLine).value != 0;
     v.opengl = p(kApiLine).value != 0;
+    v.hardware = p(kRendererLine).value != 0;
     return v;
 }
 
@@ -841,6 +845,7 @@ void Menu::set_video(const VideoSettings& v) {
     p(kFarModelsLine).value = v.lod ? 1 : 0;
     p(kMipmapsLine).value = v.mipmaps ? 1 : 0;
     p(kApiLine).value = v.opengl ? 1 : 0;
+    p(kRendererLine).value = v.hardware ? 1 : 0;
 }
 
 void Menu::set_resolutions(bool widescreen, int w, int h) {
@@ -1040,7 +1045,11 @@ void Menu::build_page_items(float dt) {
             Entry res = pages[kVideoPage][kResolutionLine];
             for (res.value = 0; res.value < int(res_list_.size()); ++res.value) longest = std::max(longest, entry_text(res).size());
         }
-        const int z = longest > 15 ? int(float(kCameraZ) * float(longest + 1) / 16.0f) : kCameraZ;
+        // (and a page of more than the original's six lines from as much further back as it is
+        // taller, with a row to spare: its lines take two rows each)
+        const float across = longest > 15 ? float(longest + 1) / 16.0f : 1.0f;
+        const float down = entries.size() > 6 ? float(2 * entries.size()) / 11.0f : 1.0f;
+        const int z = across > 1.0f || down > 1.0f ? int(float(kCameraZ) * std::max(across, down)) : kCameraZ;
         if (to_[2] != z) {
             from_[2] = int(cam_.z);
             to_[2] = z;

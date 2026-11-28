@@ -134,6 +134,45 @@ constexpr int material_frame(int frames, int32_t animation, int32_t anim_counter
 
 class WorkerPool;
 
+// The hardware renderer: with a SceneSink set, finish() hands it the frame's triangles (screen
+// space, as the pixel filler would get them) instead of filling pixels. The batches come in
+// drawing order; within a batch the triangles are in drawing order too.
+struct SceneBatch {
+    enum Kind : uint8_t {
+        Normal,    // depth-tested and written
+        Painter,   // a car: its polygons cover each other in their order whatever their depths
+                   // (tested against the rest of the scene), its depths written afterwards
+        BiasTest,  // Pose::bias_test_only: the bias decides what is drawn, the real depth is written
+        Deferred,  // translucent and darkening polygons, far to near: tested, no depth written
+    };
+    Kind kind;
+    const detail::Tri* tris;
+    size_t tri_count;
+    const detail::Fill* fills;  // Tri::fill indexes these
+};
+struct SceneFrame {
+    const Track* track;
+    const Camera* cam;
+    int width, height;  // the picture's (Framebuffer)
+    bool wide;
+    float unit_x;       // Framebuffer::unit_x
+    uint8_t sky;        // the sky colour where the track has no background panorama
+    bool sky_tilt;      // the panorama turns with the camera's roll
+    bool fade;          // the view-distance fade (see detail::FillContext)
+    float fade_iz, fade_start, fade_range;
+    bool mipmaps;
+    float mip_sharpness;
+    float car_slack;  // Renderer::set_car_slack (Painter batches)
+    std::vector<SceneBatch> batches;
+};
+class SceneSink {
+public:
+    virtual ~SceneSink() = default;
+    virtual void draw_scene(const SceneFrame& frame) = 0;
+    // What the track needs drawn made ready (while it loads, not at its first frame).
+    virtual void prepare(const Track&) {}
+};
+
 // Objects and parts whose bounding sphere lies wholly outside the view are skipped. The draw
 // calls only note what to draw; flush_geometry() (or finish()) then transforms, clips and
 // projects everything on all CPU cores, and finish() fills the pixels, each core taking bands
@@ -173,6 +212,15 @@ public:
     // the half that does is drawn (ours); off: the whole face by its one normal, as the
     // original, which leaves a hole where such a face is skipped.
     void set_folded_faces(bool on) { folded_faces_ = on; }
+    // A car's parts cover its earlier parts (the original's order: far to near, the wheels
+    // first) only where they are less than this many units behind them; elsewhere the depth
+    // decides (ours: parts sorted nearer, such as spoiler supports, drew over the wing). The
+    // faces within a part keep the original's order. 1e30: the original's order everywhere.
+    void set_car_slack(float units) { car_slack_ = units; }
+    // A car part's cards (Face::card) are drawn after the part's other faces and covered by
+    // them only where behind them (ours); off: in the original's face order.
+    void set_car_cards(bool on) { car_cards_ = on; }
+    float car_slack() const { return car_slack_; }
     void set_mipmaps(bool on, float sharpness = 1.4f) { mipmaps_ = on; mip_sharpness_ = sharpness; }
     // Threads that fill pixels (<= 0: one per hardware thread, the default).
     void set_threads(int threads);
@@ -188,6 +236,10 @@ public:
     // Skipped frames (a game step that is not shown): begin .. finish do nothing.
     void set_skip(bool skip) { skip_ = skip; }  // the fill threads, for other per-pixel work
     void set_anim_counter(int32_t counter) { anim_counter_ = counter; }  // SimClock::anim_counter()
+    // Where finish() sends the frame instead of filling the Framebuffer (null: fill it here).
+    // The Framebuffer passed to begin() then only gives the picture's size and shape.
+    void set_sink(SceneSink* sink) { sink_ = sink; }
+    SceneSink* sink() const { return sink_; }
 
     // Clears, draws the background panorama and every placement of the track.
     // Equivalent to begin() + draw_placements() + finish().
@@ -252,8 +304,10 @@ private:
         // polygon's depths negated, which marks the car's own pixels (anything is in front of
         // a negative depth); finish() puts them right when the car is done.
         bool painter = false;
+        uint8_t part = 0;             // (painter) the car's part being drawn (Fill::part)
         bool bias_test_only = false;  // Pose::bias_test_only of the model being drawn
         std::vector<size_t> part_order;
+        std::vector<uint16_t> face_seq;  // the faces of the part being drawn, in order
         std::vector<float> part_keys;
         RenderStats stats{};
         void clear();
@@ -307,12 +361,15 @@ private:
     bool sky_tilt_ = true;
     bool face_lists_ = true;
     bool folded_faces_ = true;
+    float car_slack_ = 64.0f;
+    bool car_cards_ = true;
     float mip_sharpness_ = 1.4f;
     bool skip_ = false;
     bool fade_ = false;            // the view-distance fade is on this frame
     float fade_iz_ = 0;            // 1 / (128 + fade_depth): pixels with a smaller 1/z are in the fade
     float fade_start_ = 0, fade_range_ = 1;
     int32_t anim_counter_ = 0;
+    SceneSink* sink_ = nullptr;
 };
 
 } // namespace scr
