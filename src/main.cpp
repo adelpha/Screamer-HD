@@ -32,6 +32,7 @@
 #include "core/track_edit.h"
 #include "core/sim_clock.h"
 #include "core/testpattern.h"
+#include "core/texture_pack.h"
 #include "debug_report.h"
 #include "input.h"
 #include "video/presenter.h"
@@ -101,6 +102,8 @@ struct Options {
     float car_slack = 64.0f;        // --car-slack: Renderer::set_car_slack (off: 1e30, the original's order)
     scr::video::Quality quality;    // --filter, --aniso, --msaa, --fog, --scaling (OPTIONS > VIDEO > ADVANCED)
     bool car_cards = true;          // --car-cards off: Renderer::set_car_cards
+    bool textures = true;           // --textures: replacement textures (core/texture_pack.h; hardware renderer)
+    std::string textures_dir;       // --textures DIR; empty: "textures" beside the program
     std::string aspect = "4:3";     // 4:3 | stretch | square | wide
     bool fb_set = false;            // --render-size was given
     bool smooth_turn = true;        // --smooth-turn: the camera's angles as they are, not in 2048ths of a turn
@@ -218,6 +221,8 @@ void print_usage() {
         "  --aniso 0|2|4|8|16   anisotropic filtering (hardware renderer)\n"
         "  --msaa 0|2|4|8       multisampling, with alpha to coverage (hardware renderer)\n"
         "  --fog on|off         the view distance's fade as fog instead of the dither (hardware renderer)\n"
+        "  --textures on|off|DIR  replacement textures (full-colour PNGs named as texextract names them)\n"
+        "                       from DIR, default the textures folder beside the program (hardware renderer)\n"
         "  --scaling sharp|pixel|smooth  a picture smaller than the window: whole multiples then\n"
         "                       smoothed (default), whole multiples only, or smoothed\n"
         "  --renderer3d software|hardware  the 3D view drawn here (default) or on the graphics card\n"
@@ -391,6 +396,11 @@ bool parse_args(int argc, char** argv, Options& o) {
             o.quality.msaa = v >= 8 ? 3 : v >= 4 ? 2 : v >= 2 ? 1 : 0;
         }
         else if (a == "--fog") o.quality.fog = std::string(next("--fog")) == "on";
+        else if (a == "--textures") {
+            const std::string v = next("--textures");
+            o.textures = v != "off";
+            if (v != "on" && v != "off") o.textures_dir = v;
+        }
         else if (a == "--scaling") {
             const std::string v = next("--scaling");
             // (nearest: plain nearest-neighbour, as SDL's renderer does it; not in the menu)
@@ -529,6 +539,7 @@ scr::VideoSettings video_from(const Options& o) {
     v.msaa = o.quality.msaa;
     v.fog = o.quality.fog;
     v.scaling = o.quality.scaling;
+    v.textures = o.textures;
     return v;
 }
 
@@ -558,6 +569,7 @@ void apply_video(Options& o, const scr::VideoSettings& v, bool force) {
     if (take("--msaa")) o.quality.msaa = v.msaa;
     if (take("--fog")) o.quality.fog = v.fog;
     if (take("--scaling")) o.quality.scaling = v.scaling;
+    if (take("--textures")) o.textures = v.textures;
     // (the hardware renderer draws with OpenGL)
     if (o.hardware) o.video_api = scr::video::Api::OpenGL;
 }
@@ -1151,6 +1163,24 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "--fill %s: this CPU cannot run it", opt.fill.c_str());
         return 2;
     }
+    // TEXTURES (replacement textures, hardware renderer): the folder looked through again each
+    // time they are turned on, so edited files show without a restart
+    std::shared_ptr<const scr::TexturePack> texture_pack;
+    const auto update_textures = [&]() {
+        if (opt.textures && !texture_pack) {
+            std::string dir = opt.textures_dir;
+            if (dir.empty()) {
+                const char* base = SDL_GetBasePath();
+                dir = std::string(base ? base : "") + "textures";
+            }
+            texture_pack = std::make_shared<const scr::TexturePack>(scr::TexturePack::scan(dir));
+            SDL_Log("textures: %zu replacements in %s", texture_pack->size(), dir.c_str());
+        } else if (!opt.textures) {
+            texture_pack.reset();
+        }
+        presenter().set_textures(texture_pack && !texture_pack->empty() ? texture_pack : nullptr);
+    };
+    update_textures();
     // the hardware renderer's textures for the track now, not as a stall at its first frame
     if (track && opt.hardware)
         if (scr::SceneSink* s = presenter().scene_sink()) s->prepare(*track);
@@ -2697,6 +2727,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
                     now.msaa = mv.msaa;
                     now.fog = mv.fog;
                     now.scaling = mv.scaling;
+                    now.textures = mv.textures;
                     const bool new_picture = mv.fullscreen != now.fullscreen || mv.width != now.width || mv.height != now.height;
                     now.widescreen = mv.widescreen;
                     now.view_distance = mv.view_distance;
@@ -2849,6 +2880,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
         }
         mark(stepped ? scr::prof::Hud : scr::prof::Other);
         presenter().set_quality(opt.quality);  // (OPTIONS > VIDEO > ADVANCED, live)
+        update_textures();
         if (stepped) {
             presenter().upload(fb, renderer3d.pool());
             mark(scr::prof::Upload);

@@ -21,6 +21,7 @@ add_executable(unit_tests
   unit/test_sound.cpp
   unit/test_fm_synth.cpp
   unit/test_menu.cpp
+  unit/test_texture_pack.cpp
   unit/test_replay.cpp
   unit/test_controls.cpp
 )

@@ -53,7 +53,7 @@ enum : int {
     kTxVsyncOn, kTxFpsLimit, kTxFarModels, kTxFarModelsSimple, kTxMipmaps, kTxMipmapsOn, kTxAdvanced,
     kTxControls, kTxKeyboard, kTxController, kTxRumble, kTxRumbleOn, kTxPad, kTxDefaults, kTxApi, kTxApiOpenGl, kTxRenderer, kTxRendererHw,
     kTxFilter, kTxFilter1, kTxFilter2, kTxAniso, kTxAniso1, kTxAniso2, kTxAniso3, kTxAniso4, kTxAa, kTxAa1, kTxAa2, kTxAa3,
-    kTxFade, kTxFadeFog, kTxScale, kTxScale1, kTxScale2,
+    kTxFade, kTxFadeFog, kTxScale, kTxScale1, kTxScale2, kTxTextures, kTxTexturesOwn,
 };
 const char* const kOwnTexts[] = {"SOUND", "ANNOUNCER", "ENGINE", "EFFECTS", "MUSIC", "CD MUSIC", "MIDI MUSIC", "VIDEO",
                                  "FULLSCREEN OFF", "FULLSCREEN ON", "WIDESCREEN OFF", "WIDESCREEN ON", "RES",
@@ -63,7 +63,8 @@ const char* const kOwnTexts[] = {"SOUND", "ANNOUNCER", "ENGINE", "EFFECTS", "MUS
                                  "API DIRECT3D", "API OPENGL", "RENDER SOFTWARE", "RENDER HARDWARE",
                                  "FILTER NEAREST", "FILTER BILINEAR", "FILTER TRILINEAR", "ANISO OFF", "ANISO 2X",
                                  "ANISO 4X", "ANISO 8X", "ANISO 16X", "AA OFF", "AA 2X", "AA 4X", "AA 8X",
-                                 "FADE DITHER", "FADE FOG", "SCALE SHARP", "SCALE PIXEL", "SCALE SMOOTH"};
+                                 "FADE DITHER", "FADE FOG", "SCALE SHARP", "SCALE PIXEL", "SCALE SMOOTH",
+                                 "TEXTURES ORIGINAL", "TEXTURES CUSTOM"};
 
 // The VIDEO page's steps: view distance (times the original's far clip; 0: no limit) and the
 // frame limit (0: none).
@@ -106,7 +107,8 @@ std::vector<std::vector<Menu::Entry>> default_pages() {
          {kOwnText + kTxAniso, 1234, 0, 4},
          {kOwnText + kTxAa, 1234, 0, 3},
          {kOwnText + kTxFade, 1234, 0, 1},
-         {kOwnText + kTxScale, 1234, 0, 2}},
+         {kOwnText + kTxScale, 1234, 0, 2},
+         {kOwnText + kTxTextures, 1234, 1, 1}},  // replacement textures (core/texture_pack.h)
         // 10 (ours) CONTROLS, 11 its KEYBOARD and 12 its CONTROLLER pages (one line per action,
         // the text from Menu::bind_text)
         {{kOwnText + kTxKeyboard, kActionKeyboard, 0, 0},
@@ -266,7 +268,7 @@ enum : int { kChampPos = 0, kChampTrack = 1, kChampTime = 2, kChampScore = 3, kC
 namespace {
 constexpr size_t kLapRecords = 0x6c, kTotalRecords = 0x24c, kRecordStride = 0x50;
 constexpr char kExtMagic[4] = {'S', 'C', 'R', 'X'};  // our settings after the original's 0x460 bytes
-constexpr size_t kExtValues = 21;                      // the four volumes, music_midi, the VIDEO page (16)
+constexpr size_t kExtValues = 22;                      // the four volumes, music_midi, the VIDEO page (17)
 }
 
 std::vector<std::pair<int, int>> video_resolutions(bool widescreen) {
@@ -364,6 +366,7 @@ bool ChoiceFile::load(const std::string& path) {
             case 18: video.msaa = std::clamp(v, 0, 3); break;
             case 19: video.fog = v != 0; break;
             case 20: video.scaling = std::clamp(v, 0, 2); break;
+            case 21: video.textures = v != 0; break;
             default: break;
             }
         }
@@ -396,6 +399,7 @@ bool ChoiceFile::save(const std::string& path) const {
     ext[18] = video.msaa;
     ext[19] = video.fog;
     ext[20] = video.scaling;
+    ext[21] = video.textures;
     const int32_t count = int32_t(ext.size());
     ok = ok && std::fwrite(kExtMagic, 1, 4, f) == 4 && std::fwrite(&count, 4, 1, f) == 1 &&
          std::fwrite(ext.data(), 4, ext.size(), f) == ext.size();
@@ -848,6 +852,7 @@ VideoSettings Menu::video() const {
     v.msaa = p(kAaLine).value;
     v.fog = p(kFadeLine).value != 0;
     v.scaling = p(kScaleLine).value;
+    v.textures = p(kTexturesLine).value != 0;
     return v;
 }
 
@@ -878,6 +883,7 @@ void Menu::set_video(const VideoSettings& v) {
     p(kAaLine).value = std::clamp(v.msaa, 0, 3);
     p(kFadeLine).value = v.fog ? 1 : 0;
     p(kScaleLine).value = std::clamp(v.scaling, 0, 2);
+    p(kTexturesLine).value = v.textures ? 1 : 0;
 }
 
 void Menu::set_resolutions(bool widescreen, int w, int h) {

@@ -206,6 +206,10 @@ public:
         if (scene_) scene_->set_quality(q);
     }
 
+    void set_textures(std::shared_ptr<const TexturePack> pack) override {
+        if (scene_) scene_->set_textures(std::move(pack));
+    }
+
     void upload(const Framebuffer& fb, WorkerPool*) override {
         SDL_GL_MakeCurrent(window_, ctx_);
         if (!index_tex_ || fb.width() != tex_w_ || fb.height() != tex_h_) {

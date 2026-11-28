@@ -15,6 +15,10 @@
 
 #include <memory>
 
+namespace scr {
+class TexturePack;
+}
+
 namespace scr::video {
 
 class GlScene final : public SceneSink {
@@ -27,6 +31,8 @@ public:
     void prepare(const Track& track) override;
     // FILTER, ANISO, AA and FADE (Quality), from the next scene on.
     void set_quality(const Quality& q);
+    // Replacement textures (null: none); the track's textures are made again when they change.
+    void set_textures(std::shared_ptr<const TexturePack> pack);
     // The last scene drawn (RGBA, width x height, top row first), or 0.
     GLuint texture() const;
     int width() const;
