@@ -1045,7 +1045,11 @@ void Menu::build_page_items(float dt) {
             Entry res = pages[kVideoPage][kResolutionLine];
             for (res.value = 0; res.value < int(res_list_.size()); ++res.value) longest = std::max(longest, entry_text(res).size());
         }
-        const int z = longest > 15 ? int(float(kCameraZ) * float(longest + 1) / 16.0f) : kCameraZ;
+        // (and a page of more than the original's six lines from as much further back as it is
+        // taller, with a row to spare: its lines take two rows each)
+        const float across = longest > 15 ? float(longest + 1) / 16.0f : 1.0f;
+        const float down = entries.size() > 6 ? float(2 * entries.size()) / 11.0f : 1.0f;
+        const int z = across > 1.0f || down > 1.0f ? int(float(kCameraZ) * std::max(across, down)) : kCameraZ;
         if (to_[2] != z) {
             from_[2] = int(cam_.z);
             to_[2] = z;
