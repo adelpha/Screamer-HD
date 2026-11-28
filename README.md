@@ -298,6 +298,30 @@ The 3D view is drawn by a new software renderer, not a copy of the original's co
 - **HUD and menus**: the original's 320x200 graphics, or the 640x400 set of the original's
   high-resolution `STARTH.EXE` when the picture has 400 lines or more (`--ui`).
 
+### Replacement textures
+
+With the hardware renderer, any texture of the game can be replaced by a full-colour PNG, at
+the original size or any whole multiple of it (4x, 8x ...):
+
+1. Run `texextract.exe` once. It writes every texture of the game to `textures_original`
+   beside the program, sorted into `cars\AUTO00` ..., `objects\...` (smoke, shadows, the
+   moving scenery) and `tracks\MAP1` ... with `road`, `scenery`, `sky`, `other` and `unused`
+   folders (`low` holds what the low-detail tracks have of their own), plus `textures.csv`
+   listing each texture's size, type and what uses it.
+2. Copy the ones you want to change into a `textures` folder beside the program (any
+   subfolders) and edit them. Keep the end of the file name: `_<12 hex digits>.png` names the
+   texture, `_f<N>` a frame of an animated one (a file without `_f` serves every frame).
+3. OPTIONS > VIDEO > ADVANCED > TEXTURES CUSTOM uses them (the default); TEXTURES ORIGINAL
+   turns them off. Turning them on again reads the folder again, so edits show without a
+   restart.
+
+The name comes from the picture itself. A car's or object's texture is the same on every
+track, so one file changes it everywhere. A track's texture is known by its colours, which
+are the track's own. Transparent textures take their holes from the PNG's alpha. The
+translucent and darkening materials (glass, shadows, smoke) work through the palette's
+tables and cannot be replaced. The software renderer always draws the originals.
+`--textures DIR` reads another folder, `--textures off` none.
+
 ### Display, resolution and widescreen
 
 The 3D scene is drawn at the **render size** (OPTIONS > VIDEO > RES, or `--render-size`) and
@@ -386,8 +410,8 @@ The menus are the original's 3D menus, rebuilt. New pages:
   FPS LIMIT, FAR MODELS (FULL/LOW), MIPMAPS, API (DIRECT3D/OPENGL: how the picture reaches
   the screen; switching makes the window again), and for the hardware renderer FILTER
   (NEAREST/BILINEAR/TRILINEAR), ANISO (OFF to 16X), AA (OFF/2X/4X/8X), FADE (DITHER/FOG), and
-  SCALE (SHARP/PIXEL/SMOOTH: how a picture smaller than the window is enlarged). Pages with more
-  than six lines scroll.
+  SCALE (SHARP/PIXEL/SMOOTH: how a picture smaller than the window is enlarged) and TEXTURES
+  (ORIGINAL/CUSTOM: replacement textures, see above). Pages with more than six lines scroll.
 - **OPTIONS > CONTROLS**: KEYBOARD, CONTROLLER, RUMBLE, PAD, DEFAULTS.
 
 DETAIL works as in the original: LOW loads the low-detail track and has no moving scenery;
@@ -430,6 +454,7 @@ settings for that run.
 | `--renderer NAME` | SDL renderer: `direct3d11`, `direct3d12`, `vulkan`, `opengl`, `software`, `gpu`. |
 | `--renderer3d software\|hardware` | The 3D view drawn by the CPU (default) or on the graphics card with OpenGL (OPTIONS > VIDEO > RENDER). |
 | `--video-api sdl\|opengl` | The picture through SDL's renderer (default) or the game's own OpenGL 3.3 context (OPTIONS > VIDEO > ADVANCED > API). |
+| `--textures on\|off\|DIR` | Replacement textures from the `textures` folder beside the program, or from DIR (hardware renderer; OPTIONS > VIDEO > ADVANCED > TEXTURES). |
 | `--threads N` | Threads drawing the 3D view (default: all CPU threads). |
 | `--mute` | No sound at all. |
 | `--volumes A,E,F,M` | Announcer, engine, effects, music volumes 0-10. |

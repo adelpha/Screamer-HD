@@ -83,7 +83,7 @@ private:
 // original's), or with fewer, gets the defaults for the rest.
 // Then (ours) the VIDEO page: fullscreen, widescreen, render width and height (0: the screen's),
 // view distance in tenths (0: no limit), vsync, frame limit, far models simple, mipmaps, OpenGL, hardware renderer,
-// texture filter, anisotropic filtering, multisampling, fog, scaling.
+// texture filter, anisotropic filtering, multisampling, fog, scaling, replacement textures.
 constexpr int kVolumeMax = 10;
 
 // The VIDEO page's settings (main applies them; the detail stays in CHOICE.DAT's own bytes).
@@ -105,6 +105,7 @@ struct VideoSettings {
     int filter = 0, aniso = 0, msaa = 0;
     bool fog = false;
     int scaling = 0;
+    bool textures = true;        // replacement textures (core/texture_pack.h), where there are any
     bool operator==(const VideoSettings&) const = default;
 };
 // The VIDEO page's render sizes: {0, 0} (NATIVE) first, then 4:3 sizes (with the original's
@@ -228,7 +229,7 @@ public:
     static constexpr int kVideoPage = 8;
     enum VideoLine : int { kFullscreenLine, kWidescreenLine, kResolutionLine, kDistanceLine, kDetailLine, kRendererLine, kVsyncLine,
                            kFpsLine, kFarModelsLine, kMipmapsLine, kApiLine, kFilterLine, kAnisoLine, kAaLine,
-                           kFadeLine, kScaleLine };
+                           kFadeLine, kScaleLine, kTexturesLine };
     VideoSettings video() const;
     void set_video(const VideoSettings& v);
     // Set when Esc leaves the VIDEO page (main applies every change at once and clears it).

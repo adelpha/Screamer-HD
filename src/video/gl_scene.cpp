@@ -1,6 +1,7 @@
 #include "video/gl_scene.h"
 
 #include "core/pcx.h"
+#include "core/texture_pack.h"
 #include "core/track.h"
 
 #include <SDL3/SDL.h>
@@ -71,7 +72,10 @@ void main() {
 // The sky's palette index at a pixel, as Renderer::draw_background_rows works it out (the sky
 // pass and the fog both use it).
 constexpr const char* kSkyFunc = R"(
+uniform sampler2D u_palette;     // 256 x 1
 uniform sampler2D u_pano;   // palette indices, top row first
+uniform sampler2D u_pano_rgb;    // a replacement panorama in full colour (core/texture_pack.h)
+uniform int u_has_rgb;
 uniform int u_has_pano;
 uniform int u_sky;          // palette index without a panorama
 uniform int u_fill;         // above and below the panorama
@@ -79,8 +83,8 @@ uniform int u_wide;
 uniform vec4 u_a;           // x_offset, mid, cx, cy
 uniform vec4 u_b;           // across, down, scale, top
 uniform vec2 u_rot;         // sin, cos of the roll (0, 1: level)
-int sky_index(vec2 frag) {
-    if (u_has_pano == 0) return u_sky;
+// where the pixel falls on the panorama, in its texels; false above or below it
+bool sky_pos(vec2 frag, out vec2 p) {
     float x = floor(frag.x), y = floor(frag.y);
     float x_offset = u_a.x, mid = u_a.y, cx = u_a.z, cy = u_a.w;
     float across = u_b.x, down = u_b.y, scale = u_b.z, top = u_b.w;
@@ -96,12 +100,26 @@ int sky_index(vec2 frag) {
         v0 = (cy - s2 * cx + c2 * dy - top) / scale;
         dv = s2 / scale;
     }
+    p = vec2(u0 + c2 * across * x, v0 + dv * x);
+    float row = floor(p.y);
+    return row >= 0.0 && row < float(textureSize(u_pano, 0).y);
+}
+int sky_index(vec2 frag) {
+    if (u_has_pano == 0) return u_sky;
+    vec2 p;
+    if (!sky_pos(frag, p)) return u_fill;
     ivec2 size = textureSize(u_pano, 0);
-    int row = int(floor(v0 + dv * x));
-    if (row < 0 || row >= size.y) return u_fill;
-    int col = int(floor(u0 + c2 * across * x)) % size.x;
+    int row = int(floor(p.y));
+    int col = int(floor(p.x)) % size.x;
     if (col < 0) col += size.x;
     return int(texelFetch(u_pano, ivec2(col, row), 0).r * 255.0 + 0.5);
+}
+// the sky's colour at a pixel (a replacement panorama: filtered)
+vec3 sky_color(vec2 frag) {
+    vec2 p;
+    if (u_has_pano != 0 && u_has_rgb != 0 && sky_pos(frag, p))
+        return texture(u_pano_rgb, p / vec2(textureSize(u_pano, 0))).rgb;
+    return texelFetch(u_palette, ivec2(sky_index(frag), 0), 0).rgb;
 }
 )";
 
@@ -113,7 +131,6 @@ flat in ivec4 v_fill;
 flat in vec4 v_fill2;
 flat in vec2 v_layer;
 flat in vec4 v_box;
-uniform sampler2D u_palette;  // 256 x 1
 uniform sampler2D u_shade;    // 64 x 2: multiply, add (the translucency table, fitted)
 uniform vec3 u_darken_mul, u_darken_add;
 uniform sampler2DArray u_tex0, u_tex1, u_tex2, u_tex3, u_tex4, u_tex5, u_tex6, u_tex7, u_tex8, u_tex9, u_tex10, u_tex11;
@@ -196,7 +213,7 @@ void main() {
     if ((flags & 2) != 0 && any(lessThan(v_w, vec3(0.0)))) tz *= 0.995;
     gl_FragDepth = depth_value(u_true_depth != 0 ? iz : tz);
 
-    vec3 fog_rgb = fog > 0.0 ? texelFetch(u_palette, ivec2(sky_index(gl_FragCoord.xy), 0), 0).rgb : vec3(0.0);
+    vec3 fog_rgb = fog > 0.0 ? sky_color(gl_FragCoord.xy) : vec3(0.0);
 
     o_mul = vec4(0.0);
     if (mode == 3) {  // darken (fading out with the fog)
@@ -243,10 +260,9 @@ void main() {
 }
 )";
 constexpr const char* kSkyFs = R"(
-uniform sampler2D u_palette;
 out vec4 o_color;
 void main() {
-    o_color = vec4(texelFetch(u_palette, ivec2(sky_index(gl_FragCoord.xy), 0), 0).rgb, 1.0);
+    o_color = vec4(sky_color(gl_FragCoord.xy), 1.0);
 }
 )";
 
@@ -297,7 +313,7 @@ struct GlScene::Impl {
     GLint u_linear = -1, u_fog = -1, u_a2c = -1;
     // the sky's uniforms in each program (sky pass, scene)
     struct SkyLoc {
-        GLint has_pano = -1, sky = -1, fill = -1, wide = -1, a = -1, b = -1, rot = -1;
+        GLint has_pano = -1, sky = -1, fill = -1, wide = -1, a = -1, b = -1, rot = -1, has_rgb = -1;
         void find(GLuint p) {
             has_pano = gl::GetUniformLocation(p, "u_has_pano");
             sky = gl::GetUniformLocation(p, "u_sky");
@@ -306,6 +322,8 @@ struct GlScene::Impl {
             a = gl::GetUniformLocation(p, "u_a");
             b = gl::GetUniformLocation(p, "u_b");
             rot = gl::GetUniformLocation(p, "u_rot");
+            has_rgb = gl::GetUniformLocation(p, "u_has_rgb");
+            gl::Uniform1i(gl::GetUniformLocation(p, "u_pano_rgb"), 2);
         }
     };
     SkyLoc sky_loc, scene_sky_loc;
@@ -324,7 +342,11 @@ struct GlScene::Impl {
     const PcxImage* pano_of = nullptr;
     Palette palette{};
     std::vector<uint8_t> shade_of;
-    GLuint palette_tex = 0, shade_tex = 0, pano_tex = 0;
+    GLuint palette_tex = 0, shade_tex = 0, pano_tex = 0, pano_rgb_tex = 0;
+    // replacement textures (core/texture_pack.h); remade when they change
+    std::shared_ptr<const TexturePack> pack;
+    bool pack_changed = false;
+    size_t replaced = 0;
     struct Group {
         GLuint tex = 0;
         int w = 0, h = 0, layers = 0;
@@ -332,6 +354,7 @@ struct GlScene::Impl {
     std::vector<Group> groups;
     struct Entry {
         int group = -1, layer = 0, frames = 1;
+        float lw = 1, lh = 1;  // the layer's size in the material's texels (a replacement may have more)
     };
     std::vector<Entry> entries;  // by material index
     bool mip_filter = false;     // what the arrays' filters are set to
@@ -341,6 +364,7 @@ struct GlScene::Impl {
     ~Impl() {
         free_textures();
         if (pano_tex) glDeleteTextures(1, &pano_tex);
+        if (pano_rgb_tex) glDeleteTextures(1, &pano_rgb_tex);
         free_target();
         if (vbo) gl::DeleteBuffers(1, &vbo);
         if (vao) gl::DeleteVertexArrays(1, &vao);
@@ -415,7 +439,8 @@ struct GlScene::Impl {
     // the track's palette; and the tables the translucent and darkening materials use.
     void ensure_textures(const Track& t) {
         const MaterialLibrary* l = t.materials ? &*t.materials : nullptr;
-        if (l == lib && t.palette == palette && t.shade_table == shade_of && palette_tex) return;
+        if (l == lib && t.palette == palette && t.shade_table == shade_of && palette_tex && !pack_changed) return;
+        pack_changed = false;
         free_textures();
         lib = l;
         palette = t.palette;
@@ -457,13 +482,46 @@ struct GlScene::Impl {
         // repeated across the layer (so that a mipmap's texels at the material's edge average
         // with its other side, as wrapping wants); the shader wraps u and v to the material.
         // Sizes in use beyond what the shader can sample from at once go into larger layers.
+        // Replacements (TexturePack) come in at a whole multiple of the material's size (its
+        // scale); the material's other frames, if any lack one, are scaled up to match.
+        std::vector<std::vector<RgbaImage>> repl(mats.size());
+        std::vector<int> scale(mats.size(), 1);
+        if (pack && !pack->empty()) {
+            parallel(mats.size(), [&](size_t mi) {
+                const Material& m = mats[mi];
+                if (!texture_replaceable(m)) return;
+                const uint64_t h = pack->find(texture_hash(*lib, m, palette), texture_index_hash(*lib, m));
+                if (!h) return;
+                const int frames = texture_frames(m);
+                std::vector<RgbaImage> imgs(static_cast<size_t>(frames));
+                int s = 1;
+                for (int f = 0; f < frames; ++f) {
+                    auto img = pack->load(h, f);
+                    if (!img || img->width <= 0 || img->height <= 0) continue;
+                    s = std::max(s, std::clamp(int(std::lround(double(img->width) / m.width)), 1, 16));
+                    imgs[size_t(f)] = std::move(*img);
+                }
+                const bool holes = texture_has_holes(m);
+                for (int f = 0; f < frames; ++f) {
+                    RgbaImage& img = imgs[size_t(f)];
+                    if (img.pixels.empty()) img = resample(material_rgba(*lib, m, f, palette), m.width * s, m.height * s);  // (nearest: whole multiples)
+                    else img = resample(img, m.width * s, m.height * s);
+                    if (!holes)
+                        for (size_t i = 3; i < img.pixels.size(); i += 4) img.pixels[i] = 255;
+                }
+                repl[mi] = std::move(imgs);
+                scale[mi] = s;
+            });
+        }
+        replaced = 0;
+        for (const auto& r : repl) replaced += r.empty() ? 0 : 1;
         const auto pot = [](int v) { int p = 1; while (p < v) p <<= 1; return p; };
         std::vector<std::pair<int, int>> want(mats.size(), {0, 0});
         std::map<std::pair<int, int>, int> count;
         for (size_t mi = 0; mi < mats.size(); ++mi) {
             const Material& m = mats[mi];
             if (m.width <= 0 || m.height <= 0) continue;
-            want[mi] = {pot(m.width), pot(m.height)};
+            want[mi] = {pot(m.width * scale[mi]), pot(m.height * scale[mi])};
             count[want[mi]] += std::max(1, int(m.frame_pixels.size()));
         }
         std::map<std::pair<int, int>, std::pair<int, int>> into;  // size -> the layer size used
@@ -472,26 +530,25 @@ struct GlScene::Impl {
             std::map<std::pair<int, int>, int> used;
             for (const auto& c : count) used[into[c.first]] += c.second;
             if (int(used.size()) <= kMaxGroups) break;
-            // the layer size with the fewest layers goes into the smallest one that holds it
-            // (or one holding both it and the smallest other)
-            auto fewest = std::min_element(used.begin(), used.end(), [](auto& a, auto& b) { return a.second < b.second; })->first;
-            std::pair<int, int> best{0, 0}, partner{0, 0};
-            for (const auto& u : used)
-                if (u.first != fewest && u.first.first >= fewest.first && u.first.second >= fewest.second &&
-                    (best.first == 0 || u.first.first * u.first.second < best.first * best.second))
-                    best = u.first;
-            if (best.first == 0) {
-                for (const auto& u : used)
-                    if (u.first != fewest) {
-                        const std::pair<int, int> both{std::max(u.first.first, fewest.first), std::max(u.first.second, fewest.second)};
-                        if (best.first == 0 || both.first * both.second < best.first * best.second) {
-                            best = both;
-                            partner = u.first;
-                        }
+            // the two layer sizes whose layers together, in a size holding both, cost the
+            // fewest extra bytes go into that size
+            using Size = std::pair<int, int>;
+            const auto bytes_of = [](const Size& s, int layers) { return int64_t(s.first) * s.second * layers; };
+            Size from_a{0, 0}, from_b{0, 0}, to{0, 0};
+            int64_t best = -1;
+            for (auto a = used.begin(); a != used.end(); ++a)
+                for (auto b = std::next(a); b != used.end(); ++b) {
+                    const Size both{std::max(a->first.first, b->first.first), std::max(a->first.second, b->first.second)};
+                    const int64_t extra = bytes_of(both, a->second + b->second) - bytes_of(a->first, a->second) - bytes_of(b->first, b->second);
+                    if (best < 0 || extra < best) {
+                        best = extra;
+                        from_a = a->first;
+                        from_b = b->first;
+                        to = both;
                     }
-            }
+                }
             for (auto& i : into)
-                if (i.second == fewest || (partner.first && i.second == partner)) i.second = best;
+                if (i.second == from_a || i.second == from_b) i.second = to;
         }
         std::map<std::pair<int, int>, int> group_of;
         // where every material goes (in order), then its pixels, on all CPU threads
@@ -506,7 +563,7 @@ struct GlScene::Impl {
             }
             Group& g = groups[size_t(it->second)];
             const int frames = std::max(1, int(m.frame_pixels.size()));
-            entries[mi] = {it->second, g.layers, frames};
+            entries[mi] = {it->second, g.layers, frames, float(g.w) / float(scale[mi]), float(g.h) / float(scale[mi])};
             g.layers += frames;
         }
         std::vector<std::vector<uint8_t>> pixels(groups.size());  // per group, all layers
@@ -520,38 +577,34 @@ struct GlScene::Impl {
             const bool holes = m.type >= 3 && m.type <= 7;
             const bool translucent = (m.type >> 1) == 7;
             const size_t layer_bytes = size_t(g.w) * size_t(g.h) * 4;
-            std::vector<uint8_t> one(size_t(m.width) * size_t(m.height) * 4);
+            const int mw = m.width * scale[mi], mh = m.height * scale[mi];
+            std::vector<uint8_t> one(size_t(mw) * size_t(mh) * 4);
             for (int f = 0; f < e.frames; ++f) {
-                for (int v = 0; v < m.height; ++v)
-                    for (int u = 0; u < m.width; ++u) {
-                        const uint8_t idx = lib->texel(m, u, v, f);
-                        uint8_t* o = one.data() + (size_t(v) * size_t(m.width) + size_t(u)) * 4;
-                        o[0] = palette[idx].r;
-                        o[1] = palette[idx].g;
-                        o[2] = palette[idx].b;
-                        o[3] = translucent ? idx : holes && idx == 0 ? 0 : 255;
-                    }
-                if (holes) dilate(one.data(), m.width, m.height);
+                if (!repl[mi].empty()) {
+                    one = repl[mi][size_t(f)].pixels;
+                } else {
+                    for (int v = 0; v < m.height; ++v)
+                        for (int u = 0; u < m.width; ++u) {
+                            const uint8_t idx = lib->texel(m, u, v, f);
+                            uint8_t* o = one.data() + (size_t(v) * size_t(m.width) + size_t(u)) * 4;
+                            o[0] = palette[idx].r;
+                            o[1] = palette[idx].g;
+                            o[2] = palette[idx].b;
+                            o[3] = translucent ? idx : holes && idx == 0 ? 0 : 255;
+                        }
+                }
+                if (holes) dilate(one.data(), mw, mh);
                 // repeated across the layer, a row of the material at a time
                 uint8_t* const out = pixels[size_t(e.group)].data() + size_t(e.layer + f) * layer_bytes;
-                const size_t row = size_t(m.width) * 4;
+                const size_t row = size_t(mw) * 4;
                 for (int y = 0; y < g.h; ++y) {
                     uint8_t* const dst = out + size_t(y) * size_t(g.w) * 4;
-                    const uint8_t* const src = one.data() + size_t(y % m.height) * row;
-                    for (int x = 0; x < g.w; x += m.width) std::memcpy(dst + size_t(x) * 4, src, std::min(row, size_t(g.w - x) * 4));
+                    const uint8_t* const src = one.data() + size_t(y % mh) * row;
+                    for (int x = 0; x < g.w; x += mw) std::memcpy(dst + size_t(x) * 4, src, std::min(row, size_t(g.w - x) * 4));
                 }
             }
         };
-        {
-            const unsigned n = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
-            std::atomic<size_t> next{0};
-            std::vector<std::thread> workers;
-            for (unsigned k = 0; k < n; ++k)
-                workers.emplace_back([&]() {
-                    for (size_t mi; (mi = next.fetch_add(1)) < mats.size();) make(mi);
-                });
-            for (std::thread& worker : workers) worker.join();
-        }
+        parallel(mats.size(), make);
         const uint64_t t1 = SDL_GetTicksNS();
         for (size_t gi = 0; gi < groups.size(); ++gi) {
             Group& g = groups[gi];
@@ -572,8 +625,21 @@ struct GlScene::Impl {
         for (const Group& g : groups) bytes += size_t(g.w) * size_t(g.h) * size_t(g.layers) * 4;
         glFinish();
         const uint64_t t2 = SDL_GetTicksNS();
-        SDL_Log("hardware renderer: %zu materials in %zu texture arrays, %zu layers, %zu MB (%.0f ms to make, %.0f ms to upload)",
-                mats.size(), groups.size(), layers, bytes >> 20, double(t1 - t0) / 1e6, double(t2 - t1) / 1e6);
+        SDL_Log("hardware renderer: %zu materials (%zu replaced) in %zu texture arrays, %zu layers, %zu MB (%.0f ms to make, %.0f ms to upload)",
+                mats.size(), replaced, groups.size(), layers, bytes >> 20, double(t1 - t0) / 1e6, double(t2 - t1) / 1e6);
+    }
+
+    // fn(0 .. n - 1) on all CPU threads
+    template <class Fn>
+    static void parallel(size_t n, const Fn& fn) {
+        const unsigned k = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+        std::atomic<size_t> next{0};
+        std::vector<std::thread> workers;
+        for (unsigned i = 0; i < k; ++i)
+            workers.emplace_back([&]() {
+                for (size_t j; (j = next.fetch_add(1)) < n;) fn(j);
+            });
+        for (std::thread& worker : workers) worker.join();
     }
 
     // Texels that are holes get the colour of the texels beside them (a few passes), so that a
@@ -630,13 +696,30 @@ struct GlScene::Impl {
         }
     }
 
-    void ensure_panorama(const PcxImage* bck) {
-        if (bck == pano_of && (pano_tex || !bck)) return;
+    // the track's sky panorama (and its replacement, in the palette the track gives it)
+    bool pano_pack_changed = false;
+    void ensure_panorama(const Track& t) {
+        const PcxImage* bck = t.background ? &*t.background : nullptr;
+        if (bck == pano_of && (pano_tex || !bck) && !pano_pack_changed) return;
+        pano_pack_changed = false;
         if (pano_tex) glDeleteTextures(1, &pano_tex);
-        pano_tex = 0;
+        if (pano_rgb_tex) glDeleteTextures(1, &pano_rgb_tex);
+        pano_tex = pano_rgb_tex = 0;
         pano_of = bck;
-        if (bck && bck->width > 0 && bck->height > 0)
-            pano_tex = make_texture_2d(GL_R8, bck->width, bck->height, GL_RED, GL_UNSIGNED_BYTE, bck->pixels.data());
+        if (!bck || bck->width <= 0 || bck->height <= 0) return;
+        pano_tex = make_texture_2d(GL_R8, bck->width, bck->height, GL_RED, GL_UNSIGNED_BYTE, bck->pixels.data());
+        if (!pack || pack->empty()) return;
+        const uint64_t hash = texture_hash(*bck, t.palette);
+        if (!pack->has(hash)) return;
+        auto img = pack->load(hash);
+        if (!img) return;
+        pano_rgb_tex = make_texture_2d(GL_RGBA8, img->width, img->height, GL_RGBA, GL_UNSIGNED_BYTE, img->pixels.data());
+        glBindTexture(GL_TEXTURE_2D, pano_rgb_tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        SDL_Log("hardware renderer: sky replaced (%dx%d)", img->width, img->height);
     }
 
     // The sky's uniforms (for the program in use, by its locations).
@@ -646,6 +729,7 @@ struct GlScene::Impl {
         gl::Uniform1i(s_sky, f.sky);
         const PcxImage* bck = f.track->background ? &*f.track->background : nullptr;
         gl::Uniform1i(s_has_pano, pano_tex ? 1 : 0);
+        gl::Uniform1i(s_.has_rgb, pano_rgb_tex ? 1 : 0);
         if (pano_tex && bck) {
             const float scale = float(f.height) / 200.0f;
             const float horizon = (cam.center_y + cam.focal * std::sin(cam.pitch * kAngle)) * scale;
@@ -681,6 +765,8 @@ struct GlScene::Impl {
         glBindTexture(GL_TEXTURE_2D, palette_tex);
         gl::ActiveTexture(GL_TEXTURE3);
         glBindTexture(GL_TEXTURE_2D, pano_tex);
+        gl::ActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, pano_rgb_tex);
         gl::ActiveTexture(GL_TEXTURE0);
         sky_uniforms(f, sky_loc);
         gl::BindVertexArray(sky_vao);
@@ -714,8 +800,8 @@ struct GlScene::Impl {
         base.th = float(std::max(1, fl.mat ? fl.mat->height : 1));
         base.bias = fl.depth_bias;
         base.flat = float(fl.flat);
-        base.lw = group >= 0 ? float(groups[size_t(group)].w) : 1.0f;
-        base.lh = group >= 0 ? float(groups[size_t(group)].h) : 1.0f;
+        base.lw = group >= 0 ? entries[size_t(mi)].lw : 1.0f;
+        base.lh = group >= 0 ? entries[size_t(mi)].lh : 1.0f;
         base.x0 = float(t.x0);
         base.y0 = float(t.y0);
         base.x1 = float(t.x1);
@@ -813,7 +899,13 @@ bool GlScene::init() {
 
 void GlScene::prepare(const Track& track) {
     d_->ensure_textures(track);
-    d_->ensure_panorama(track.background ? &*track.background : nullptr);
+    d_->ensure_panorama(track);
+}
+
+void GlScene::set_textures(std::shared_ptr<const TexturePack> pack) {
+    if (pack == d_->pack) return;
+    d_->pack = std::move(pack);
+    d_->pack_changed = d_->pano_pack_changed = true;
 }
 
 void GlScene::set_quality(const Quality& q) { d_->quality = q; }
@@ -827,7 +919,7 @@ void GlScene::draw_scene(const SceneFrame& f) {
     const int ns = d.quality.msaa > 0 ? 1 << std::clamp(d.quality.msaa, 1, 3) : 0;
     if (!f.track || !f.cam || f.width <= 0 || f.height <= 0 || !d.ensure_target(f.width, f.height, ns)) return;
     d.ensure_textures(*f.track);
-    d.ensure_panorama(f.track->background ? &*f.track->background : nullptr);
+    d.ensure_panorama(*f.track);
     d.set_sampling(f.mipmaps);
 
     // the vertices of every batch, one after another
@@ -884,6 +976,8 @@ void GlScene::draw_scene(const SceneFrame& f) {
     d.sky_uniforms(f, d.scene_sky_loc);
     gl::ActiveTexture(GL_TEXTURE3);
     glBindTexture(GL_TEXTURE_2D, d.pano_tex);
+    gl::ActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, d.pano_rgb_tex);
     gl::ActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, d.palette_tex);
     gl::ActiveTexture(GL_TEXTURE1);

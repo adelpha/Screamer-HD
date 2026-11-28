@@ -38,7 +38,7 @@ try {
     }
 
     # No binary may need the Visual C++ runtime DLLs.
-    $files = @('screamer.exe', 'SDL3.dll', 'opl3.dll')
+    $files = @('screamer.exe', 'texextract.exe', 'SDL3.dll', 'opl3.dll')
     foreach ($f in $files) {
         $p = Join-Path $bin $f
         if (-not (Test-Path $p)) { throw "missing $p" }
@@ -86,9 +86,18 @@ or the CD's music tracks ripped to MP3/FLAC/OGG/WAV in a MUSIC folder here
 So that this folder holds GFX\, DATA\, ... directly (not SCREAMER\Screamer\GFX).
 See README.md.
 "@ | Set-Content -Encoding ascii "$stage\SCREAMER\PUT_YOUR_SCREAMER_FILES_HERE.txt"
+    New-Item -ItemType Directory -Force "$stage\textures" | Out-Null
+    @"
+Replacement textures for the hardware renderer (OPTIONS > VIDEO > RENDER HARDWARE,
+ADVANCED > TEXTURES CUSTOM). Run texextract.exe once: it writes every texture of the
+game here as a PNG (cars, objects, tracks with their road, scenery and sky). Edit or
+replace any of them, at any whole multiple of the size, keeping the end of the file
+name (_<12 hex digits>.png, or _f<N> for an animation frame); delete the rest. See
+README.md.
+"@ | Set-Content -Encoding ascii "$stage\textures\README.txt"
 
     # Only what we put there
-    $expected = @('screamer.exe', 'SDL3.dll', 'opl3.dll', 'README.md', 'LICENSES\SDL3.txt', 'LICENSES\Nuked-OPL3-fast.txt',
+    $expected = @('screamer.exe', 'texextract.exe', 'textures\README.txt', 'SDL3.dll', 'opl3.dll', 'README.md', 'LICENSES\SDL3.txt', 'LICENSES\Nuked-OPL3-fast.txt',
                   'LICENSES\dr_libs.txt', 'LICENSES\stb_vorbis.txt',
                   'SCREAMER\PUT_YOUR_SCREAMER_FILES_HERE.txt', 'third_party\Nuked-OPL3-fast\opl3.c',
                   'third_party\Nuked-OPL3-fast\opl3.h', 'third_party\Nuked-OPL3-fast\README.txt',

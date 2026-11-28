@@ -16,6 +16,7 @@
 namespace scr {
 class WorkerPool;
 class SceneSink;
+class TexturePack;
 }
 
 namespace scr::video {
@@ -60,6 +61,8 @@ public:
     // A layered Framebuffer (Framebuffer::set_layered) is shown over the last scene drawn by it.
     virtual SceneSink* scene_sink() { return nullptr; }
     virtual void set_quality(const Quality& q) = 0;
+    // Replacement textures for the hardware renderer (null: none); called every frame.
+    virtual void set_textures(std::shared_ptr<const TexturePack>) {}
     // The last uploaded picture as shown before scaling (the Framebuffer's size; with a layered
     // one, the scene and what is over it), or null where the picture is the Framebuffer itself.
     virtual SurfacePtr read_picture() { return nullptr; }

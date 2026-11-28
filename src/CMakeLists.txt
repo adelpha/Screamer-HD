@@ -38,6 +38,7 @@ add_library(screamer_core STATIC
   core/replay.cpp
   core/sim_clock.cpp
   core/testpattern.cpp
+  core/texture_pack.cpp
   core/track.cpp
   core/track_edit.cpp
 )
@@ -81,3 +82,6 @@ add_executable(imgcmp tools/imgcmp.cpp debug_report.cpp)
 target_link_libraries(imgcmp PRIVATE screamer_core)
 add_executable(tracecmp tools/tracecmp.cpp debug_report.cpp)
 target_link_libraries(tracecmp PRIVATE screamer_core)
+# Texture extractor (texture replacements, core/texture_pack.h).
+add_executable(texextract tools/texextract.cpp debug_report.cpp)
+target_link_libraries(texextract PRIVATE screamer_core)
