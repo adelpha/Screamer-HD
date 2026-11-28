@@ -168,6 +168,8 @@ class SceneSink {
 public:
     virtual ~SceneSink() = default;
     virtual void draw_scene(const SceneFrame& frame) = 0;
+    // What the track needs drawn made ready (while it loads, not at its first frame).
+    virtual void prepare(const Track&) {}
 };
 
 // Objects and parts whose bounding sphere lies wholly outside the view are skipped. The draw

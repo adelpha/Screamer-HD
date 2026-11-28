@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <thread>
 #include <cmath>
 #include <cstring>
 #include <map>
@@ -382,6 +384,7 @@ struct GlScene::Impl {
         fit_table(palette, t.darken.data(), weight.data(), darken_mul, darken_add);
         if (!lib) return;
 
+        const uint64_t t0 = SDL_GetTicksNS();
         const auto& mats = lib->materials();
         entries.assign(mats.size(), Entry{});
         // Each material goes into a layer of the smallest power-of-two size that holds it,
@@ -425,7 +428,7 @@ struct GlScene::Impl {
                 if (i.second == fewest || (partner.first && i.second == partner)) i.second = best;
         }
         std::map<std::pair<int, int>, int> group_of;
-        std::vector<std::vector<uint8_t>> pixels;  // per group, all layers
+        // where every material goes (in order), then its pixels, on all CPU threads
         for (size_t mi = 0; mi < mats.size(); ++mi) {
             const Material& m = mats[mi];
             if (m.width <= 0 || m.height <= 0) continue;
@@ -434,21 +437,25 @@ struct GlScene::Impl {
             if (it == group_of.end()) {
                 it = group_of.emplace(size, int(groups.size())).first;
                 groups.push_back({0, size.first, size.second, 0});
-                pixels.emplace_back();
             }
             Group& g = groups[size_t(it->second)];
             const int frames = std::max(1, int(m.frame_pixels.size()));
             entries[mi] = {it->second, g.layers, frames};
             g.layers += frames;
-            const int type = m.type;
-            const bool holes = type >= 3 && type <= 7;
-            const bool translucent = (type >> 1) == 7;
-            std::vector<uint8_t>& px = pixels[size_t(it->second)];
-            const size_t at = px.size();
+        }
+        std::vector<std::vector<uint8_t>> pixels(groups.size());  // per group, all layers
+        for (size_t gi = 0; gi < groups.size(); ++gi)
+            pixels[gi].resize(size_t(groups[gi].w) * size_t(groups[gi].h) * size_t(groups[gi].layers) * 4);
+        const auto make = [&](size_t mi) {
+            const Material& m = mats[mi];
+            const Entry& e = entries[mi];
+            if (e.group < 0) return;
+            const Group& g = groups[size_t(e.group)];
+            const bool holes = m.type >= 3 && m.type <= 7;
+            const bool translucent = (m.type >> 1) == 7;
             const size_t layer_bytes = size_t(g.w) * size_t(g.h) * 4;
-            px.resize(at + size_t(frames) * layer_bytes);
             std::vector<uint8_t> one(size_t(m.width) * size_t(m.height) * 4);
-            for (int f = 0; f < frames; ++f) {
+            for (int f = 0; f < e.frames; ++f) {
                 for (int v = 0; v < m.height; ++v)
                     for (int u = 0; u < m.width; ++u) {
                         const uint8_t idx = lib->texel(m, u, v, f);
@@ -459,13 +466,27 @@ struct GlScene::Impl {
                         o[3] = translucent ? idx : holes && idx == 0 ? 0 : 255;
                     }
                 if (holes) dilate(one.data(), m.width, m.height);
-                uint8_t* const out = px.data() + at + size_t(f) * layer_bytes;
-                for (int y = 0; y < g.h; ++y)
-                    for (int x = 0; x < g.w; ++x)
-                        std::memcpy(out + (size_t(y) * size_t(g.w) + size_t(x)) * 4,
-                                    one.data() + (size_t(y % m.height) * size_t(m.width) + size_t(x % m.width)) * 4, 4);
+                // repeated across the layer, a row of the material at a time
+                uint8_t* const out = pixels[size_t(e.group)].data() + size_t(e.layer + f) * layer_bytes;
+                const size_t row = size_t(m.width) * 4;
+                for (int y = 0; y < g.h; ++y) {
+                    uint8_t* const dst = out + size_t(y) * size_t(g.w) * 4;
+                    const uint8_t* const src = one.data() + size_t(y % m.height) * row;
+                    for (int x = 0; x < g.w; x += m.width) std::memcpy(dst + size_t(x) * 4, src, std::min(row, size_t(g.w - x) * 4));
+                }
             }
+        };
+        {
+            const unsigned n = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+            std::atomic<size_t> next{0};
+            std::vector<std::thread> workers;
+            for (unsigned k = 0; k < n; ++k)
+                workers.emplace_back([&]() {
+                    for (size_t mi; (mi = next.fetch_add(1)) < mats.size();) make(mi);
+                });
+            for (std::thread& worker : workers) worker.join();
         }
+        const uint64_t t1 = SDL_GetTicksNS();
         for (size_t gi = 0; gi < groups.size(); ++gi) {
             Group& g = groups[gi];
             glGenTextures(1, &g.tex);
@@ -481,7 +502,12 @@ struct GlScene::Impl {
         mip_filter = false;
         size_t layers = 0;
         for (const Group& g : groups) layers += size_t(g.layers);
-        SDL_Log("hardware renderer: %zu materials in %zu texture arrays, %zu layers", mats.size(), groups.size(), layers);
+        size_t bytes = 0;
+        for (const Group& g : groups) bytes += size_t(g.w) * size_t(g.h) * size_t(g.layers) * 4;
+        glFinish();
+        const uint64_t t2 = SDL_GetTicksNS();
+        SDL_Log("hardware renderer: %zu materials in %zu texture arrays, %zu layers, %zu MB (%.0f ms to make, %.0f ms to upload)",
+                mats.size(), groups.size(), layers, bytes >> 20, double(t1 - t0) / 1e6, double(t2 - t1) / 1e6);
     }
 
     // Texels that are holes get the colour of the texels beside them (a few passes), so that a
@@ -691,6 +717,11 @@ bool GlScene::init() {
     gl::VertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), at(offsetof(Vertex, x0)));
     gl::BindVertexArray(0);
     return glGetError() == GL_NO_ERROR;
+}
+
+void GlScene::prepare(const Track& track) {
+    d_->ensure_textures(track);
+    d_->ensure_panorama(track.background ? &*track.background : nullptr);
 }
 
 GLuint GlScene::texture() const { return d_->drawn ? d_->color : 0; }

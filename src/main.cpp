@@ -65,6 +65,7 @@ constexpr float kObstacleBias = 512.0f;
 struct Options {
     std::string data_dir;
     bool headless = false;
+    bool realtime = false;          // --realtime: a headless run paced by the clock, as a window is (catching up, drawing between steps)
     bool hidden = false;            // --hidden: as --headless, but the real video driver and renderer on a window that is never shown
     std::string upload;             // --upload: how the picture gets to the renderer (index | rgba; empty: index when the renderer can)
     bool perf = false;              // print the 3D render time per frame at the end
@@ -148,6 +149,8 @@ void print_usage() {
         "  --data DIR           original game directory (default: $SCREAMER_DATA, the build's path in\n"
         "                       developer builds, a SCREAMER folder next to screamer.exe, screamer.exe's folder)\n"
         "  --headless           no visible window, software renderer, dummy audio\n"
+        "  --realtime           headless runs paced by the clock as a window is (steps skipped when behind,\n"
+        "                       pictures drawn between steps), for checking what a real run shows\n"
         "  --hidden             like --headless, but with the real video driver and renderer (the graphics card) on a\n"
         "                       window that is never shown; for checking and timing what a real run does\n"
         "  --upload index|rgba  how the picture is handed to the renderer: as palette indices with the palette\n"
@@ -337,6 +340,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         if (a == "--data") o.data_dir = next("--data");
         else if (a == "--headless") o.headless = true;
         else if (a == "--hidden") o.headless = o.hidden = true;
+        else if (a == "--realtime") o.realtime = true;
         else if (a == "--upload") o.upload = next("--upload");
         else if (a == "--perf") o.perf = true;
         else if (a == "--lod") o.lod = true;
@@ -1020,6 +1024,9 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "--fill %s: this CPU cannot run it", opt.fill.c_str());
         return 2;
     }
+    // the hardware renderer's textures for the track now, not as a stall at its first frame
+    if (track && opt.hardware)
+        if (scr::SceneSink* s = presenter().scene_sink()) s->prepare(*track);
     renderer3d.set_lod(opt.lod);
     renderer3d.set_mipmaps(opt.mipmaps, opt.mip_sharpness);
     renderer3d.set_clamp_edges(opt.clamp_edges);
@@ -1633,7 +1640,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
         // frame count. Interactive runs count real 10 ms ticks, like the timer interrupt.
         bool stepped = false;   // a picture was drawn
         bool catching_up = false;  // a step that is not drawn: the next one is already due
-        if (opt.headless) {
+        if (opt.headless && !opt.realtime) {
             if (frame > 0 || opt.tween_test) clock.add_ticks(opt.tween_test ? 1 : scr::SimClock::kMinTicksPerFrame);
         } else {
             const uint64_t now = SDL_GetTicksNS();
@@ -1645,7 +1652,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
         // A game step when 2 ticks have passed; in between, interactive races draw the
         // picture again, blended towards the next step.
         const bool step = clock.frame_ready();
-        const bool interactive = !opt.headless || opt.tween_test;
+        const bool interactive = !opt.headless || opt.tween_test || opt.realtime;
         // OPTIONS > VIDEO's FPS LIMIT (interactive runs): no picture before its time (the game
         // steps all the same)
         const uint64_t now_ns = SDL_GetTicksNS();
@@ -1657,7 +1664,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
             // one is; more than half a second behind (a stall): the extra time is dropped.
             if (step && interactive && clock.pending_ticks() > 50) clock.drop_ticks(clock.pending_ticks() - 2);
             if (step) clock.begin_frame(interactive ? 2 : UINT32_MAX);
-            const bool skip_draw = step && interactive && !opt.headless && (clock.frame_ready() || too_soon);
+            const bool skip_draw = step && interactive && (!opt.headless || opt.realtime) && (clock.frame_ready() || too_soon);
             if (!skip_draw) last_draw_ns = now_ns;
             catching_up = skip_draw;
             renderer3d.set_skip(skip_draw);
@@ -2666,7 +2673,7 @@ int run_scene(Options& opt, Display& display, const std::optional<std::string>& 
                 recorded.resize(at + size_t(n) * 2);
                 mixer.mix(recorded.data() + at, n, 44100);
             }
-            if ((step || opt.tween_test) && opt.capture_every && frame >= opt.capture_from && frame % opt.capture_every == 0) {
+            if ((step || opt.tween_test || opt.realtime) && stepped && opt.capture_every && frame >= opt.capture_from && frame % opt.capture_every == 0) {
                 scr::SurfacePtr s = picture_surface();
                 char name[64];
                 std::snprintf(name, sizeof name, "/fb_%06llu%s.png", static_cast<unsigned long long>(frame), step ? "" : "_t");
